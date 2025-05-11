@@ -2,7 +2,7 @@
 
 A Home Assistant custom integration that automatically generates kWh energy sensors from power sensors (in Watts) for use in the Energy dashboard. Unlike other solutions, it operates entirely in Python, avoiding YAML-based helpers like `integration` (Riemann Sum) or `utility_meter`, making it tidy, self-contained, and easy to manage.
 
-[![Add to HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=yourusername&repository=energy-sensor-generator&category=integration)
+[![Add to HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=vortitron&repository=energy-sensor-generator&category=integration)
 
 ## Features
 - **Automatic Detection**: Identifies all power sensors (`unit: W`, `device_class: power`) in Home Assistant.
