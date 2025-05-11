@@ -1,4 +1,4 @@
-# Energy Sensor Generator
+f# Energy Sensor Generator
 
 A Home Assistant custom integration that automatically generates kWh energy sensors from power sensors (in Watts) for use in the Energy dashboard. Unlike other solutions, it operates entirely in Python, avoiding YAML-based helpers like `integration` (Riemann Sum) or `utility_meter`, making it tidy, self-contained, and easy to manage.
 
@@ -58,12 +58,12 @@ Follow these steps to install the `energy_sensor_generator` integration:
 1. **Add to HACS**:
    - Open Home Assistant and navigate to **HACS > Integrations > Explore & Download Repositories**.
    - Click the three-dot menu and select **Custom Repositories**.
-   - Add the repository: `https://github.com/yourusername/energy-sensor-generator`, Category: **Integration**.
+   - Add the repository: `https://github.com/vortitron/energy-sensor-generator`, Category: **Integration**.
    - Search for “Energy Sensor Generator” and click **Download**.
    - Restart Home Assistant after downloading.
 
 2. **Manual Installation (Alternative)**:
-   - Download the [latest release](https://github.com/yourusername/energy-sensor-generator/releases) or clone the repository.
+   - Download the [latest release](https://github.com/vortitron/energy-sensor-generator/releases) or clone the repository.
    - Copy the `custom_components/energy_sensor_generator` folder to your Home Assistant `config/custom_components/` directory.
    - Restart Home Assistant.
 
@@ -160,7 +160,7 @@ Report issues or suggest features in the GitHub Issues section.
 License
 This project is licensed under the MIT License. See the LICENSE file for details.
 Credits
-Developed by [yourusername]. Inspired by the Home Assistant community’s need for a clean, Python-based energy monitoring solution.
+Developed by [vortitron]. Inspired by the Home Assistant community’s need for a clean, Python-based energy monitoring solution.
 Enjoy tracking your energy usage with a tidy, all-in-one integration!
 
 ---
