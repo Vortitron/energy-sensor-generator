@@ -1,0 +1,14 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Energy Sensor Generator",
+        "description": "Configure the energy sensor generator.",
+        "data": {
+          "auto_generate": "Generate sensors automatically on startup",
+          "update_interval": "Update interval for energy calculations (seconds)"
+        }
+      }
+    }
+  }
+}
