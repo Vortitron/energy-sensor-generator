@@ -2,9 +2,9 @@
   "domain": "energy_sensor_generator",
   "name": "Energy Sensor Generator",
   "version": "0.0.1",
-  "documentation": "https://github.com/Vortitron2000/energy-sensor-generator",
+  "documentation": "https://github.com/Vortitron/energy-sensor-generator",
   "requirements": [],
-  "codeowners": ["@Vortitron2000"],
+  "codeowners": ["@Vortitron"],
   "iot_class": "local_polling",
   "config_flow": true
 }
