@@ -1,0 +1,90 @@
+import logging
+import json
+from pathlib import Path
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from .sensor import EnergySensor, DailyEnergySensor, MonthlyEnergySensor
+
+_LOGGER = logging.getLogger(__name__)
+DOMAIN = "energy_sensor_generator"
+STORAGE_FILE = "energy_sensor_generator.json"
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up the integration from a config entry."""
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN][entry.entry_id] = {
+        "config": entry.data,
+        "storage": hass.config.path(".storage", STORAGE_FILE)
+    }
+
+    # Register service for manual generation
+    hass.services.async_register(
+        DOMAIN, "generate_sensors", generate_sensors_service, schema={}
+    )
+
+    # Forward to sensor setup
+    await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
+
+    # Auto-generate on setup if enabled
+    if entry.data.get("auto_generate", False):
+        await generate_sensors_service(hass, None)
+
+    return True
+
+async def generate_sensors_service(hass: HomeAssistant, call) -> None:
+    """Service to generate energy sensors."""
+    _LOGGER.info("Generating energy sensors")
+
+    # Get power sensors
+    entity_registry = er.async_get(hass)
+    power_sensors = [
+        entity.entity_id
+        for entity in entity_registry.entities.values()
+        if entity.entity_id.startswith("sensor.")
+        and entity.unit_of_measurement == "W"
+        and entity.device_class == "power"
+    ]
+
+    if not power_sensors:
+        _LOGGER.warning("No power sensors found")
+        return
+
+    entities = []
+    storage_path = hass.data[DOMAIN][list(hass.data[DOMAIN].keys())[0]]["storage"]
+    storage = load_storage(storage_path)
+
+    for sensor in power_sensors:
+        base_name = sensor.replace("sensor.", "").replace("_power", "")
+        
+        # Create Energy Sensor (kWh)
+        energy_sensor = EnergySensor(hass, base_name, sensor, storage_path)
+        entities.append(energy_sensor)
+
+        # Create Daily and Monthly Sensors
+        for period in ["daily", "monthly"]:
+            period_sensor = (
+                DailyEnergySensor if period == "daily" else MonthlyEnergySensor
+            )(hass, base_name, f"sensor.{base_name}_energy", storage_path)
+            entities.append(period_sensor)
+
+    # Add entities
+    async_add_entities = hass.helpers.entity_platform.async_get_current_platform().async_add_entities
+    await async_add_entities(entities)
+
+def load_storage(storage_path: str) -> dict:
+    """Load persistent storage."""
+    try:
+        with open(storage_path, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+def save_storage(storage_path: str, data: dict) -> None:
+    """Save persistent storage."""
+    try:
+        with open(storage_path, "w") as f:
+            json.dump(data, f, indent=2)
+    except IOError as e:
+        _LOGGER.error(f"Failed to save storage: {e}")
