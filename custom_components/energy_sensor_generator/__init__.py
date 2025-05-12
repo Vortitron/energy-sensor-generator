@@ -6,6 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .sensor import EnergySensor, DailyEnergySensor, MonthlyEnergySensor
+import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
 DOMAIN = "energy_sensor_generator"
@@ -22,6 +23,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register service for manual generation
     hass.services.async_register(
         DOMAIN, "generate_sensors", generate_sensors_service, schema={}
+    )
+
+    # Register service for reassigning energy data
+    hass.services.async_register(
+        DOMAIN, "reassign_energy_data", reassign_energy_data_service, 
+        schema=vol.Schema({
+            vol.Required("from_device"): str,
+            vol.Required("to_device"): str
+        })
     )
 
     # Forward to sensor setup
@@ -72,6 +82,24 @@ async def generate_sensors_service(hass: HomeAssistant, call) -> None:
     # Add entities
     async_add_entities = hass.helpers.entity_platform.async_get_current_platform().async_add_entities
     await async_add_entities(entities)
+
+async def reassign_energy_data_service(hass: HomeAssistant, call) -> None:
+    """Service to reassign energy data from one device to another."""
+    _LOGGER.info("Reassigning energy data")
+    from_device = call.data.get("from_device")
+    to_device = call.data.get("to_device")
+    
+    storage_path = hass.data[DOMAIN][list(hass.data[DOMAIN].keys())[0]]["storage"]
+    storage = load_storage(storage_path)
+    
+    for key in list(storage.keys()):
+        if key.startswith(from_device):
+            new_key = key.replace(from_device, to_device)
+            storage[new_key] = storage.pop(key)
+            _LOGGER.info(f"Reassigned energy data from {key} to {new_key}")
+    
+    save_storage(storage_path, storage)
+    _LOGGER.info(f"Completed reassignment from {from_device} to {to_device}")
 
 def load_storage(storage_path: str) -> dict:
     """Load persistent storage."""

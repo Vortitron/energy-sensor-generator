@@ -1,4 +1,4 @@
-f# Energy Sensor Generator
+# Energy Sensor Generator
 
 A Home Assistant custom integration that automatically generates kWh energy sensors from power sensors (in Watts) for use in the Energy dashboard. Unlike other solutions, it operates entirely in Python, avoiding YAML-based helpers like `integration` (Riemann Sum) or `utility_meter`, making it tidy, self-contained, and easy to manage.
 
@@ -15,7 +15,7 @@ A Home Assistant custom integration that automatically generates kWh energy sens
 - **HACS Ready**: Easily installed via the Home Assistant Community Store (HACS).
 
 ## How It Works
-The `energy_sensor_generator` integration simplifies energy monitoring by creating kWh sensors for devices like Tuya smart plugs that report power in Watts. Here’s a detailed breakdown of its operation:
+The `energy_sensor_generator` integration simplifies energy monitoring by creating kWh sensors for devices like Tuya smart plugs that report power in Watts. Here's a detailed breakdown of its operation:
 
 1. **Power Sensor Detection**:
    - The integration scans the Home Assistant entity registry for sensors with `unit_of_measurement: W` and `device_class: power` (e.g., `sensor.plug_1_power`).
@@ -35,7 +35,7 @@ The `energy_sensor_generator` integration simplifies energy monitoring by creati
 4. **Sensor Generation**:
    - **Automatic Mode**: If enabled in the config flow, sensors are generated when Home Assistant starts or the integration is reloaded.
    - **Manual Mode**: Users can trigger generation via a Lovelace button that calls the `energy_sensor_generator.generate_sensors` service.
-   - Duplicate sensors are avoided using unique IDs based on the power sensor’s name.
+   - Duplicate sensors are avoided using unique IDs based on the power sensor's name.
 
 5. **Energy Dashboard Integration**:
    - All generated sensors have `device_class: energy`, `state_class: total_increasing`, and `unit_of_measurement: kWh`, making them compatible with the Home Assistant Energy dashboard.
@@ -59,7 +59,7 @@ Follow these steps to install the `energy_sensor_generator` integration:
    - Open Home Assistant and navigate to **HACS > Integrations > Explore & Download Repositories**.
    - Click the three-dot menu and select **Custom Repositories**.
    - Add the repository: `https://github.com/vortitron/energy-sensor-generator`, Category: **Integration**.
-   - Search for “Energy Sensor Generator” and click **Download**.
+   - Search for "Energy Sensor Generator" and click **Download**.
    - Restart Home Assistant after downloading.
 
 2. **Manual Installation (Alternative)**:
@@ -69,7 +69,7 @@ Follow these steps to install the `energy_sensor_generator` integration:
 
 3. **Configure the Integration**:
    - Go to **Settings > Devices & Services > Add Integration**.
-   - Search for “Energy Sensor Generator” and select it.
+   - Search for "Energy Sensor Generator" and select it.
    - Configure the options:
      - **Auto Generate**: Enable to create sensors automatically on startup (recommended).
      - **Update Interval**: Set the frequency (in seconds) for energy calculations (default: 60).
@@ -97,11 +97,15 @@ Follow these steps to install the `energy_sensor_generator` integration:
 
 ## Usage
 - **Automatic Generation**:
-  - If “Auto Generate” is enabled, sensors are created when Home Assistant starts or the integration is reloaded.
+  - If "Auto Generate" is enabled, sensors are created when Home Assistant starts or the integration is reloaded.
   - New power sensors (e.g., from newly added Tuya plugs) are detected automatically.
 - **Manual Generation**:
-  - Click the “Generate Energy Sensors” button in your Lovelace dashboard to create or update sensors.
-  - This is useful if you add new devices and have “Auto Generate” disabled.
+  - Click the "Generate Energy Sensors" button in your Lovelace dashboard to create or update sensors.
+  - This is useful if you add new devices and have "Auto Generate" disabled.
+- **Device Swap Handling**:
+  - If you swap a device between power sockets, use the `Reassign Energy Data` service to transfer energy data to the new device association.
+  - Call the service `energy_sensor_generator.reassign_energy_data` with parameters `from_device` and `to_device` (e.g., `plug_1` to `plug_2`).
+  - This updates the storage file to associate energy data with the new device name.
 - **Monitoring**:
   - View sensor states in **Developer Tools > States** (e.g., `sensor.plug_1_energy`, `sensor.plug_1_daily_energy`).
   - Check energy usage in the **Energy** dashboard.
@@ -132,14 +136,14 @@ Ensure your devices (e.g., Tuya plugs) expose power sensors with unit: W and dev
 Use the LocalTuya integration for Tuya devices, as the official Tuya integration may not expose power data reliably.
 Energy Values Incorrect:
 Verify that power sensors update frequently (e.g., every 5-30 seconds). LocalTuya typically provides faster updates.
-Adjust the update_interval in the integration settings to match your device’s update frequency.
+Adjust the update_interval in the integration settings to match your device's update frequency.
 Check logs for warnings about invalid power values.
 Storage Errors:
 Ensure the .storage directory is writable: chmod -R 755 /config/.storage.
 Monitor disk space to prevent write failures.
 Energy Dashboard Issues:
 Confirm sensors have device_class: energy and state_class: total_increasing in Developer Tools > States.
-If the dashboard doesn’t display data, try restarting Home Assistant or re-adding the sensors.
+If the dashboard doesn't display data, try restarting Home Assistant or re-adding the sensors.
 General Issues:
 Check logs in Settings > System > Logs for errors.
 Reinstall the integration via HACS if issues persist.
@@ -150,7 +154,7 @@ Energy calculation accuracy depends on how often power sensors update. Tuya plug
 Storage:
 The JSON storage file grows with the number of sensors but remains small (a few KB per sensor). Monitor disk space for large installations.
 Energy Dashboard:
-If Home Assistant’s Energy dashboard rejects custom sensors (unlikely), a future version may add MQTT support as a fallback.
+If Home Assistant's Energy dashboard rejects custom sensors (unlikely), a future version may add MQTT support as a fallback.
 Contributing
 Contributions are welcome! To contribute:
 Fork the repository.
@@ -160,13 +164,13 @@ Report issues or suggest features in the GitHub Issues section.
 License
 This project is licensed under the MIT License. See the LICENSE file for details.
 Credits
-Developed by [vortitron]. Inspired by the Home Assistant community’s need for a clean, Python-based energy monitoring solution.
+Developed by [vortitron]. Inspired by the Home Assistant community's need for a clean, Python-based energy monitoring solution.
 Enjoy tracking your energy usage with a tidy, all-in-one integration!
 
 ---
 
 ### Lovelace Button Configuration
-As requested, here’s the Lovelace button configuration to add to your Home Assistant dashboard for triggering the sensor generation manually. This was included in the `README.md` but is provided here separately for clarity and to ensure it’s easy to copy-paste.
+As requested, here's the Lovelace button configuration to add to your Home Assistant dashboard for triggering the sensor generation manually. This was included in the `README.md` but is provided here separately for clarity and to ensure it's easy to copy-paste.
 
 **YAML for the Button Card**:
 ```yaml
@@ -177,6 +181,20 @@ icon: mdi:lightning-bolt
 tap_action:
   action: call-service
   service: energy_sensor_generator.generate_sensors
+```
+
+**YAML for Reassign Energy Data Button**:
+```yaml
+type: button
+name: Reassign Energy Data
+show_icon: true
+icon: mdi:swap-horizontal
+tap_action:
+  action: call-service
+  service: energy_sensor_generator.reassign_energy_data
+  service_data:
+    from_device: plug_1
+    to_device: plug_2
 ```
 Steps to Add the Button:
 Open your Lovelace dashboard in edit mode (Edit Dashboard).
