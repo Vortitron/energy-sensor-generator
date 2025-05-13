@@ -1,7 +1,7 @@
 import logging
 from datetime import datetime, timedelta
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
-from homeassistant.const import DEVICE_CLASS_ENERGY, ENERGY_KILOWATT_HOUR
+from homeassistant.const import ENERGY_KILOWATT_HOUR
 from homeassistant.helpers.event import async_track_state_change_event
 from . import load_storage, save_storage
 
