@@ -1,5 +1,7 @@
+"""Config flow for Energy Sensor Generator integration."""
 from homeassistant import config_entries
 import voluptuous as vol
+from . import DOMAIN
 
 class EnergySensorGeneratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Energy Sensor Generator."""
