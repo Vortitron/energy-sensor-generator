@@ -1,8 +1,8 @@
 import logging
 from datetime import datetime, timedelta
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, ENERGY_KILO_WATT_HOUR
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.helpers.event import async_track_state_change_event
-from . import load_storage, save_storage
+from .utils import load_storage, save_storage
 
 _LOGGER = logging.getLogger(__name__)
 

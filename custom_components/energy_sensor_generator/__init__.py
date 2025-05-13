@@ -6,6 +6,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .sensor import EnergySensor, DailyEnergySensor, MonthlyEnergySensor
+from .utils import load_storage, save_storage
 import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
@@ -100,19 +101,3 @@ async def reassign_energy_data_service(hass: HomeAssistant, call) -> None:
     
     save_storage(storage_path, storage)
     _LOGGER.info(f"Completed reassignment from {from_device} to {to_device}")
-
-def load_storage(storage_path: str) -> dict:
-    """Load persistent storage."""
-    try:
-        with open(storage_path, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-def save_storage(storage_path: str, data: dict) -> None:
-    """Save persistent storage."""
-    try:
-        with open(storage_path, "w") as f:
-            json.dump(data, f, indent=2)
-    except IOError as e:
-        _LOGGER.error(f"Failed to save storage: {e}")
