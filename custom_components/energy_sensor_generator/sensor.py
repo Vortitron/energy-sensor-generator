@@ -2,9 +2,18 @@ import logging
 from datetime import datetime, timedelta
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .utils import load_storage, save_storage
+from . import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
+    """Set up the sensor platform."""
+    hass.data[DOMAIN][entry.entry_id]["platform"] = async_add_entities
+    return
 
 class EnergySensor(SensorEntity):
     """Custom sensor to calculate kWh from power (Watts)."""
