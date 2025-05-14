@@ -171,6 +171,13 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 
 ### Changelog
 
+#### Version 0.0.13
+- Fixed options flow implementation to be compatible with future Home Assistant releases
+- Fixed validation in options flow for selecting power sensors
+
+#### Version 0.0.12
+- Bug fixes for sensor creation
+
 #### Version 0.0.11
 - Added options flow: you can now manually select which power sensors should have kWh/energy entities generated via the integration's settings in Home Assistant.
 

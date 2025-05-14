@@ -1,11 +1,14 @@
 from homeassistant import config_entries
 import voluptuous as vol
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import config_validation as cv
 from .const import DOMAIN
 
 class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 	def __init__(self, config_entry):
-		self.config_entry = config_entry
+		"""Initialize options flow."""
+		# Don't explicitly set config_entry, it's provided by parent class
+		super().__init__(config_entry)
 
 	async def async_step_init(self, user_input=None):
 		"""Manage the options for the integration."""
@@ -26,11 +29,12 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		if not all_power_sensors:
 			return self.async_abort(reason="no_power_sensors")
 
+		# Set up multi-select schema for power sensors
 		data_schema = vol.Schema({
 			vol.Optional(
 				"selected_power_sensors",
 				default=current or all_power_sensors
-			): vol.All(vol.EnsureList(), vol.In(all_power_sensors))
+			): cv.multi_select(all_power_sensors)
 		})
 
 		if user_input is not None:
