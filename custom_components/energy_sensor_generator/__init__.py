@@ -120,23 +120,10 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
     all_power_sensors = detect_power_sensors(hass)
     _LOGGER.info(f"Auto-detected {len(all_power_sensors)} power sensors: {all_power_sensors}")
 
-    # Get custom power sensors from options if present
-    custom_sensors = []
-    if options and "custom_power_sensors" in options:
-        custom_sensors_str = options.get("custom_power_sensors", "")
-        if custom_sensors_str:
-            custom_sensors = [s.strip() for s in custom_sensors_str.split(",") if s.strip()]
-            # Add custom sensors that are not already detected
-            custom_sensors = [s for s in custom_sensors if s not in all_power_sensors]
-            _LOGGER.info(f"Using custom power sensors: {custom_sensors}")
-    
-    # Combine auto-detected and custom sensors
-    all_power_sensors.extend(custom_sensors)
-
-    # Use manual selection if present in options
+    # Use selected power sensors from options if present
     selected_sensors = options.get("selected_power_sensors") if options else None
     if selected_sensors:
-        power_sensors = [eid for eid in all_power_sensors if eid in selected_sensors]
+        power_sensors = selected_sensors
         _LOGGER.info(f"Using manually selected power sensors: {power_sensors}")
     else:
         power_sensors = all_power_sensors

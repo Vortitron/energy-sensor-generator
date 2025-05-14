@@ -21,11 +21,22 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		hass = self.hass
 		
 		# Get auto-detected power sensors
-		all_power_sensors = detect_power_sensors(hass)
+		auto_detected_sensors = detect_power_sensors(hass)
 		
-		# Use current selections if present
+		# Get current selections if present
 		current_sensors = self._config_entry.options.get("selected_power_sensors", [])
-		current_custom = self._config_entry.options.get("custom_power_sensors", "")
+		
+		# Merge auto-detected and previously selected sensors for the selection list
+		all_power_sensors = {}
+		
+		# Add auto-detected sensors
+		for sensor in auto_detected_sensors:
+			all_power_sensors[sensor] = sensor
+			
+		# Add custom sensors that were previously selected
+		for sensor in current_sensors:
+			if sensor not in all_power_sensors:
+				all_power_sensors[sensor] = sensor
 		
 		if user_input is not None:
 			selected_sensors = user_input.get("selected_power_sensors", [])
@@ -37,18 +48,20 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			# Add custom sensor if provided
 			if custom_sensor and custom_sensor not in all_sensors:
 				all_sensors.append(custom_sensor)
+				
+				# Add to our dictionary for immediate display in case of validation error
+				all_power_sensors[custom_sensor] = custom_sensor
 			
 			if not self._errors:
 				return self.async_create_entry(
 					title="Power Sensors", 
 					data={
-						"selected_power_sensors": all_sensors,
-						"custom_power_sensors": current_custom + ("," + custom_sensor if custom_sensor and current_custom else custom_sensor)
+						"selected_power_sensors": all_sensors
 					}
 				)
 
-		# Show different forms based on whether any sensors were auto-detected
-		if not all_power_sensors and not current_sensors:
+		# Show different forms based on whether any sensors were available
+		if not all_power_sensors:
 			# No auto-detected sensors, just show custom sensor field
 			return self.async_show_form(
 				step_id="init",
@@ -63,15 +76,15 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				errors=self._errors
 			)
 		
-		# Show both auto-detected and custom input
+		# Show both available sensors as checkboxes and custom input field
 		data_schema = vol.Schema({
 			vol.Optional(
 				"selected_power_sensors",
-				default=current_sensors or all_power_sensors
+				default=current_sensors
 			): cv.multi_select(all_power_sensors),
 			vol.Optional(
 				"custom_power_sensor",
-				description="Additional power sensor entity (with autocomplete)"
+				description="Additional power sensor entity (will be added to the list)"
 			): EntitySelector(
 				EntitySelectorConfig(
 					domain="sensor",
@@ -84,7 +97,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			step_id="init",
 			data_schema=data_schema,
 			description_placeholders={
-				"count": str(len(all_power_sensors))
+				"count": str(len(auto_detected_sensors))
 			},
 			errors=self._errors
 		) 

@@ -171,6 +171,11 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 
 ### Changelog
 
+#### Version 0.0.17
+- Improved power sensor selection UI to use checkboxes instead of a comma-separated list
+- Custom sensors are now added directly to the checkbox list for easier selection
+- Unified the sensor selection system to make it more intuitive
+
 #### Version 0.0.16
 - Enhanced power sensor detection using more flexible matching criteria
 - Added entity auto-complete for custom power sensor selection
