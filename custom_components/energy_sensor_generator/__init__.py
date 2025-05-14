@@ -7,11 +7,10 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .sensor import EnergySensor, DailyEnergySensor, MonthlyEnergySensor
 from .utils import load_storage, save_storage
+from .const import DOMAIN, STORAGE_FILE
 import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
-DOMAIN = "energy_sensor_generator"
-STORAGE_FILE = "energy_sensor_generator.json"
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the integration from a config entry."""
