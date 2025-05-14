@@ -2,6 +2,7 @@
 from homeassistant import config_entries
 import voluptuous as vol
 from .const import DOMAIN
+from .options_flow import EnergySensorGeneratorOptionsFlow
 
 class EnergySensorGeneratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Energy Sensor Generator."""
@@ -20,3 +21,7 @@ class EnergySensorGeneratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional("update_interval", default=60): int
             })
         )
+
+    @staticmethod
+    def async_get_options_flow(config_entry):
+        return EnergySensorGeneratorOptionsFlow(config_entry)

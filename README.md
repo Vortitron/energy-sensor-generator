@@ -171,6 +171,9 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 
 ### Changelog
 
+#### Version 0.0.11
+- Added options flow: you can now manually select which power sensors should have kWh/energy entities generated via the integration's settings in Home Assistant.
+
 #### Version 0.0.10
 - Fixed issue with sensor entity creation where the async_add_entities callback wasn't properly stored and accessed
 - Improved reliability of automatic sensor generation

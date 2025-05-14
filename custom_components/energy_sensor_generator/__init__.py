@@ -40,17 +40,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Auto-generate on setup if enabled
     if entry.data.get("auto_generate", False):
-        await generate_sensors_service(hass, None)
+        await generate_sensors_service(hass, None, entry=entry)
 
     return True
 
-async def generate_sensors_service(hass: HomeAssistant, call) -> None:
+async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:
     """Service to generate energy sensors."""
     _LOGGER.info("Generating energy sensors")
 
-    # Get power sensors
+    # Use the config entry from the call context if not provided
+    if entry is None:
+        # Try to get the first config entry for this domain
+        entries = list(hass.data[DOMAIN].values())
+        if not entries:
+            _LOGGER.error("No config entry found for energy_sensor_generator.")
+            return
+        entry_data = entries[0]["config"]
+        options = getattr(entries[0], "options", {})
+        storage_path = entries[0]["storage"]
+        async_add_entities = entries[0].get("async_add_entities")
+    else:
+        entry_data = entry.data
+        options = entry.options
+        storage_path = hass.data[DOMAIN][entry.entry_id]["storage"]
+        async_add_entities = hass.data[DOMAIN][entry.entry_id].get("async_add_entities")
+
+    # Get power sensors from registry
     entity_registry = er.async_get(hass)
-    power_sensors = [
+    all_power_sensors = [
         entity.entity_id
         for entity in entity_registry.entities.values()
         if entity.entity_id.startswith("sensor.")
@@ -58,12 +75,20 @@ async def generate_sensors_service(hass: HomeAssistant, call) -> None:
         and entity.device_class == "power"
     ]
 
+    # Use manual selection if present in options
+    selected_sensors = options.get("selected_power_sensors") if options else None
+    if selected_sensors:
+        power_sensors = [eid for eid in all_power_sensors if eid in selected_sensors]
+        _LOGGER.info(f"Using manually selected power sensors: {power_sensors}")
+    else:
+        power_sensors = all_power_sensors
+        _LOGGER.info(f"Using all detected power sensors: {power_sensors}")
+
     if not power_sensors:
-        _LOGGER.warning("No power sensors found")
+        _LOGGER.warning("No power sensors found for energy sensor generation.")
         return
 
     entities = []
-    storage_path = hass.data[DOMAIN][list(hass.data[DOMAIN].keys())[0]]["storage"]
     storage = load_storage(storage_path)
 
     for sensor in power_sensors:
@@ -81,7 +106,6 @@ async def generate_sensors_service(hass: HomeAssistant, call) -> None:
             entities.append(period_sensor)
 
     # Add entities using the correct async_add_entities callback
-    async_add_entities = hass.data[DOMAIN][list(hass.data[DOMAIN].keys())[0]].get('async_add_entities')
     if async_add_entities:
         async_add_entities(entities)
     else:
