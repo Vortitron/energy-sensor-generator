@@ -171,6 +171,10 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 
 ### Changelog
 
+#### Version 0.0.18
+- Fixed Energy Dashboard compatibility by using proper SensorStateClass enum
+- Improved sensor attribute handling for better dashboard integration
+
 #### Version 0.0.17
 - Improved power sensor selection UI to use checkboxes instead of a comma-separated list
 - Custom sensors are now added directly to the checkbox list for easier selection

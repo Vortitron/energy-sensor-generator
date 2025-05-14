@@ -1,6 +1,10 @@
 import logging
 from datetime import datetime, timedelta
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
+from homeassistant.components.sensor import (
+    SensorEntity, 
+    SensorDeviceClass,
+    SensorStateClass
+)
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
@@ -28,7 +32,7 @@ class EnergySensor(SensorEntity):
         self._attr_name = f"{base_name} Energy"
         self._attr_unit_of_measurement = "kWh"
         self._attr_device_class = SensorDeviceClass.ENERGY
-        self._attr_state_class = "total_increasing"
+        self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         self._state = 0.0
         self._last_power = None
         self._last_update = None
@@ -96,7 +100,7 @@ class DailyEnergySensor(SensorEntity):
         self._attr_name = f"{base_name} Daily Energy"
         self._attr_unit_of_measurement = "kWh"
         self._attr_device_class = SensorDeviceClass.ENERGY
-        self._attr_state_class = "total_increasing"
+        self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         self._state = 0.0
         self._last_reset = None
         self._storage_key = f"{base_name}_daily_energy"
