@@ -9,9 +9,8 @@ from .__init__ import detect_power_sensors  # Import the detect function
 class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 	def __init__(self, config_entry):
 		"""Initialize options flow."""
-		# Store config_entry as an instance attribute without calling super with it
-		super().__init__()
-		self._config_entry = config_entry
+		self.config_entry = config_entry
+		self.options = dict(config_entry.options)
 		self._errors = {}
 
 	async def async_step_init(self, user_input=None):
@@ -24,7 +23,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		auto_detected_sensors = detect_power_sensors(hass)
 		
 		# Get current selections if present
-		current_sensors = self._config_entry.options.get("selected_power_sensors", [])
+		current_sensors = self.config_entry.options.get("selected_power_sensors", [])
 		
 		# Merge auto-detected and previously selected sensors for the selection list
 		all_power_sensors = {}
@@ -48,43 +47,21 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			# Add custom sensor if provided
 			if custom_sensor and custom_sensor not in all_sensors:
 				all_sensors.append(custom_sensor)
-				
-				# Add to our dictionary for immediate display in case of validation error
-				all_power_sensors[custom_sensor] = custom_sensor
 			
 			if not self._errors:
 				return self.async_create_entry(
 					title="Power Sensors", 
-					data={
-						"selected_power_sensors": all_sensors
-					}
+					data={"selected_power_sensors": all_sensors}
 				)
 
-		# Show different forms based on whether any sensors were available
-		if not all_power_sensors:
-			# No auto-detected sensors, just show custom sensor field
-			return self.async_show_form(
-				step_id="init",
-				data_schema=vol.Schema({
-					vol.Optional("custom_power_sensor"): EntitySelector(
-						EntitySelectorConfig(
-							domain="sensor",
-							multiple=False
-						)
-					)
-				}),
-				errors=self._errors
-			)
-		
-		# Show both available sensors as checkboxes and custom input field
-		data_schema = vol.Schema({
+		schema = vol.Schema({
 			vol.Optional(
 				"selected_power_sensors",
 				default=current_sensors
 			): cv.multi_select(all_power_sensors),
 			vol.Optional(
 				"custom_power_sensor",
-				description="Additional power sensor entity (will be added to the list)"
+				description={"text": "Additional power sensor entity to add to the list"}
 			): EntitySelector(
 				EntitySelectorConfig(
 					domain="sensor",
@@ -95,9 +72,6 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		
 		return self.async_show_form(
 			step_id="init",
-			data_schema=data_schema,
-			description_placeholders={
-				"count": str(len(auto_detected_sensors))
-			},
+			data_schema=schema,
 			errors=self._errors
 		) 

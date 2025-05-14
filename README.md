@@ -171,6 +171,11 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 
 ### Changelog
 
+#### Version 0.0.19
+- Fixed display of options flow to properly use checkboxes
+- Improved energy sensor unit implementation for Energy Dashboard compatibility
+- Added proper native unit measurements using UnitOfEnergy constants
+
 #### Version 0.0.18
 - Fixed Energy Dashboard compatibility by using proper SensorStateClass enum
 - Improved sensor attribute handling for better dashboard integration
