@@ -171,6 +171,12 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 
 ### Changelog
 
+#### Version 0.0.16
+- Enhanced power sensor detection using more flexible matching criteria
+- Added entity auto-complete for custom power sensor selection
+- Improved UI with proper entity selector that shows all available sensors
+- Smart detection for entities containing "_power" in their names
+
 #### Version 0.0.15
 - Added support for manually specifying custom power sensor entities
 - You can now enter comma-separated entity IDs for power sensors that aren't automatically detected

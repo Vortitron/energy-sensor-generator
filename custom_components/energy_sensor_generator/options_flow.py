@@ -2,7 +2,9 @@ from homeassistant import config_entries
 import voluptuous as vol
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.selector import EntitySelector, EntitySelectorConfig
 from .const import DOMAIN
+from .__init__ import detect_power_sensors  # Import the detect function
 
 class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 	def __init__(self, config_entry):
@@ -10,77 +12,79 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		# Store config_entry as an instance attribute without calling super with it
 		super().__init__()
 		self._config_entry = config_entry
+		self._errors = {}
 
 	async def async_step_init(self, user_input=None):
 		"""Manage the options for the integration."""
+		self._errors = {}
+		
 		hass = self.hass
-		entity_registry = er.async_get(hass)
-		# Find all power sensors
-		all_power_sensors = [
-			entity.entity_id
-			for entity in entity_registry.entities.values()
-			if entity.entity_id.startswith("sensor.")
-			and entity.unit_of_measurement == "W"
-			and entity.device_class == "power"
-		]
-
+		
+		# Get auto-detected power sensors
+		all_power_sensors = detect_power_sensors(hass)
+		
 		# Use current selections if present
 		current_sensors = self._config_entry.options.get("selected_power_sensors", [])
 		current_custom = self._config_entry.options.get("custom_power_sensors", "")
-
-		errors = {}
 		
 		if user_input is not None:
 			selected_sensors = user_input.get("selected_power_sensors", [])
-			custom_sensors_str = user_input.get("custom_power_sensors", "")
+			custom_sensor = user_input.get("custom_power_sensor", "")
 			
-			# Process custom sensors
-			custom_sensors = []
-			if custom_sensors_str:
-				custom_sensors = [s.strip() for s in custom_sensors_str.split(",") if s.strip()]
-				
-				# Validate that all custom entries are valid entity ID format
-				invalid_entities = [s for s in custom_sensors if not s.startswith("sensor.")]
-				if invalid_entities:
-					errors["custom_power_sensors"] = "invalid_entity_format"
+			# Process and save
+			all_sensors = list(selected_sensors)
 			
-			if not errors:
-				# Combine selected and custom sensors, removing duplicates
-				all_sensors = list(set(selected_sensors + custom_sensors))
-				
-				return self.async_create_entry(title="Power Sensors", data={
-					"selected_power_sensors": all_sensors,
-					"custom_power_sensors": custom_sensors_str
-				})
+			# Add custom sensor if provided
+			if custom_sensor and custom_sensor not in all_sensors:
+				all_sensors.append(custom_sensor)
+			
+			if not self._errors:
+				return self.async_create_entry(
+					title="Power Sensors", 
+					data={
+						"selected_power_sensors": all_sensors,
+						"custom_power_sensors": current_custom + ("," + custom_sensor if custom_sensor and current_custom else custom_sensor)
+					}
+				)
 
-		if not all_power_sensors and not current_sensors and not current_custom:
+		# Show different forms based on whether any sensors were auto-detected
+		if not all_power_sensors and not current_sensors:
+			# No auto-detected sensors, just show custom sensor field
 			return self.async_show_form(
 				step_id="init",
 				data_schema=vol.Schema({
-					vol.Required("custom_power_sensors", default=""): str
+					vol.Optional("custom_power_sensor"): EntitySelector(
+						EntitySelectorConfig(
+							domain="sensor",
+							multiple=False
+						)
+					)
 				}),
-				description_placeholders={"count": "0"},
-				errors=errors
+				errors=self._errors
 			)
-
-		# Set up schema with both multi-select and text input
+		
+		# Show both auto-detected and custom input
 		data_schema = vol.Schema({
 			vol.Optional(
 				"selected_power_sensors",
 				default=current_sensors or all_power_sensors
 			): cv.multi_select(all_power_sensors),
 			vol.Optional(
-				"custom_power_sensors", 
-				description="Enter comma-separated entity IDs for additional power sensors (e.g., sensor.my_power,sensor.another_power)",
-				default=current_custom
-			): str
+				"custom_power_sensor",
+				description="Additional power sensor entity (with autocomplete)"
+			): EntitySelector(
+				EntitySelectorConfig(
+					domain="sensor",
+					multiple=False
+				)
+			)
 		})
-
+		
 		return self.async_show_form(
 			step_id="init",
 			data_schema=data_schema,
 			description_placeholders={
 				"count": str(len(all_power_sensors))
 			},
-			errors=errors
+			errors=self._errors
 		) 

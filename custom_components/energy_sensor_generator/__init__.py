@@ -12,6 +12,57 @@ import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
 
+def detect_power_sensors(hass: HomeAssistant) -> list:
+    """Detect power sensors using various criteria for broader detection."""
+    entity_registry = er.async_get(hass)
+    power_sensors = []
+    
+    # Get all entity states from Home Assistant
+    all_states = hass.states.async_all()
+    
+    # Check for entities based on several criteria
+    for state in all_states:
+        entity_id = state.entity_id
+        if not entity_id.startswith("sensor."):
+            continue
+            
+        # Check if it looks like a power sensor
+        is_power_sensor = False
+        
+        # 1. Check unit of measurement (most reliable)
+        unit = state.attributes.get("unit_of_measurement", "")
+        if unit in ["W", "w", "Watt", "watt", "Watts", "watts"]:
+            is_power_sensor = True
+            
+        # 2. Check device class
+        device_class = state.attributes.get("device_class", "")
+        if device_class == "power":
+            is_power_sensor = True
+            
+        # 3. Check entity naming patterns
+        name_patterns = ["_power", "_consumption", "_usage", "power_", "watt"]
+        if any(pattern in entity_id for pattern in name_patterns):
+            # Only use name as indicator if numerical state is present
+            try:
+                float(state.state)
+                is_power_sensor = True
+            except (ValueError, TypeError):
+                # Not a numerical sensor, so name pattern is not good enough
+                pass
+                
+        # 4. Check for entity_registry entries with unit W or device_class power
+        try:
+            entity_reg = entity_registry.async_get(entity_id)
+            if entity_reg and (entity_reg.unit_of_measurement == "W" or entity_reg.device_class == "power"):
+                is_power_sensor = True
+        except (KeyError, AttributeError):
+            pass
+            
+        if is_power_sensor:
+            power_sensors.append(entity_id)
+            
+    return power_sensors
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up the integration from a config entry."""
     hass.data.setdefault(DOMAIN, {})
@@ -65,15 +116,9 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
         storage_path = hass.data[DOMAIN][entry.entry_id]["storage"]
         async_add_entities = hass.data[DOMAIN][entry.entry_id].get("async_add_entities")
 
-    # Get power sensors from registry
-    entity_registry = er.async_get(hass)
-    all_power_sensors = [
-        entity.entity_id
-        for entity in entity_registry.entities.values()
-        if entity.entity_id.startswith("sensor.")
-        and entity.unit_of_measurement == "W"
-        and entity.device_class == "power"
-    ]
+    # Get power sensors using more flexible detection
+    all_power_sensors = detect_power_sensors(hass)
+    _LOGGER.info(f"Auto-detected {len(all_power_sensors)} power sensors: {all_power_sensors}")
 
     # Get custom power sensors from options if present
     custom_sensors = []
