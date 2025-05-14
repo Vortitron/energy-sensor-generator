@@ -12,7 +12,7 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     """Set up the sensor platform."""
-    hass.data[DOMAIN][entry.entry_id]["platform"] = async_add_entities
+    hass.data[DOMAIN][entry.entry_id]["async_add_entities"] = async_add_entities
     return
 
 class EnergySensor(SensorEntity):

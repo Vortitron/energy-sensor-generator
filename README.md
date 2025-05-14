@@ -169,6 +169,17 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 
 ---
 
+### Changelog
+
+#### Version 0.0.10
+- Fixed issue with sensor entity creation where the async_add_entities callback wasn't properly stored and accessed
+- Improved reliability of automatic sensor generation
+
+#### Version 0.0.9
+- Initial release
+
+---
+
 ### Lovelace Button Configuration
 As requested, here's the Lovelace button configuration to add to your Home Assistant dashboard for triggering the sensor generation manually. This was included in the `README.md` but is provided here separately for clarity and to ensure it's easy to copy-paste.
 

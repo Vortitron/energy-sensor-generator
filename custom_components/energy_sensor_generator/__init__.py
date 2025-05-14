@@ -18,7 +18,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = {
         "config": entry.data,
         "storage": hass.config.path(".storage", STORAGE_FILE),
-        "platform": None  # Will be set during sensor setup
+        "async_add_entities": None  # Will be set during sensor setup
     }
 
     # Register service for manual generation
@@ -80,12 +80,12 @@ async def generate_sensors_service(hass: HomeAssistant, call) -> None:
             )(hass, base_name, f"sensor.{base_name}_energy", storage_path)
             entities.append(period_sensor)
 
-    # Add entities using the correct platform method
-    platform = hass.data[DOMAIN][list(hass.data[DOMAIN].keys())[0]].get('platform')
-    if platform:
-        await platform.async_add_entities(entities)
+    # Add entities using the correct async_add_entities callback
+    async_add_entities = hass.data[DOMAIN][list(hass.data[DOMAIN].keys())[0]].get('async_add_entities')
+    if async_add_entities:
+        async_add_entities(entities)
     else:
-        _LOGGER.error("Platform not found for adding entities")
+        _LOGGER.error("async_add_entities callback not found for adding entities")
 
 async def reassign_energy_data_service(hass: HomeAssistant, call) -> None:
     """Service to reassign energy data from one device to another."""
