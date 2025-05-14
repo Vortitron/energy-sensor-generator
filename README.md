@@ -171,6 +171,11 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 
 ### Changelog
 
+#### Version 0.0.21
+- Improved device integration by attaching energy sensors directly to their source device
+- Energy sensors now appear under the same device as the power sensor they monitor
+- Better mimics built-in Home Assistant helper behavior with energy entities
+
 #### Version 0.0.20
 - Added device registration to sensors for better Energy Dashboard integration
 - Completely rewrote options flow checkbox implementation for better compatibility
