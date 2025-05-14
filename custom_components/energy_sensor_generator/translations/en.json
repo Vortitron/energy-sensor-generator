@@ -3,12 +3,30 @@
     "step": {
       "user": {
         "title": "Energy Sensor Generator",
-        "description": "Configure the energy sensor generator.",
+        "description": "Set up automatic creation of energy sensors for power monitoring.",
         "data": {
-          "auto_generate": "Generate sensors automatically on startup",
-          "update_interval": "Update interval for energy calculations (seconds)"
+          "auto_generate": "Auto-generate sensors on startup",
+          "update_interval": "Update interval in seconds"
         }
       }
+    },
+    "abort": {
+      "already_configured": "Energy Sensor Generator is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Select Power Sensors",
+        "description": "Select which power sensors (in Watts) should have energy sensors (kWh) generated. Found {count} power sensors in your system.",
+        "data": {
+          "selected_power_sensors": "Auto-detected power sensors",
+          "custom_power_sensors": "Additional custom power sensors (comma-separated)"
+        }
+      }
+    },
+    "error": {
+      "invalid_entity_format": "Invalid entity format. All entities must start with 'sensor.'"
     }
   }
 }

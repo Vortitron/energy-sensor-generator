@@ -171,6 +171,11 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 
 ### Changelog
 
+#### Version 0.0.15
+- Added support for manually specifying custom power sensor entities
+- You can now enter comma-separated entity IDs for power sensors that aren't automatically detected
+- Improved sensor selection interface with both multi-select and text input options
+
 #### Version 0.0.14
 - Fixed options flow implementation to match Home Assistant's expected patterns
 - Corrected initialization of the options flow class
