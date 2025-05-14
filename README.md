@@ -171,6 +171,12 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 
 ### Changelog
 
+#### Version 0.0.20
+- Added device registration to sensors for better Energy Dashboard integration
+- Completely rewrote options flow checkbox implementation for better compatibility
+- Fixed issue where custom sensors weren't being properly displayed
+- Associated energy sensors with their source devices when possible
+
 #### Version 0.0.19
 - Fixed display of options flow to properly use checkboxes
 - Improved energy sensor unit implementation for Energy Dashboard compatibility

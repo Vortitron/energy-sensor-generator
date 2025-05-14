@@ -10,6 +10,8 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers import entity_registry as er
 from .utils import load_storage, save_storage
 from .const import DOMAIN
 
@@ -29,12 +31,34 @@ class EnergySensor(SensorEntity):
         self._base_name = base_name
         self._source_sensor = source_sensor
         self._storage_path = storage_path
+        
+        # Generate device info
         self._attr_unique_id = f"{base_name}_energy"
         self._attr_name = f"{base_name} Energy"
         self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+        
+        # Get source sensor information to link to its device if possible
+        entity_registry = er.async_get(hass)
+        source_entity = entity_registry.async_get(source_sensor)
+        
+        # Set device info
+        if source_entity and source_entity.device_id:
+            self._attr_device_info = DeviceInfo(
+                identifiers={(DOMAIN, base_name)},
+                name=f"{base_name} Energy Sensors",
+                via_device=(DOMAIN, source_entity.device_id)
+            )
+        else:
+            # Create our own device if no parent device exists
+            self._attr_device_info = DeviceInfo(
+                identifiers={(DOMAIN, base_name)},
+                name=f"{base_name} Energy Sensors",
+                manufacturer="Energy Sensor Generator"
+            )
+        
         self._state = 0.0
         self._last_power = None
         self._last_update = None
@@ -103,12 +127,22 @@ class DailyEnergySensor(SensorEntity):
         self._base_name = base_name
         self._source_sensor = source_sensor
         self._storage_path = storage_path
+        
+        # Generate device info
         self._attr_unique_id = f"{base_name}_daily_energy"
         self._attr_name = f"{base_name} Daily Energy"
         self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+        
+        # Set device info - use the same device as the main energy sensor
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, base_name)},
+            name=f"{base_name} Energy Sensors",
+            manufacturer="Energy Sensor Generator"
+        )
+        
         self._state = 0.0
         self._last_reset = None
         self._storage_key = f"{base_name}_daily_energy"
