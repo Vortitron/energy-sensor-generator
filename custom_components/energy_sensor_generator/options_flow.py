@@ -7,8 +7,9 @@ from .const import DOMAIN
 class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 	def __init__(self, config_entry):
 		"""Initialize options flow."""
-		# Don't explicitly set config_entry, it's provided by parent class
-		super().__init__(config_entry)
+		# Store config_entry as an instance attribute without calling super with it
+		super().__init__()
+		self._config_entry = config_entry
 
 	async def async_step_init(self, user_input=None):
 		"""Manage the options for the integration."""
@@ -24,7 +25,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		]
 
 		# Use current selection if present
-		current = self.config_entry.options.get("selected_power_sensors", [])
+		current = self._config_entry.options.get("selected_power_sensors", [])
 
 		if not all_power_sensors:
 			return self.async_abort(reason="no_power_sensors")

@@ -171,6 +171,10 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 
 ### Changelog
 
+#### Version 0.0.14
+- Fixed options flow implementation to match Home Assistant's expected patterns
+- Corrected initialization of the options flow class
+
 #### Version 0.0.13
 - Fixed options flow implementation to be compatible with future Home Assistant releases
 - Fixed validation in options flow for selecting power sensors
