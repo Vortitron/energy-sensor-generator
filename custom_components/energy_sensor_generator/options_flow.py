@@ -9,7 +9,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 
 	async def async_step_init(self, user_input=None):
 		"""Manage the options for the integration."""
-		hass = self.config_entry.hass
+		hass = self.hass
 		entity_registry = er.async_get(hass)
 		# Find all power sensors
 		all_power_sensors = [
