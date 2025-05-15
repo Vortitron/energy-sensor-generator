@@ -49,6 +49,13 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		# Get device registry
 		device_registry = dr.async_get(hass)
 		
+		# Check which current sensors still exist
+		validated_current_sensors = []
+		for sensor_id in current_sensors:
+			state = hass.states.get(sensor_id)
+			if state is not None:
+				validated_current_sensors.append(sensor_id)
+		
 		# Add auto-detected sensors
 		for sensor in auto_detected_sensors:
 			# Get friendly name from entity registry
@@ -68,7 +75,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			all_power_sensors[sensor] = display_name
 			
 		# Add custom sensors that were previously selected
-		for sensor in current_sensors:
+		for sensor in validated_current_sensors:
 			if sensor not in all_power_sensors:
 				entity = entity_registry.async_get(sensor)
 				friendly_name = entity.name if entity and entity.name else sensor
@@ -120,8 +127,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		
 		# Add checkboxes for each sensor
 		for sensor_id, display_name in all_power_sensors.items():
-			# Check if this sensor was previously selected or is auto-detected
-			is_selected = sensor_id in current_sensors or sensor_id in auto_detected_sensors
+			# Only show as selected if it was previously selected
+			is_selected = sensor_id in validated_current_sensors
 			schema[vol.Optional(f"sensor_{sensor_id}", default=is_selected, description=display_name)] = bool
 		
 		# Add custom sensor field
