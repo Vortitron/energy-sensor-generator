@@ -4,7 +4,10 @@ from pathlib import Path
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_time_interval
+from datetime import timedelta
 from .sensor import EnergySensor, DailyEnergySensor, MonthlyEnergySensor
 from .utils import load_storage, save_storage
 from .const import DOMAIN, STORAGE_FILE
@@ -63,37 +66,110 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
             
     return power_sensors
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up the integration from a config entry."""
+def check_existing_energy_sensors(hass: HomeAssistant) -> dict:
+    """Check for existing energy sensors and map them to their devices."""
+    entity_registry = er.async_get(hass)
+    device_registry = dr.async_get(hass)
+    device_energy_sensors = {}
+    
+    # Get all entity states from Home Assistant
+    all_states = hass.states.async_all()
+    
+    # Find energy sensors
+    for state in all_states:
+        entity_id = state.entity_id
+        if not entity_id.startswith("sensor."):
+            continue
+            
+        # Check if it's an energy sensor
+        is_energy_sensor = False
+        
+        # Check unit of measurement
+        unit = state.attributes.get("unit_of_measurement", "")
+        if unit in ["kWh", "kwh"]:
+            is_energy_sensor = True
+            
+        # Check device class
+        device_class = state.attributes.get("device_class", "")
+        if device_class == "energy":
+            is_energy_sensor = True
+            
+        if is_energy_sensor:
+            entity = entity_registry.async_get(entity_id)
+            if entity and entity.device_id:
+                # Add this sensor to the device's list of energy sensors
+                if entity.device_id not in device_energy_sensors:
+                    device_energy_sensors[entity.device_id] = []
+                device_energy_sensors[entity.device_id].append(entity_id)
+    
+    return device_energy_sensors
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up the Energy Sensor Generator component."""
     hass.data.setdefault(DOMAIN, {})
+    
+    return True
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up Energy Sensor Generator from a config entry."""
+    hass.data.setdefault(DOMAIN, {})
+
+    # Setup storage path
+    storage_path = Path(hass.config.path(STORAGE_FILE))
+    
+    # Store references in hass.data
     hass.data[DOMAIN][entry.entry_id] = {
         "config": entry.data,
-        "storage": hass.config.path(".storage", STORAGE_FILE),
-        "async_add_entities": None  # Will be set during sensor setup
+        "storage": storage_path,
+        "options": entry.options,
+        "unsubscribers": [],
     }
 
-    # Register service for manual generation
+    # Register generate service
     hass.services.async_register(
-        DOMAIN, "generate_sensors", generate_sensors_service, schema={}
+        DOMAIN, 
+        "generate_sensors", 
+        lambda call: generate_sensors_service(hass, call, entry)
     )
-
-    # Register service for reassigning energy data
-    hass.services.async_register(
-        DOMAIN, "reassign_energy_data", reassign_energy_data_service, 
-        schema=vol.Schema({
-            vol.Required("from_device"): str,
-            vol.Required("to_device"): str
-        })
-    )
-
-    # Forward to sensor setup
-    await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
-
-    # Auto-generate on setup if enabled
-    if entry.data.get("auto_generate", False):
-        await generate_sensors_service(hass, None, entry=entry)
-
+    
+    await hass.config_entries.async_forward_entry_setup(entry, "sensor")
+    
+    # Set up periodic sampling for more accurate energy calculation
+    sample_interval = entry.options.get("sample_interval", 60)
+    
+    # Start a periodic update task for power sensors
+    async def sample_power_sensors(_now=None):
+        """Sample power sensors periodically to improve accuracy."""
+        # Get selected power sensors
+        selected_sensors = entry.options.get("selected_power_sensors", [])
+        if not selected_sensors:
+            return
+            
+        _LOGGER.debug(f"Sampling {len(selected_sensors)} power sensors")
+        for sensor_id in selected_sensors:
+            state = hass.states.get(sensor_id)
+            if state and state.state not in ("unknown", "unavailable"):
+                # Force a state change event to trigger energy calculation
+                await hass.helpers.entity_component.async_update_entity(sensor_id)
+    
+    if entry.options.get("selected_power_sensors"):
+        interval = timedelta(seconds=sample_interval)
+        unsub = async_track_time_interval(hass, sample_power_sensors, interval)
+        hass.data[DOMAIN][entry.entry_id]["unsubscribers"].append(unsub)
+    
     return True
+    
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload a config entry."""
+    # Cancel all periodic tasks
+    for unsub in hass.data[DOMAIN][entry.entry_id].get("unsubscribers", []):
+        unsub()
+        
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
+    if unload_ok:
+        hass.data[DOMAIN].pop(entry.entry_id)
+        
+    return unload_ok
 
 async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:
     """Service to generate energy sensors."""
@@ -133,43 +209,45 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
         _LOGGER.warning("No power sensors found for energy sensor generation.")
         return
 
+    # Check if we should create daily and monthly sensors
+    create_daily = options.get("create_daily_sensors", True)
+    create_monthly = options.get("create_monthly_sensors", True)
+    
+    # Check for existing energy sensors to avoid duplication
+    device_energy_sensors = check_existing_energy_sensors(hass)
+    entity_registry = er.async_get(hass)
+
     entities = []
     storage = load_storage(storage_path)
 
     for sensor in power_sensors:
         base_name = sensor.replace("sensor.", "").replace("_power", "")
         
+        # Check if this device already has energy sensors
+        entity = entity_registry.async_get(sensor)
+        device_id = entity.device_id if entity else None
+        
+        if device_id and device_id in device_energy_sensors:
+            _LOGGER.info(f"Device for {sensor} already has energy sensors: {device_energy_sensors[device_id]}")
+            continue
+        
         # Create Energy Sensor (kWh)
         energy_sensor = EnergySensor(hass, base_name, sensor, storage_path)
         entities.append(energy_sensor)
 
-        # Create Daily and Monthly Sensors
-        for period in ["daily", "monthly"]:
-            period_sensor = (
-                DailyEnergySensor if period == "daily" else MonthlyEnergySensor
-            )(hass, base_name, f"sensor.{base_name}_energy", storage_path)
-            entities.append(period_sensor)
+        # Create Daily and Monthly Sensors if enabled
+        if create_daily:
+            daily_sensor = DailyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path)
+            entities.append(daily_sensor)
+            
+        if create_monthly:
+            monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path)
+            entities.append(monthly_sensor)
 
     # Add entities using the correct async_add_entities callback
-    if async_add_entities:
+    if async_add_entities and entities:
         async_add_entities(entities)
+    elif not entities:
+        _LOGGER.info("No new energy sensors to add.")
     else:
         _LOGGER.error("async_add_entities callback not found for adding entities")
-
-async def reassign_energy_data_service(hass: HomeAssistant, call) -> None:
-    """Service to reassign energy data from one device to another."""
-    _LOGGER.info("Reassigning energy data")
-    from_device = call.data.get("from_device")
-    to_device = call.data.get("to_device")
-    
-    storage_path = hass.data[DOMAIN][list(hass.data[DOMAIN].keys())[0]]["storage"]
-    storage = load_storage(storage_path)
-    
-    for key in list(storage.keys()):
-        if key.startswith(from_device):
-            new_key = key.replace(from_device, to_device)
-            storage[new_key] = storage.pop(key)
-            _LOGGER.info(f"Reassigned energy data from {key} to {new_key}")
-    
-    save_storage(storage_path, storage)
-    _LOGGER.info(f"Completed reassignment from {from_device} to {to_device}")
