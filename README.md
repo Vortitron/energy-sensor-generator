@@ -196,6 +196,15 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 - Custom sensors are now added directly to the checkbox list for easier selection
 - Unified the sensor selection system to make it more intuitive
 
+#### Version 0.0.23
+- **CRITICAL FIX**: Resolved double counting issue that was causing energy readings approximately double what they should be
+- Removed redundant periodic power sensor sampling that was triggering duplicate calculations
+- Modified state change handling to only track power values without performing calculations
+- Added concurrent calculation protection to prevent overlapping energy calculations
+- Added new `reset_energy_sensors` service to help correct previously doubled values
+- Increased default sampling interval to 60 seconds for consistency
+- Energy calculations are now handled exclusively by interval timers to ensure accuracy
+
 #### Version 0.0.16
 - Enhanced power sensor detection using more flexible matching criteria
 - Added entity auto-complete for custom power sensor selection

@@ -6,7 +6,7 @@ from homeassistant.components.sensor import (
     SensorStateClass
 )
 from homeassistant.const import UnitOfEnergy
-from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
+from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change, async_track_time_interval
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -26,7 +26,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 class EnergySensor(SensorEntity):
     """Custom sensor to calculate kWh from power (Watts)."""
 
-    def __init__(self, hass, base_name, source_sensor, storage_path):
+    def __init__(self, hass, base_name, source_sensor, storage_path, device_identifiers=None):
         """Initialize the sensor."""
         self._hass = hass
         self._base_name = base_name
@@ -41,23 +41,29 @@ class EnergySensor(SensorEntity):
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         
-        # Get source sensor information to link to its device if possible
-        entity_registry = er.async_get(hass)
-        source_entity = entity_registry.async_get(source_sensor)
-        
-        # Set device info to match the source sensor's device
-        if source_entity and source_entity.device_id:
-            device_registry = dr.async_get(hass)
-            device = device_registry.async_get(source_entity.device_id)
-            if device:
-                # Use the exact same device_info as the source sensor
-                self._attr_device_info = DeviceInfo(identifiers=device.identifiers)
+        # Set device info directly if provided, otherwise get from source sensor
+        if device_identifiers:
+            self._attr_device_info = DeviceInfo(identifiers=device_identifiers)
+        else:
+            # Get source sensor information to link to its device if possible
+            entity_registry = er.async_get(hass)
+            source_entity = entity_registry.async_get(source_sensor)
+            
+            # Set device info to match the source sensor's device
+            if source_entity and source_entity.device_id:
+                device_registry = dr.async_get(hass)
+                device = device_registry.async_get(source_entity.device_id)
+                if device:
+                    # Use the exact same device_info as the source sensor
+                    self._attr_device_info = DeviceInfo(identifiers=device.identifiers)
         
         self._state = 0.0
         self._last_power = None
         self._last_update = None
         self._min_calculation_interval = 1.0  # Minimum seconds between calculations
         self._storage_key = f"{base_name}_energy"
+        self._interval_tracker = None
+        self._calculating_energy = False  # Flag to prevent concurrent calculations
         self._load_state()
 
     def _load_state(self):
@@ -98,6 +104,24 @@ class EnergySensor(SensorEntity):
             self._hass, [self._source_sensor], self._handle_state_change
         )
         
+        # Get sampling interval from options
+        sample_interval = 60  # Default 60 seconds if not specified
+        
+        # Try to get the configured sample interval from the integration's options
+        for entry_id, entry_data in self._hass.data[DOMAIN].items():
+            if "options" in entry_data:
+                sample_interval = entry_data["options"].get("sample_interval", 60)
+                break
+        
+        _LOGGER.debug(f"Setting up energy calculation with {sample_interval} second interval for {self._attr_name}")
+        
+        # Set up regular sampling interval for reliable energy calculation
+        self._interval_tracker = async_track_time_interval(
+            self._hass,
+            self._handle_interval_update,
+            timedelta(seconds=sample_interval)
+        )
+        
         # Also set up a midnight update to ensure we get regular updates
         async_track_time_change(
             self._hass,
@@ -107,23 +131,72 @@ class EnergySensor(SensorEntity):
             second=0
         )
 
-    async def _handle_midnight_update(self, now):
-        """Handle daily update at midnight."""
-        # Save current state
-        self._save_state()
-        
-        # If we have valid power, calculate for the last day
-        if self._last_power is not None and self._last_update is not None:
+    async def _handle_interval_update(self, now):
+        """Handle regular interval updates."""
+        # Prevent concurrent calculations
+        if self._calculating_energy:
+            _LOGGER.debug(f"Skipping interval update, calculation already in progress")
+            return
+            
+        self._calculating_energy = True
+        try:
             # Get current power value
             state = self._hass.states.get(self._source_sensor)
-            if state and state.state not in ("unknown", "unavailable"):
+            if not state or state.state in ("unknown", "unavailable"):
+                return
+                
+            try:
+                power = float(state.state)
+                if self._last_power is not None and self._last_update is not None:
+                    # Calculate time delta in hours since last update
+                    time_delta = (now - self._last_update).total_seconds()
+                    delta_hours = time_delta / 3600
+                    
+                    # Trapezoidal rule: average power * time (kWh)
+                    avg_power = (self._last_power + power) / 2
+                    energy_kwh = (avg_power * delta_hours) / 1000
+                    
+                    # Ensure we're not adding negative energy
+                    if energy_kwh > 0:
+                        self._state += energy_kwh
+                        _LOGGER.debug(f"Interval update: Added {energy_kwh:.6f} kWh, avg power: {avg_power:.2f}W, time: {delta_hours:.4f}h, source: {state.state}W")
+                    
+                # Update values
+                self._last_power = power
+                self._last_update = now
+                self._save_state()
+                self.async_write_ha_state()
+                
+            except (ValueError, TypeError):
+                _LOGGER.warning(f"Invalid power state: {state.state}")
+        finally:
+            self._calculating_energy = False
+            
+    async def _handle_midnight_update(self, now):
+        """Handle daily update at midnight."""
+        # Prevent concurrent calculations
+        if self._calculating_energy:
+            _LOGGER.debug(f"Skipping midnight update, calculation already in progress")
+            return
+            
+        self._calculating_energy = True
+        try:
+            # Save current state
+            self._save_state()
+            
+            # Force an immediate calculation based on the most recent power value
+            state = self._hass.states.get(self._source_sensor)
+            if state and state.state not in ("unknown", "unavailable") and self._last_power is not None and self._last_update is not None:
                 try:
                     power = float(state.state)
                     # Calculate energy since last update
                     delta_hours = (now - self._last_update).total_seconds() / 3600
                     avg_power = (self._last_power + power) / 2
                     energy_kwh = (avg_power * delta_hours) / 1000
-                    self._state += energy_kwh
+                    
+                    if energy_kwh > 0:
+                        self._state += energy_kwh
+                        _LOGGER.debug(f"Midnight update: Added {energy_kwh:.6f} kWh, avg power: {avg_power:.2f}W, time: {delta_hours:.4f}h")
                     
                     # Update values
                     self._last_power = power
@@ -131,7 +204,9 @@ class EnergySensor(SensorEntity):
                     self._save_state()
                     self.async_write_ha_state()
                 except (ValueError, TypeError):
-                    _LOGGER.warning(f"Invalid power state: {state.state}")
+                    _LOGGER.warning(f"Invalid power state at midnight: {state.state}")
+        finally:
+            self._calculating_energy = False
 
     async def _handle_state_change(self, event):
         """Update energy when power changes."""
@@ -146,53 +221,59 @@ class EnergySensor(SensorEntity):
             _LOGGER.warning(f"Invalid power value: {new_state.state}")
             return
 
-        if self._last_power is not None and self._last_update is not None:
-            # Check if enough time has passed since last calculation
-            time_delta = (now - self._last_update).total_seconds()
-            
-            if time_delta >= self._min_calculation_interval:
-                # Calculate time delta in hours
-                delta_hours = time_delta / 3600
-                # Trapezoidal rule: average power * time (kWh)
-                avg_power = (self._last_power + power) / 2
-                energy_kwh = (avg_power * delta_hours) / 1000
-                
-                # Ensure we're not adding negative energy
-                if energy_kwh > 0:
-                    self._state += energy_kwh
-                    self._save_state()
-                    _LOGGER.debug(f"Added {energy_kwh:.4f} kWh, avg power: {avg_power:.2f}W, time: {delta_hours:.4f}h")
-            else:
-                _LOGGER.debug(f"Skipping calculation, too soon ({time_delta:.2f}s < {self._min_calculation_interval}s)")
-
+        # Only update tracking variables, do not perform energy calculations here
+        # Energy calculations are handled exclusively by the interval timer to prevent double counting
+        _LOGGER.debug(f"State change detected: {power}W - tracking only, calculation handled by interval timer")
+        
         self._last_power = power
         self._last_update = now
+        # Still update the state for UI feedback
         self.async_write_ha_state()
+
+    async def async_will_remove_from_hass(self):
+        """Clean up resources when entity is removed."""
+        # Cancel interval tracking
+        if self._interval_tracker:
+            self._interval_tracker()
+            self._interval_tracker = None
+        
+        # Save state one last time
+        self._save_state()
 
     @property
     def native_value(self):
         """Return the current state."""
-        return round(self._state, 2)
+        return round(self._state, 4)  # More decimal places for accuracy
 
     @property
     def state(self):
         """Return the current state."""
-        return round(self._state, 2)
+        return round(self._state, 4)  # More decimal places for accuracy
         
     @property
     def extra_state_attributes(self):
         """Return the state attributes."""
         attrs = {}
         if self._last_power is not None:
-            attrs["last_power"] = round(self._last_power, 2)
+            attrs["last_power"] = round(self._last_power, 3)
         if self._last_update is not None:
             attrs["last_update"] = self._last_update.isoformat()
-        return attrs
         
+        # Get interval from options
+        sample_interval = 60  # Default 
+        # Try to get the configured sample interval from the integration's options
+        for entry_id, entry_data in self._hass.data[DOMAIN].items():
+            if "options" in entry_data:
+                sample_interval = entry_data["options"].get("sample_interval", 60)
+                break
+                
+        attrs["sample_interval"] = sample_interval
+        return attrs
+
 class DailyEnergySensor(SensorEntity):
     """Custom sensor for daily energy tracking."""
 
-    def __init__(self, hass, base_name, source_sensor, storage_path):
+    def __init__(self, hass, base_name, source_sensor, storage_path, device_identifiers=None):
         """Initialize the sensor."""
         self._hass = hass
         self._base_name = base_name
@@ -207,17 +288,21 @@ class DailyEnergySensor(SensorEntity):
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         
-        # Get source sensor information to link to its device if possible
-        entity_registry = er.async_get(hass)
-        source_entity = entity_registry.async_get(source_sensor)
-        
-        # Set device info to match the source sensor's device
-        if source_entity and source_entity.device_id:
-            device_registry = dr.async_get(hass)
-            device = device_registry.async_get(source_entity.device_id)
-            if device:
-                # Use the exact same device_info as the source sensor
-                self._attr_device_info = DeviceInfo(identifiers=device.identifiers)
+        # Set device info directly if provided, otherwise get from source sensor
+        if device_identifiers:
+            self._attr_device_info = DeviceInfo(identifiers=device_identifiers)
+        else:
+            # Get source sensor information to link to its device if possible
+            entity_registry = er.async_get(hass)
+            source_entity = entity_registry.async_get(source_sensor)
+            
+            # Set device info to match the source sensor's device
+            if source_entity and source_entity.device_id:
+                device_registry = dr.async_get(hass)
+                device = device_registry.async_get(source_entity.device_id)
+                if device:
+                    # Use the exact same device_info as the source sensor
+                    self._attr_device_info = DeviceInfo(identifiers=device.identifiers)
         
         self._state = 0.0
         self._last_energy = 0.0
@@ -316,7 +401,7 @@ class DailyEnergySensor(SensorEntity):
 class MonthlyEnergySensor(SensorEntity):
     """Custom sensor for monthly energy tracking."""
 
-    def __init__(self, hass, base_name, source_sensor, storage_path):
+    def __init__(self, hass, base_name, source_sensor, storage_path, device_identifiers=None):
         """Initialize the sensor."""
         self._hass = hass
         self._base_name = base_name
@@ -331,17 +416,21 @@ class MonthlyEnergySensor(SensorEntity):
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         
-        # Get source sensor information to link to its device if possible
-        entity_registry = er.async_get(hass)
-        source_entity = entity_registry.async_get(source_sensor)
-        
-        # Set device info to match the source sensor's device
-        if source_entity and source_entity.device_id:
-            device_registry = dr.async_get(hass)
-            device = device_registry.async_get(source_entity.device_id)
-            if device:
-                # Use the exact same device_info as the source sensor
-                self._attr_device_info = DeviceInfo(identifiers=device.identifiers)
+        # Set device info directly if provided, otherwise get from source sensor
+        if device_identifiers:
+            self._attr_device_info = DeviceInfo(identifiers=device_identifiers)
+        else:
+            # Get source sensor information to link to its device if possible
+            entity_registry = er.async_get(hass)
+            source_entity = entity_registry.async_get(source_sensor)
+            
+            # Set device info to match the source sensor's device
+            if source_entity and source_entity.device_id:
+                device_registry = dr.async_get(hass)
+                device = device_registry.async_get(source_entity.device_id)
+                if device:
+                    # Use the exact same device_info as the source sensor
+                    self._attr_device_info = DeviceInfo(identifiers=device.identifiers)
         
         self._state = 0.0
         self._last_energy = 0.0

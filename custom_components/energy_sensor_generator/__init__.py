@@ -114,13 +114,39 @@ def find_generated_sensors(hass: HomeAssistant) -> dict:
         if entry.platform == DOMAIN:
             # Get the base_name from the unique_id
             unique_id = entry.unique_id
-            if unique_id.endswith("_energy") or unique_id.endswith("_daily_energy") or unique_id.endswith("_monthly_energy"):
-                base_name = unique_id.replace("_energy", "").replace("_daily", "").replace("_monthly", "")
+            if "_energy" in unique_id:
+                # Extract base name, handling different patterns
+                if "_daily_energy" in unique_id:
+                    base_name = unique_id.replace("_daily_energy", "")
+                elif "_monthly_energy" in unique_id:
+                    base_name = unique_id.replace("_monthly_energy", "")
+                else:
+                    base_name = unique_id.replace("_energy", "")
+                
                 if base_name not in result:
                     result[base_name] = []
                 result[base_name].append(entity_id)
     
+    _LOGGER.debug(f"Found {len(result)} generated sensor groups: {result}")
     return result
+
+def get_source_device_info(hass: HomeAssistant, source_entity_id: str):
+    """Get the device info for a source entity."""
+    entity_registry = er.async_get(hass)
+    device_registry = dr.async_get(hass)
+    
+    # Get the entity and check if it has a device
+    entity = entity_registry.async_get(source_entity_id)
+    if not entity or not entity.device_id:
+        return None
+    
+    # Get the device
+    device = device_registry.async_get(entity.device_id)
+    if not device:
+        return None
+        
+    # Return device info that can be used to associate entities
+    return device.identifiers
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the Energy Sensor Generator component."""
@@ -150,30 +176,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         lambda call: generate_sensors_service(hass, call, entry)
     )
     
+    # Register reset service for correcting doubled values
+    hass.services.async_register(
+        DOMAIN,
+        "reset_energy_sensors",
+        lambda call: reset_energy_sensors_service(hass, call, entry)
+    )
+    
     await hass.config_entries.async_forward_entry_setup(entry, "sensor")
     
     # Set up periodic sampling for more accurate energy calculation
     sample_interval = entry.options.get("sample_interval", 60)
     
-    # Start a periodic update task for power sensors
-    async def sample_power_sensors(_now=None):
-        """Sample power sensors periodically to improve accuracy."""
-        # Get selected power sensors
-        selected_sensors = entry.options.get("selected_power_sensors", [])
-        if not selected_sensors:
-            return
-            
-        _LOGGER.debug(f"Sampling {len(selected_sensors)} power sensors")
-        for sensor_id in selected_sensors:
-            state = hass.states.get(sensor_id)
-            if state and state.state not in ("unknown", "unavailable"):
-                # Force a state change event to trigger energy calculation
-                await hass.helpers.entity_component.async_update_entity(sensor_id)
-    
-    if entry.options.get("selected_power_sensors"):
-        interval = timedelta(seconds=sample_interval)
-        unsub = async_track_time_interval(hass, sample_power_sensors, interval)
-        hass.data[DOMAIN][entry.entry_id]["unsubscribers"].append(unsub)
+    # Note: Removed periodic power sensor sampling as energy calculations are now 
+    # handled exclusively by individual sensor interval timers to prevent double counting
     
     # Run generate_sensors_service with the current options
     if entry.options.get("selected_power_sensors"):
@@ -221,7 +237,15 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
     # Use selected power sensors from options if present
     selected_sensors = options.get("selected_power_sensors") if options else None
     if selected_sensors:
-        power_sensors = selected_sensors
+        # Validate that the selected sensors still exist
+        existing_sensors = []
+        for sensor in selected_sensors:
+            if hass.states.get(sensor) is not None:
+                existing_sensors.append(sensor)
+            else:
+                _LOGGER.warning(f"Selected sensor {sensor} no longer exists and will be ignored")
+        
+        power_sensors = existing_sensors
         _LOGGER.info(f"Using manually selected power sensors: {power_sensors}")
     else:
         power_sensors = all_power_sensors
@@ -239,22 +263,14 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
     existing_generated = find_generated_sensors(hass)
     _LOGGER.debug(f"Found {len(existing_generated)} existing generated sensor groups")
     
+    # Create a set of base names to track what we're keeping
+    base_names_to_keep = set()
+    
     # Get entity registry for operations
     entity_registry = er.async_get(hass)
     
-    # First, remove sensors for power sources that are no longer selected
-    base_names_to_keep = []
-    for sensor in power_sensors:
-        base_name = sensor.replace("sensor.", "").replace("_power", "")
-        base_names_to_keep.append(base_name)
-    
-    # Remove entities that are no longer needed
-    for base_name, entity_ids in existing_generated.items():
-        if base_name not in base_names_to_keep:
-            _LOGGER.info(f"Removing entities for {base_name} as it's no longer selected")
-            for entity_id in entity_ids:
-                entity_registry.async_remove(entity_id)
-                _LOGGER.debug(f"Removed entity {entity_id}")
+    # Create a list of entity IDs that will be kept
+    entity_ids_to_keep = set()
     
     # Check for existing energy sensors to avoid duplication
     device_energy_sensors = check_existing_energy_sensors(hass)
@@ -264,48 +280,84 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
 
     for sensor in power_sensors:
         base_name = sensor.replace("sensor.", "").replace("_power", "")
+        base_names_to_keep.add(base_name)
         
         # Check if we already have this base_name handled
         if base_name in existing_generated:
-            # The sensors already exist - check if we need to remove daily/monthly
             existing_entities = existing_generated[base_name]
             
+            # Find main, daily, and monthly entities
+            main_entity = next((e for e in existing_entities if e.endswith(f"{base_name}_energy")), None)
             daily_entity = next((e for e in existing_entities if "_daily_energy" in e), None)
             monthly_entity = next((e for e in existing_entities if "_monthly_energy" in e), None)
             
-            # Remove daily if it exists but shouldn't
-            if daily_entity and not create_daily:
+            # Keep track of entities we're keeping
+            if main_entity:
+                entity_ids_to_keep.add(main_entity)
+                
+            if create_daily and daily_entity:
+                entity_ids_to_keep.add(daily_entity)
+            elif daily_entity:
+                # Should remove daily entity
                 entity_registry.async_remove(daily_entity)
                 _LOGGER.debug(f"Removed daily entity {daily_entity}")
                 
-            # Remove monthly if it exists but shouldn't
-            if monthly_entity and not create_monthly:
+            if create_monthly and monthly_entity:
+                entity_ids_to_keep.add(monthly_entity)
+            elif monthly_entity:
+                # Should remove monthly entity
                 entity_registry.async_remove(monthly_entity)
                 _LOGGER.debug(f"Removed monthly entity {monthly_entity}")
+            
+            # If we're missing daily/monthly but should have them, create them
+            if create_daily and not daily_entity:
+                daily_sensor = DailyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path)
+                entities.append(daily_sensor)
                 
-            # Skip this sensor as we've already handled it
+            if create_monthly and not monthly_entity:
+                monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path)
+                entities.append(monthly_sensor)
+                
+            # Skip to next sensor as we've handled the existing ones
             continue
         
-        # Check if this device already has energy sensors
+        # Check if this device already has energy sensors from another integration
         entity = entity_registry.async_get(sensor)
         device_id = entity.device_id if entity else None
+        
+        # Get device identifiers for proper device grouping
+        device_identifiers = get_source_device_info(hass, sensor)
         
         if device_id and device_id in device_energy_sensors:
             _LOGGER.info(f"Device for {sensor} already has energy sensors: {device_energy_sensors[device_id]}")
             continue
         
         # Create Energy Sensor (kWh)
-        energy_sensor = EnergySensor(hass, base_name, sensor, storage_path)
+        energy_sensor = EnergySensor(hass, base_name, sensor, storage_path, device_identifiers)
         entities.append(energy_sensor)
 
         # Create Daily and Monthly Sensors if enabled
         if create_daily:
-            daily_sensor = DailyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path)
+            daily_sensor = DailyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
             entities.append(daily_sensor)
             
         if create_monthly:
-            monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path)
+            monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
             entities.append(monthly_sensor)
+
+    # Remove entities that are no longer needed
+    for base_name, entity_ids in existing_generated.items():
+        if base_name not in base_names_to_keep:
+            _LOGGER.info(f"Removing entities for {base_name} as it's no longer selected")
+            for entity_id in entity_ids:
+                entity_registry.async_remove(entity_id)
+                _LOGGER.debug(f"Removed entity {entity_id}")
+        else:
+            # Remove entities that are no longer needed (e.g., disabled daily/monthly)
+            for entity_id in entity_ids:
+                if entity_id not in entity_ids_to_keep:
+                    entity_registry.async_remove(entity_id)
+                    _LOGGER.debug(f"Removed entity {entity_id} as it's no longer needed")
 
     # Add entities using the correct async_add_entities callback
     if async_add_entities and entities:
@@ -314,3 +366,77 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
         _LOGGER.info("No new energy sensors to add.")
     else:
         _LOGGER.error("async_add_entities callback not found for adding entities")
+
+async def reset_energy_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:
+	"""Service to reset energy sensor values (useful for correcting doubled values)."""
+	_LOGGER.info("Resetting energy sensors")
+
+	# Use the config entry from the call context if not provided
+	if entry is None:
+		# Try to get the first config entry for this domain
+		entries = list(hass.data[DOMAIN].values())
+		if not entries:
+			_LOGGER.error("No config entry found for energy_sensor_generator.")
+			return
+		storage_path = entries[0]["storage"]
+	else:
+		storage_path = hass.data[DOMAIN][entry.entry_id]["storage"]
+
+	# Get optional parameters from service call
+	reset_factor = call.data.get("reset_factor", 0.5)  # Default to halving values
+	reset_to_zero = call.data.get("reset_to_zero", False)
+	selected_sensors = call.data.get("sensors", [])
+
+	# Find all generated energy sensors
+	existing_generated = find_generated_sensors(hass)
+	
+	# Load storage
+	storage = load_storage(storage_path)
+	
+	sensors_reset = 0
+	for base_name, entity_ids in existing_generated.items():
+		# If specific sensors selected, only reset those
+		if selected_sensors and base_name not in selected_sensors:
+			continue
+			
+		for entity_id in entity_ids:
+			# Get the storage key for this entity
+			if "_daily_energy" in entity_id:
+				storage_key = f"{base_name}_daily_energy"
+			elif "_monthly_energy" in entity_id:
+				storage_key = f"{base_name}_monthly_energy"
+			else:
+				storage_key = f"{base_name}_energy"
+			
+			# Reset the stored value
+			if storage_key in storage:
+				old_value = storage[storage_key].get("value", 0.0) if isinstance(storage[storage_key], dict) else storage[storage_key]
+				
+				if reset_to_zero:
+					new_value = 0.0
+				else:
+					new_value = old_value * reset_factor
+				
+				# Update storage
+				if isinstance(storage[storage_key], dict):
+					storage[storage_key]["value"] = new_value
+				else:
+					storage[storage_key] = new_value
+				
+				_LOGGER.info(f"Reset {entity_id}: {old_value:.4f} kWh -> {new_value:.4f} kWh")
+				sensors_reset += 1
+	
+	# Save updated storage
+	save_storage(storage_path, storage)
+	
+	# Force entities to reload their state
+	entity_registry = er.async_get(hass)
+	for base_name, entity_ids in existing_generated.items():
+		if selected_sensors and base_name not in selected_sensors:
+			continue
+		for entity_id in entity_ids:
+			entity = entity_registry.async_get(entity_id)
+			if entity:
+				await hass.helpers.entity_component.async_update_entity(entity_id)
+	
+	_LOGGER.info(f"Reset {sensors_reset} energy sensors")

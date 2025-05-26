@@ -158,6 +158,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			description_placeholders={
 				"daily_description": "Create daily energy sensors that reset at midnight",
 				"monthly_description": "Create monthly energy sensors that reset at the beginning of each month",
-				"interval_description": "Sampling interval for energy calculations (shorter intervals are more accurate but use more resources)"
+				"interval_description": "Sampling interval for energy calculations (shorter intervals are more accurate but use more resources)",
+				"restart_note": "⚠️ Note: Some changes may require a Home Assistant restart to take full effect. If sensors are removed, you may need to restart and then delete any entities marked as 'no longer provided'."
 			}
 		) 
