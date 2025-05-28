@@ -211,6 +211,19 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 - Enhanced error handling and device linking for more robust sensor management
 - Better handling of sensor recreation during integration restarts and reloads
 
+#### Version 0.0.25
+- **CRITICAL FIX**: Fixed energy counting not starting after sensor recreation during reload
+- Sensors now properly initialise with current power readings when first added or recreated
+- Added detailed debug logging to help diagnose energy calculation issues
+- Ensures energy calculations begin immediately rather than waiting for first power state change
+
+#### Version 0.0.26
+- **FRIENDLY NAMES**: Energy sensors now use device/entity friendly names instead of entity IDs
+- If a power sensor is named "Hot Water" the energy sensor becomes "Hot Water Energy" instead of "smart_plug_2 Energy"  
+- Improved name resolution to check entity registry names, device names, and friendly names
+- Falls back gracefully to formatted entity ID names if no friendly name is available
+- Makes energy sensors much more user-friendly in the Energy dashboard and UI
+
 #### Version 0.0.16
 - Enhanced power sensor detection using more flexible matching criteria
 - Added entity auto-complete for custom power sensor selection

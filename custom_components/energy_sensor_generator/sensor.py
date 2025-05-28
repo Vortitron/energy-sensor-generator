@@ -18,6 +18,63 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+def get_friendly_name(hass: HomeAssistant, entity_id: str) -> str:
+	"""Get the friendly name for an entity, falling back to derived name from entity ID."""
+	entity_registry = er.async_get(hass)
+	entity_entry = entity_registry.async_get(entity_id)
+	
+	# Try to get custom name from entity registry first
+	if entity_entry and entity_entry.name:
+		# Remove "_power" suffix if present to get clean base name
+		name = entity_entry.name
+		if name.lower().endswith(" power"):
+			name = name[:-6]  # Remove " power"
+		elif name.lower().endswith("_power"):
+			name = name[:-6]  # Remove "_power"
+		return name
+	
+	# Try to get friendly_name from entity state
+	state = hass.states.get(entity_id)
+	if state and state.attributes.get("friendly_name"):
+		name = state.attributes["friendly_name"]
+		if name.lower().endswith(" power"):
+			name = name[:-6]  # Remove " power"
+		elif name.lower().endswith("_power"):
+			name = name[:-6]  # Remove "_power"
+		return name
+	
+	# Try to get device name if entity is part of a device
+	if entity_entry and entity_entry.device_id:
+		device_registry = dr.async_get(hass)
+		device = device_registry.async_get(entity_entry.device_id)
+		if device and device.name_by_user:
+			return device.name_by_user
+		elif device and device.name:
+			return device.name
+	
+	# Fall back to deriving name from entity ID
+	# Convert entity_id like "sensor.smart_plug_2_power" to "Smart Plug 2"
+	base_name = entity_id.replace("sensor.", "").replace("_power", "")
+	# Convert underscores to spaces and title case
+	return base_name.replace("_", " ").title()
+
+def get_friendly_name_from_base(hass: HomeAssistant, base_name: str) -> str:
+	"""Get friendly name by trying different possible power sensor patterns."""
+	# Try the most common pattern first
+	possible_sensors = [
+		f"sensor.{base_name}_power",
+		f"sensor.{base_name}",
+		f"{base_name}_power",
+		f"{base_name}"
+	]
+	
+	for sensor_id in possible_sensors:
+		if hass.states.get(sensor_id):
+			return get_friendly_name(hass, sensor_id)
+	
+	# If no sensor found, just clean up the base_name
+	return base_name.replace("_", " ").title()
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
 	"""Set up the sensor platform."""
 	hass.data[DOMAIN][entry.entry_id]["async_add_entities"] = async_add_entities
@@ -130,9 +187,12 @@ class EnergySensor(SensorEntity):
         self._source_sensor = source_sensor
         self._storage_path = storage_path
         
+        # Get friendly name from the source sensor
+        friendly_name = get_friendly_name(hass, source_sensor)
+        
         # Generate entity attributes
         self._attr_unique_id = f"{base_name}_energy"
-        self._attr_name = f"{base_name} Energy"
+        self._attr_name = f"{friendly_name} Energy"
         self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
@@ -212,6 +272,19 @@ class EnergySensor(SensorEntity):
         
         _LOGGER.debug(f"Setting up energy calculation with {sample_interval} second interval for {self._attr_name}")
         
+        # Initialise power tracking if not already set (e.g., on first startup or reload)
+        if self._last_power is None or self._last_update is None:
+            state = self._hass.states.get(self._source_sensor)
+            if state and state.state not in ("unknown", "unavailable"):
+                try:
+                    power = float(state.state)
+                    self._last_power = power
+                    self._last_update = datetime.now()
+                    self._save_state()
+                    _LOGGER.debug(f"Initialised {self._attr_name} with current power: {power}W")
+                except (ValueError, TypeError):
+                    _LOGGER.warning(f"Unable to initialise {self._attr_name} - invalid power state: {state.state}")
+        
         # Set up regular sampling interval for reliable energy calculation
         self._interval_tracker = async_track_time_interval(
             self._hass,
@@ -257,7 +330,11 @@ class EnergySensor(SensorEntity):
                     if energy_kwh > 0:
                         self._state += energy_kwh
                         _LOGGER.debug(f"Interval update: Added {energy_kwh:.6f} kWh, avg power: {avg_power:.2f}W, time: {delta_hours:.4f}h, source: {state.state}W")
-                    
+                    else:
+                        _LOGGER.debug(f"Interval update: No energy added (delta too small), avg power: {avg_power:.2f}W, time: {delta_hours:.4f}h")
+                else:
+                    _LOGGER.debug(f"Interval update: Skipping calculation - missing previous power/time data for {self._attr_name}")
+                
                 # Update values
                 self._last_power = power
                 self._last_update = now
@@ -377,9 +454,14 @@ class DailyEnergySensor(SensorEntity):
         self._source_sensor = source_sensor
         self._storage_path = storage_path
         
+        # Get friendly name - for daily/monthly sensors, derive from base_name
+        # since the source_sensor is the energy sensor, not the original power sensor
+        # Try different possible patterns to find the original power sensor
+        friendly_name = get_friendly_name_from_base(hass, base_name)
+        
         # Generate entity attributes
         self._attr_unique_id = f"{base_name}_daily_energy"
-        self._attr_name = f"{base_name} Daily Energy"
+        self._attr_name = f"{friendly_name} Daily Energy"
         self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
@@ -505,9 +587,14 @@ class MonthlyEnergySensor(SensorEntity):
         self._source_sensor = source_sensor
         self._storage_path = storage_path
         
+        # Get friendly name - for daily/monthly sensors, derive from base_name
+        # since the source_sensor is the energy sensor, not the original power sensor
+        # Try different possible patterns to find the original power sensor
+        friendly_name = get_friendly_name_from_base(hass, base_name)
+        
         # Generate entity attributes
         self._attr_unique_id = f"{base_name}_monthly_energy"
-        self._attr_name = f"{base_name} Monthly Energy"
+        self._attr_name = f"{friendly_name} Monthly Energy"
         self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
