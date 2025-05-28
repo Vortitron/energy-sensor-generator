@@ -205,6 +205,12 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 - Increased default sampling interval to 60 seconds for consistency
 - Energy calculations are now handled exclusively by interval timers to ensure accuracy
 
+#### Version 0.0.24
+- **RELOAD FIX**: Fixed issue where existing sensors weren't properly linked to the entity platform during integration reload
+- Improved async_setup_entry to recreate and re-add existing entities ensuring they remain functional after reload
+- Enhanced error handling and device linking for more robust sensor management
+- Better handling of sensor recreation during integration restarts and reloads
+
 #### Version 0.0.16
 - Enhanced power sensor detection using more flexible matching criteria
 - Added entity auto-complete for custom power sensor selection

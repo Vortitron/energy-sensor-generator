@@ -19,9 +19,106 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
-    """Set up the sensor platform."""
-    hass.data[DOMAIN][entry.entry_id]["async_add_entities"] = async_add_entities
-    return
+	"""Set up the sensor platform."""
+	hass.data[DOMAIN][entry.entry_id]["async_add_entities"] = async_add_entities
+	
+	# Check if we need to recreate existing entities during reload
+	options = entry.options
+	
+	# Only proceed if we have selected sensors configured
+	selected_sensors = options.get("selected_power_sensors", [])
+	if not selected_sensors:
+		return
+	
+	# Find existing generated sensors
+	entity_registry = er.async_get(hass)
+	existing_entities = []
+	
+	# Look for entities with this integration's platform
+	for entity_id, entity_entry in entity_registry.entities.items():
+		if entity_entry.platform == DOMAIN and entity_entry.config_entry_id == entry.entry_id:
+			existing_entities.append((entity_id, entity_entry.unique_id))
+	
+	# If we have existing entities, recreate them to ensure they're properly linked
+	if existing_entities:
+		_LOGGER.info(f"Found {len(existing_entities)} existing energy sensors to recreate during setup")
+		
+		# Get storage path
+		from .utils import load_storage
+		from .const import STORAGE_FILE
+		from pathlib import Path
+		storage_path = Path(hass.config.path(STORAGE_FILE))
+		
+		# Group entities by base name
+		entities_by_base = {}
+		for entity_id, unique_id in existing_entities:
+			# Extract base name from unique_id
+			if "_daily_energy" in unique_id:
+				base_name = unique_id.replace("_daily_energy", "")
+				sensor_type = "daily"
+			elif "_monthly_energy" in unique_id:
+				base_name = unique_id.replace("_monthly_energy", "")
+				sensor_type = "monthly"
+			else:
+				base_name = unique_id.replace("_energy", "")
+				sensor_type = "main"
+			
+			if base_name not in entities_by_base:
+				entities_by_base[base_name] = {}
+			entities_by_base[base_name][sensor_type] = entity_id
+		
+		# Recreate entities
+		entities_to_add = []
+		
+		for base_name, sensor_types in entities_by_base.items():
+			# Determine source sensor from base name
+			source_sensor = f"sensor.{base_name}_power"
+			if source_sensor not in selected_sensors:
+				# Try to find the actual source sensor from selected sensors
+				for selected in selected_sensors:
+					selected_base = selected.replace("sensor.", "").replace("_power", "")
+					if selected_base == base_name:
+						source_sensor = selected
+						break
+			
+			# Check if source sensor still exists
+			if hass.states.get(source_sensor) is None:
+				_LOGGER.warning(f"Source sensor {source_sensor} no longer exists, skipping entity recreation for {base_name}")
+				continue
+			
+			# Get device identifiers for proper device grouping
+			device_identifiers = None
+			source_entity = entity_registry.async_get(source_sensor)
+			if source_entity and source_entity.device_id:
+				device_registry = dr.async_get(hass)
+				device = device_registry.async_get(source_entity.device_id)
+				if device:
+					device_identifiers = device.identifiers
+			
+			# Recreate main energy sensor if it exists
+			if "main" in sensor_types:
+				energy_sensor = EnergySensor(hass, base_name, source_sensor, storage_path, device_identifiers)
+				entities_to_add.append(energy_sensor)
+				_LOGGER.debug(f"Recreated main energy sensor for {base_name}")
+			
+			# Recreate daily sensor if it exists
+			if "daily" in sensor_types:
+				daily_sensor = DailyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
+				entities_to_add.append(daily_sensor)
+				_LOGGER.debug(f"Recreated daily energy sensor for {base_name}")
+			
+			# Recreate monthly sensor if it exists  
+			if "monthly" in sensor_types:
+				monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
+				entities_to_add.append(monthly_sensor)
+				_LOGGER.debug(f"Recreated monthly energy sensor for {base_name}")
+		
+		# Add all recreated entities
+		if entities_to_add:
+			async_add_entities(entities_to_add, True)  # True = update_before_add
+			_LOGGER.info(f"Successfully recreated {len(entities_to_add)} energy sensors during setup")
+	
+	return
 
 class EnergySensor(SensorEntity):
     """Custom sensor to calculate kWh from power (Watts)."""

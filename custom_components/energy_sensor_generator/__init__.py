@@ -311,13 +311,18 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
             
             # If we're missing daily/monthly but should have them, create them
             if create_daily and not daily_entity:
-                daily_sensor = DailyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path)
+                device_identifiers = get_source_device_info(hass, sensor)
+                daily_sensor = DailyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
                 entities.append(daily_sensor)
                 
             if create_monthly and not monthly_entity:
-                monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path)
+                device_identifiers = get_source_device_info(hass, sensor)
+                monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
                 entities.append(monthly_sensor)
                 
+            # Note: For existing entities, they should be handled by async_setup_entry
+            # which will recreate and re-add them to ensure proper linking during reload
+            
             # Skip to next sensor as we've handled the existing ones
             continue
         
