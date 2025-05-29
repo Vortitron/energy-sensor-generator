@@ -191,9 +191,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Note: Removed periodic power sensor sampling as energy calculations are now 
     # handled exclusively by individual sensor interval timers to prevent double counting
     
-    # Run generate_sensors_service with the current options
+    # Schedule generate_sensors_service to run after a short delay to ensure sensor platform is ready
     if entry.options.get("selected_power_sensors"):
-        await generate_sensors_service(hass, None, entry)
+        async def delayed_sensor_generation():
+            """Generate sensors after a delay to ensure platform is ready."""
+            # Wait a bit for the sensor platform to be fully initialized
+            import asyncio
+            await asyncio.sleep(2)
+            
+            # Check if async_add_entities is available, retry if not
+            for attempt in range(5):  # Try up to 5 times
+                if hass.data[DOMAIN][entry.entry_id].get("async_add_entities"):
+                    await generate_sensors_service(hass, None, entry)
+                    _LOGGER.info("Successfully generated sensors during startup")
+                    break
+                else:
+                    _LOGGER.debug(f"async_add_entities not ready yet, attempt {attempt + 1}/5")
+                    await asyncio.sleep(1)
+            else:
+                _LOGGER.warning("Failed to generate sensors during startup - async_add_entities not available")
+        
+        # Schedule the delayed generation
+        hass.async_create_task(delayed_sensor_generation())
     
     return True
     
@@ -229,6 +248,11 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
         options = entry.options
         storage_path = hass.data[DOMAIN][entry.entry_id]["storage"]
         async_add_entities = hass.data[DOMAIN][entry.entry_id].get("async_add_entities")
+    
+    # Check if async_add_entities is available
+    if not async_add_entities:
+        _LOGGER.error("async_add_entities callback not available - sensor platform may not be ready yet")
+        return
 
     # Get power sensors using more flexible detection
     all_power_sensors = detect_power_sensors(hass)

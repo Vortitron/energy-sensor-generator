@@ -1,32 +1,32 @@
 generate_sensors:
-	name: Generate Energy Sensors
-	description: Generate energy sensors from detected power sensors.
-	
+  name: Generate Energy Sensors
+  description: Generate energy sensors from detected power sensors.
+  
 reset_energy_sensors:
-	name: Reset Energy Sensors
-	description: Reset energy sensor values (useful for correcting doubled values).
-	fields:
-		reset_factor:
-			name: Reset Factor
-			description: Factor to multiply existing values by (default 0.5 to halve doubled values).
-			required: false
-			default: 0.5
-			selector:
-				number:
-					min: 0.0
-					max: 1.0
-					step: 0.1
-		reset_to_zero:
-			name: Reset to Zero
-			description: Reset all values to zero instead of using the factor.
-			required: false
-			default: false
-			selector:
-				boolean:
-		sensors:
-			name: Sensors
-			description: Specific sensor base names to reset (leave empty for all).
-			required: false
-			selector:
-				text:
-					multiple: true
+  name: Reset Energy Sensors
+  description: Reset energy sensor values (useful for correcting doubled values).
+  fields:
+    reset_factor:
+      name: Reset Factor
+      description: Factor to multiply existing values by (default 0.5 to halve doubled values).
+      required: false
+      default: 0.5
+      selector:
+        number:
+          min: 0.0
+          max: 1.0
+          step: 0.1
+    reset_to_zero:
+      name: Reset to Zero
+      description: Reset all values to zero instead of using the factor.
+      required: false
+      default: false
+      selector:
+        boolean:
+    sensors:
+      name: Sensors
+      description: Specific sensor base names to reset (leave empty for all).
+      required: false
+      selector:
+        text:
+          multiple: true 

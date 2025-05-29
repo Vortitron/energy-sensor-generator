@@ -224,6 +224,13 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 - Falls back gracefully to formatted entity ID names if no friendly name is available
 - Makes energy sensors much more user-friendly in the Energy dashboard and UI
 
+#### Version 0.0.27
+- **STARTUP FIX**: Fixed issue where sensors weren't loading during Home Assistant restart
+- Added delayed sensor generation with retry mechanism to ensure sensor platform is ready
+- Fixed YAML formatting in services.yaml (removed tab characters that caused parsing errors)
+- Improved startup timing and error handling for more reliable sensor creation
+- Better logging to help diagnose startup issues
+
 #### Version 0.0.16
 - Enhanced power sensor detection using more flexible matching criteria
 - Added entity auto-complete for custom power sensor selection
