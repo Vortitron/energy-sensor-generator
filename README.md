@@ -130,8 +130,17 @@ Storage file (`.storage/energy_sensor_generator.json`):
   "plug_1_monthly_energy": {"value": 12.67, "last_reset": "2025-05-01T00:00:00"}
 }
 ```
-Troubleshooting
-No Power Sensors Found:
+
+## Troubleshooting
+
+### Sensors Not Available During Startup:
+- **New in v0.0.28**: The integration is now resilient to source power sensors not being available during Home Assistant startup
+- Energy sensors are created even if source sensors aren't ready yet, and will begin tracking once sources become available
+- Look for log messages like "Source sensor not yet available during startup" - this is normal and expected
+- Energy tracking will begin automatically once the source power sensors finish loading
+- If sensors remain unavailable after several minutes, check that the devices are properly configured and online
+
+### No Power Sensors Found:
 Ensure your devices (e.g., Tuya plugs) expose power sensors with unit: W and device_class: power. Check in Developer Tools > States.
 Use the LocalTuya integration for Tuya devices, as the official Tuya integration may not expose power data reliably.
 Energy Values Incorrect:
@@ -230,6 +239,14 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 - Fixed YAML formatting in services.yaml (removed tab characters that caused parsing errors)
 - Improved startup timing and error handling for more reliable sensor creation
 - Better logging to help diagnose startup issues
+
+#### Version 0.0.28
+- **STARTUP RESILIENCE**: Major improvement to startup reliability when source power sensors are not yet available
+- Integration now assumes selected sensors will become available rather than failing immediately during startup
+- Energy sensors are created regardless of source sensor availability and gracefully handle when sources become available
+- Added proper initialisation handling when source sensors become available after energy sensor creation
+- Improved logging to distinguish between startup delays vs actual missing sensors
+- Fixed issues where integration would fail to create energy sensors during Home Assistant restart due to sensor loading order
 
 #### Version 0.0.16
 - Enhanced power sensor detection using more flexible matching criteria

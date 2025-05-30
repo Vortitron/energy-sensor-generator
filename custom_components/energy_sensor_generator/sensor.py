@@ -139,8 +139,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 			
 			# Check if source sensor still exists
 			if hass.states.get(source_sensor) is None:
-				_LOGGER.warning(f"Source sensor {source_sensor} no longer exists, skipping entity recreation for {base_name}")
-				continue
+				_LOGGER.info(f"Source sensor {source_sensor} not yet available during startup for {base_name}, will create energy sensor anyway")
+				# During startup, we'll proceed anyway - the sensor should handle unavailable source gracefully
 			
 			# Get device identifiers for proper device grouping
 			device_identifiers = None
@@ -286,6 +286,9 @@ class EnergySensor(SensorEntity):
                     _LOGGER.debug(f"Initialised {self._attr_name} with current power: {power}W")
                 except (ValueError, TypeError):
                     _LOGGER.warning(f"Unable to initialise {self._attr_name} - invalid power state: {state.state}")
+            else:
+                # Source sensor not yet available - this is normal during startup
+                _LOGGER.info(f"Source sensor {self._source_sensor} not yet available for {self._attr_name} - will initialise when available")
         
         # Set up regular sampling interval for reliable energy calculation
         self._interval_tracker = async_track_time_interval(
@@ -319,6 +322,16 @@ class EnergySensor(SensorEntity):
                 
             try:
                 power = float(state.state)
+                
+                # If this is the first time we're getting a valid power reading, initialise tracking
+                if self._last_power is None or self._last_update is None:
+                    _LOGGER.info(f"Source sensor {self._source_sensor} state change detected, initialising tracking for {self._attr_name}")
+                    self._last_power = power
+                    self._last_update = now
+                    await self._save_state()
+                    self.async_write_ha_state()
+                    return
+                
                 if self._last_power is not None and self._last_update is not None:
                     # Calculate time delta in hours since last update
                     time_delta = (now - self._last_update).total_seconds()
@@ -395,6 +408,15 @@ class EnergySensor(SensorEntity):
             power = float(new_state.state)
         except ValueError:
             _LOGGER.warning(f"Invalid power value: {new_state.state}")
+            return
+
+        # If this is the first time we're getting a valid power reading, initialise tracking
+        if self._last_power is None or self._last_update is None:
+            _LOGGER.info(f"Source sensor {self._source_sensor} state change detected, initialising tracking for {self._attr_name}")
+            self._last_power = power
+            self._last_update = now
+            await self._save_state()
+            self.async_write_ha_state()
             return
 
         # Only update tracking variables, do not perform energy calculations here
@@ -558,6 +580,14 @@ class DailyEnergySensor(SensorEntity):
             _LOGGER.warning(f"Invalid energy value: {new_state.state}")
             return
 
+        # If this is the first time we're getting a valid energy reading, initialise tracking
+        if self._last_energy == 0.0:
+            _LOGGER.info(f"Source energy sensor {self._source_sensor} became available, initialising daily tracking for {self._attr_name}")
+            self._last_energy = energy
+            await self._save_state()
+            self.async_write_ha_state()
+            return
+
         # Calculate the energy change
         energy_change = max(0, energy - self._last_energy)
         self._state += energy_change
@@ -696,6 +726,14 @@ class MonthlyEnergySensor(SensorEntity):
             energy = float(new_state.state)
         except ValueError:
             _LOGGER.warning(f"Invalid energy value: {new_state.state}")
+            return
+
+        # If this is the first time we're getting a valid energy reading, initialise tracking
+        if self._last_energy == 0.0:
+            _LOGGER.info(f"Source energy sensor {self._source_sensor} became available, initialising monthly tracking for {self._attr_name}")
+            self._last_energy = energy
+            await self._save_state()
+            self.async_write_ha_state()
             return
 
         # Calculate the energy change

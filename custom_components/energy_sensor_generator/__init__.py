@@ -261,16 +261,24 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
     # Use selected power sensors from options if present
     selected_sensors = options.get("selected_power_sensors") if options else None
     if selected_sensors:
-        # Validate that the selected sensors still exist
+        # During startup, assume selected sensors will become available
+        # Don't filter them out immediately if they're not yet available
         existing_sensors = []
+        missing_sensors = []
+        
         for sensor in selected_sensors:
             if hass.states.get(sensor) is not None:
                 existing_sensors.append(sensor)
             else:
-                _LOGGER.warning(f"Selected sensor {sensor} no longer exists and will be ignored")
+                missing_sensors.append(sensor)
+                _LOGGER.info(f"Selected sensor {sensor} not yet available (may be starting up), will create energy sensor anyway")
         
-        power_sensors = existing_sensors
+        # Use all selected sensors, regardless of current availability
+        power_sensors = selected_sensors
         _LOGGER.info(f"Using manually selected power sensors: {power_sensors}")
+        
+        if missing_sensors:
+            _LOGGER.info(f"Missing sensors during startup: {missing_sensors} - assuming they will become available")
     else:
         power_sensors = all_power_sensors
         _LOGGER.info(f"Using all detected power sensors: {power_sensors}")
@@ -351,17 +359,19 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
             continue
         
         # Check if this device already has energy sensors from another integration
+        # But only if the sensor currently exists - during startup we should proceed anyway
         entity = entity_registry.async_get(sensor)
         device_id = entity.device_id if entity else None
         
         # Get device identifiers for proper device grouping
         device_identifiers = get_source_device_info(hass, sensor)
         
-        if device_id and device_id in device_energy_sensors:
+        # Only skip if device has energy sensors AND the source sensor is currently available
+        if device_id and device_id in device_energy_sensors and hass.states.get(sensor) is not None:
             _LOGGER.info(f"Device for {sensor} already has energy sensors: {device_energy_sensors[device_id]}")
             continue
         
-        # Create Energy Sensor (kWh)
+        # Create Energy Sensor (kWh) - always create it, even if source sensor isn't available yet
         energy_sensor = EnergySensor(hass, base_name, sensor, storage_path, device_identifiers)
         entities.append(energy_sensor)
 
