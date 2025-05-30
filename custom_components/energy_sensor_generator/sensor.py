@@ -527,7 +527,7 @@ class DailyEnergySensor(SensorEntity):
         self._last_energy = 0.0
         self._last_reset = None
         self._storage_key = f"{base_name}_daily_energy"
-        self._load_state()
+        # State will be loaded in async_added_to_hass
 
     async def _load_state(self):
         """Load state from storage."""
@@ -672,7 +672,7 @@ class MonthlyEnergySensor(SensorEntity):
         self._last_energy = 0.0
         self._last_reset = None
         self._storage_key = f"{base_name}_monthly_energy"
-        self._load_state()
+        # State will be loaded in async_added_to_hass
 
     async def _load_state(self):
         """Load state from storage."""
