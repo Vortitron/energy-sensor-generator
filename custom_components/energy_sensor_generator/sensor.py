@@ -280,12 +280,20 @@ class EnergySensor(SensorEntity):
             if state and state.state not in ("unknown", "unavailable"):
                 try:
                     power = float(state.state)
-                    self._last_power = power
-                    self._last_update = datetime.now()
-                    await self._save_state()
-                    _LOGGER.debug(f"Initialised {self._attr_name} with current power: {power}W")
                 except (ValueError, TypeError):
-                    _LOGGER.warning(f"Unable to initialise {self._attr_name} - invalid power state: {state.state}")
+                    _LOGGER.warning(f"Unable to initialise {self._attr_name} - invalid power state (cannot convert to float): {state.state}")
+                else:
+                    # Successfully converted to float, now try to save state
+                    try:
+                        self._last_power = power
+                        self._last_update = datetime.now()
+                        await self._save_state()
+                        _LOGGER.debug(f"Initialised {self._attr_name} with current power: {power}W")
+                    except Exception as e:
+                        _LOGGER.error(f"Error saving state during initialization for {self._attr_name}: {e}", exc_info=True)
+                        # Still set the values even if saving fails
+                        self._last_power = power
+                        self._last_update = datetime.now()
             else:
                 # Source sensor not yet available - this is normal during startup
                 _LOGGER.info(f"Source sensor {self._source_sensor} not yet available for {self._attr_name} - will initialise when available")
@@ -322,42 +330,45 @@ class EnergySensor(SensorEntity):
                 
             try:
                 power = float(state.state)
+            except (ValueError, TypeError):
+                _LOGGER.warning(f"Invalid power state (cannot convert to float): {state.state}")
+                return
                 
-                # If this is the first time we're getting a valid power reading, initialise tracking
-                if self._last_power is None or self._last_update is None:
-                    _LOGGER.info(f"Source sensor {self._source_sensor} state change detected, initialising tracking for {self._attr_name}")
-                    self._last_power = power
-                    self._last_update = now
-                    await self._save_state()
-                    self.async_write_ha_state()
-                    return
-                
-                if self._last_power is not None and self._last_update is not None:
-                    # Calculate time delta in hours since last update
-                    time_delta = (now - self._last_update).total_seconds()
-                    delta_hours = time_delta / 3600
-                    
-                    # Trapezoidal rule: average power * time (kWh)
-                    avg_power = (self._last_power + power) / 2
-                    energy_kwh = (avg_power * delta_hours) / 1000
-                    
-                    # Ensure we're not adding negative energy
-                    if energy_kwh > 0:
-                        self._state += energy_kwh
-                        _LOGGER.debug(f"Interval update: Added {energy_kwh:.6f} kWh, avg power: {avg_power:.2f}W, time: {delta_hours:.4f}h, source: {state.state}W")
-                    else:
-                        _LOGGER.debug(f"Interval update: No energy added (delta too small), avg power: {avg_power:.2f}W, time: {delta_hours:.4f}h")
-                else:
-                    _LOGGER.debug(f"Interval update: Skipping calculation - missing previous power/time data for {self._attr_name}")
-                
-                # Update values
+            # If this is the first time we're getting a valid power reading, initialise tracking
+            if self._last_power is None or self._last_update is None:
+                _LOGGER.info(f"Source sensor {self._source_sensor} state change detected, initialising tracking for {self._attr_name}")
                 self._last_power = power
                 self._last_update = now
                 await self._save_state()
                 self.async_write_ha_state()
+                return
+            
+            if self._last_power is not None and self._last_update is not None:
+                # Calculate time delta in hours since last update
+                time_delta = (now - self._last_update).total_seconds()
+                delta_hours = time_delta / 3600
                 
-            except (ValueError, TypeError):
-                _LOGGER.warning(f"Invalid power state: {state.state}")
+                # Trapezoidal rule: average power * time (kWh)
+                avg_power = (self._last_power + power) / 2
+                energy_kwh = (avg_power * delta_hours) / 1000
+                
+                # Ensure we're not adding negative energy
+                if energy_kwh > 0:
+                    self._state += energy_kwh
+                    _LOGGER.debug(f"Interval update: Added {energy_kwh:.6f} kWh, avg power: {avg_power:.2f}W, time: {delta_hours:.4f}h, source: {state.state}W")
+                else:
+                    _LOGGER.debug(f"Interval update: No energy added (delta too small), avg power: {avg_power:.2f}W, time: {delta_hours:.4f}h")
+            else:
+                _LOGGER.debug(f"Interval update: Skipping calculation - missing previous power/time data for {self._attr_name}")
+            
+            # Update values
+            self._last_power = power
+            self._last_update = now
+            await self._save_state()
+            self.async_write_ha_state()
+                
+        except Exception as e:
+            _LOGGER.error(f"Unexpected error in interval update for {self._attr_name}: {e}", exc_info=True)
         finally:
             self._calculating_energy = False
             
@@ -378,22 +389,27 @@ class EnergySensor(SensorEntity):
             if state and state.state not in ("unknown", "unavailable") and self._last_power is not None and self._last_update is not None:
                 try:
                     power = float(state.state)
-                    # Calculate energy since last update
-                    delta_hours = (now - self._last_update).total_seconds() / 3600
-                    avg_power = (self._last_power + power) / 2
-                    energy_kwh = (avg_power * delta_hours) / 1000
-                    
-                    if energy_kwh > 0:
-                        self._state += energy_kwh
-                        _LOGGER.debug(f"Midnight update: Added {energy_kwh:.6f} kWh, avg power: {avg_power:.2f}W, time: {delta_hours:.4f}h")
-                    
-                    # Update values
-                    self._last_power = power
-                    self._last_update = now
-                    await self._save_state()
-                    self.async_write_ha_state()
                 except (ValueError, TypeError):
-                    _LOGGER.warning(f"Invalid power state at midnight: {state.state}")
+                    _LOGGER.warning(f"Invalid power state at midnight (cannot convert to float): {state.state}")
+                else:
+                    # Successfully converted to float, now try calculations and state saving
+                    try:
+                        # Calculate energy since last update
+                        delta_hours = (now - self._last_update).total_seconds() / 3600
+                        avg_power = (self._last_power + power) / 2
+                        energy_kwh = (avg_power * delta_hours) / 1000
+                        
+                        if energy_kwh > 0:
+                            self._state += energy_kwh
+                            _LOGGER.debug(f"Midnight update: Added {energy_kwh:.6f} kWh, avg power: {avg_power:.2f}W, time: {delta_hours:.4f}h")
+                        
+                        # Update values
+                        self._last_power = power
+                        self._last_update = now
+                        await self._save_state()
+                        self.async_write_ha_state()
+                    except Exception as e:
+                        _LOGGER.error(f"Error during midnight calculation for {self._attr_name}: {e}", exc_info=True)
         finally:
             self._calculating_energy = False
 
