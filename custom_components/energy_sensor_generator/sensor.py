@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timedelta
+import homeassistant.util.dt as dt_util
 from homeassistant.components.sensor import (
     SensorEntity, 
     SensorDeviceClass,
@@ -236,7 +237,12 @@ class EnergySensor(SensorEntity):
             
             if last_update:
                 try:
-                    self._last_update = datetime.fromisoformat(last_update)
+                    parsed_dt = datetime.fromisoformat(last_update)
+                    # If the datetime is timezone-naive, make it timezone-aware
+                    if parsed_dt.tzinfo is None:
+                        self._last_update = dt_util.as_utc(parsed_dt)
+                    else:
+                        self._last_update = parsed_dt
                 except (ValueError, TypeError):
                     self._last_update = None
         else:
@@ -286,14 +292,14 @@ class EnergySensor(SensorEntity):
                     # Successfully converted to float, now try to save state
                     try:
                         self._last_power = power
-                        self._last_update = datetime.now()
+                        self._last_update = dt_util.utcnow()
                         await self._save_state()
                         _LOGGER.debug(f"Initialised {self._attr_name} with current power: {power}W")
                     except Exception as e:
                         _LOGGER.error(f"Error saving state during initialization for {self._attr_name}: {e}", exc_info=True)
                         # Still set the values even if saving fails
                         self._last_power = power
-                        self._last_update = datetime.now()
+                        self._last_update = dt_util.utcnow()
             else:
                 # Source sensor not yet available - this is normal during startup
                 _LOGGER.info(f"Source sensor {self._source_sensor} not yet available for {self._attr_name} - will initialise when available")
@@ -419,7 +425,7 @@ class EnergySensor(SensorEntity):
         if new_state is None or new_state.state in ("unknown", "unavailable"):
             return
 
-        now = datetime.now()
+        now = dt_util.utcnow()
         try:
             power = float(new_state.state)
         except ValueError:
@@ -534,7 +540,7 @@ class DailyEnergySensor(SensorEntity):
         storage = await load_storage(self._storage_path)
         state_data = storage.get(self._storage_key, {})
         self._state = state_data.get("value", 0.0)
-        self._last_reset = state_data.get("last_reset", datetime.now().isoformat())
+        self._last_reset = state_data.get("last_reset", dt_util.utcnow().isoformat())
         self._last_energy = state_data.get("last_energy", 0.0)
 
     async def _save_state(self):
@@ -679,7 +685,7 @@ class MonthlyEnergySensor(SensorEntity):
         storage = await load_storage(self._storage_path)
         state_data = storage.get(self._storage_key, {})
         self._state = state_data.get("value", 0.0)
-        self._last_reset = state_data.get("last_reset", datetime.now().isoformat())
+        self._last_reset = state_data.get("last_reset", dt_util.utcnow().isoformat())
         self._last_energy = state_data.get("last_energy", 0.0)
 
     async def _save_state(self):
