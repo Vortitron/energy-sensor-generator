@@ -183,7 +183,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         lambda call: reset_energy_sensors_service(hass, call, entry)
     )
     
-    await hass.config_entries.async_forward_entry_setup(entry, "sensor")
+    await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     
     # Set up periodic sampling for more accurate energy calculation
     sample_interval = entry.options.get("sample_interval", 60)
@@ -300,7 +300,7 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
     device_energy_sensors = check_existing_energy_sensors(hass)
 
     entities = []
-    storage = load_storage(storage_path)
+    storage = await load_storage(storage_path)
 
     for sensor in power_sensors:
         base_name = sensor.replace("sensor.", "").replace("_power", "")
@@ -420,7 +420,7 @@ async def reset_energy_sensors_service(hass: HomeAssistant, call, entry: ConfigE
 	existing_generated = find_generated_sensors(hass)
 	
 	# Load storage
-	storage = load_storage(storage_path)
+	storage = await load_storage(storage_path)
 	
 	sensors_reset = 0
 	for base_name, entity_ids in existing_generated.items():
@@ -456,7 +456,7 @@ async def reset_energy_sensors_service(hass: HomeAssistant, call, entry: ConfigE
 				sensors_reset += 1
 	
 	# Save updated storage
-	save_storage(storage_path, storage)
+	await save_storage(storage_path, storage)
 	
 	# Force entities to reload their state
 	entity_registry = er.async_get(hass)

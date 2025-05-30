@@ -1,21 +1,23 @@
 import json
 import logging
 from pathlib import Path
+import aiofiles
 
 _LOGGER = logging.getLogger(__name__)
 
-def load_storage(storage_path: str) -> dict:
+async def load_storage(storage_path: str) -> dict:
     """Load persistent storage."""
     try:
-        with open(storage_path, "r") as f:
-            return json.load(f)
+        async with aiofiles.open(storage_path, "r") as f:
+            content = await f.read()
+            return json.loads(content)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
-def save_storage(storage_path: str, data: dict) -> None:
+async def save_storage(storage_path: str, data: dict) -> None:
     """Save persistent storage."""
     try:
-        with open(storage_path, "w") as f:
-            json.dump(data, f, indent=2)
+        async with aiofiles.open(storage_path, "w") as f:
+            await f.write(json.dumps(data, indent=2))
     except IOError as e:
         _LOGGER.error(f"Failed to save storage: {e}") 

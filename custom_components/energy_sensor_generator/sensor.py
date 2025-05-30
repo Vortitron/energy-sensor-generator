@@ -101,7 +101,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 		_LOGGER.info(f"Found {len(existing_entities)} existing energy sensors to recreate during setup")
 		
 		# Get storage path
-		from .utils import load_storage
 		from .const import STORAGE_FILE
 		from pathlib import Path
 		storage_path = Path(hass.config.path(STORAGE_FILE))
@@ -221,11 +220,11 @@ class EnergySensor(SensorEntity):
         self._storage_key = f"{base_name}_energy"
         self._interval_tracker = None
         self._calculating_energy = False  # Flag to prevent concurrent calculations
-        self._load_state()
+        # State will be loaded in async_added_to_hass
 
-    def _load_state(self):
+    async def _load_state(self):
         """Load state from storage."""
-        storage = load_storage(self._storage_path)
+        storage = await load_storage(self._storage_path)
         state_data = storage.get(self._storage_key, {})
         if isinstance(state_data, dict):
             self._state = state_data.get("value", 0.0)
@@ -233,9 +232,9 @@ class EnergySensor(SensorEntity):
             last_update = state_data.get("last_update")
             
             if last_power is not None:
-                self._last_power = float(last_power)
+                self._last_power = last_power
             
-            if last_update is not None:
+            if last_update:
                 try:
                     self._last_update = datetime.fromisoformat(last_update)
                 except (ValueError, TypeError):
@@ -244,18 +243,21 @@ class EnergySensor(SensorEntity):
             # Legacy format where state_data is just a float
             self._state = float(state_data) if state_data else 0.0
 
-    def _save_state(self):
+    async def _save_state(self):
         """Save state to storage."""
-        storage = load_storage(self._storage_path)
+        storage = await load_storage(self._storage_path)
         storage[self._storage_key] = {
             "value": self._state,
             "last_power": self._last_power,
             "last_update": self._last_update.isoformat() if self._last_update else None
         }
-        save_storage(self._storage_path, storage)
+        await save_storage(self._storage_path, storage)
 
     async def async_added_to_hass(self):
         """Handle entity addition."""
+        # Load state from storage first
+        await self._load_state()
+        
         # Track state changes to the power sensor
         async_track_state_change_event(
             self._hass, [self._source_sensor], self._handle_state_change
@@ -280,7 +282,7 @@ class EnergySensor(SensorEntity):
                     power = float(state.state)
                     self._last_power = power
                     self._last_update = datetime.now()
-                    self._save_state()
+                    await self._save_state()
                     _LOGGER.debug(f"Initialised {self._attr_name} with current power: {power}W")
                 except (ValueError, TypeError):
                     _LOGGER.warning(f"Unable to initialise {self._attr_name} - invalid power state: {state.state}")
@@ -338,7 +340,7 @@ class EnergySensor(SensorEntity):
                 # Update values
                 self._last_power = power
                 self._last_update = now
-                self._save_state()
+                await self._save_state()
                 self.async_write_ha_state()
                 
             except (ValueError, TypeError):
@@ -356,7 +358,7 @@ class EnergySensor(SensorEntity):
         self._calculating_energy = True
         try:
             # Save current state
-            self._save_state()
+            await self._save_state()
             
             # Force an immediate calculation based on the most recent power value
             state = self._hass.states.get(self._source_sensor)
@@ -375,7 +377,7 @@ class EnergySensor(SensorEntity):
                     # Update values
                     self._last_power = power
                     self._last_update = now
-                    self._save_state()
+                    await self._save_state()
                     self.async_write_ha_state()
                 except (ValueError, TypeError):
                     _LOGGER.warning(f"Invalid power state at midnight: {state.state}")
@@ -412,7 +414,7 @@ class EnergySensor(SensorEntity):
             self._interval_tracker = None
         
         # Save state one last time
-        self._save_state()
+        await self._save_state()
 
     @property
     def native_value(self):
@@ -489,26 +491,30 @@ class DailyEnergySensor(SensorEntity):
         self._storage_key = f"{base_name}_daily_energy"
         self._load_state()
 
-    def _load_state(self):
+    async def _load_state(self):
         """Load state from storage."""
-        storage = load_storage(self._storage_path)
+        storage = await load_storage(self._storage_path)
         state_data = storage.get(self._storage_key, {})
         self._state = state_data.get("value", 0.0)
         self._last_reset = state_data.get("last_reset", datetime.now().isoformat())
         self._last_energy = state_data.get("last_energy", 0.0)
 
-    def _save_state(self):
+    async def _save_state(self):
         """Save state to storage."""
-        storage = load_storage(self._storage_path)
+        storage = await load_storage(self._storage_path)
         storage[self._storage_key] = {
             "value": self._state,
             "last_reset": self._last_reset,
             "last_energy": self._last_energy
         }
-        save_storage(self._storage_path, storage)
+        await save_storage(self._storage_path, storage)
 
     async def async_added_to_hass(self):
         """Handle entity addition."""
+        # Load state from storage first
+        await self._load_state()
+        
+        # Track state changes to the power sensor
         async_track_state_change_event(
             self._hass, [self._source_sensor], self._handle_state_change
         )
@@ -537,7 +543,7 @@ class DailyEnergySensor(SensorEntity):
         else:
             self._last_energy = 0.0
             
-        self._save_state()
+        await self._save_state()
         self.async_write_ha_state()
 
     async def _handle_state_change(self, event):
@@ -557,7 +563,7 @@ class DailyEnergySensor(SensorEntity):
         self._state += energy_change
         self._last_energy = energy
         
-        self._save_state()
+        await self._save_state()
         self.async_write_ha_state()
 
     @property
@@ -622,26 +628,30 @@ class MonthlyEnergySensor(SensorEntity):
         self._storage_key = f"{base_name}_monthly_energy"
         self._load_state()
 
-    def _load_state(self):
+    async def _load_state(self):
         """Load state from storage."""
-        storage = load_storage(self._storage_path)
+        storage = await load_storage(self._storage_path)
         state_data = storage.get(self._storage_key, {})
         self._state = state_data.get("value", 0.0)
         self._last_reset = state_data.get("last_reset", datetime.now().isoformat())
         self._last_energy = state_data.get("last_energy", 0.0)
 
-    def _save_state(self):
+    async def _save_state(self):
         """Save state to storage."""
-        storage = load_storage(self._storage_path)
+        storage = await load_storage(self._storage_path)
         storage[self._storage_key] = {
             "value": self._state,
             "last_reset": self._last_reset,
             "last_energy": self._last_energy
         }
-        save_storage(self._storage_path, storage)
+        await save_storage(self._storage_path, storage)
 
     async def async_added_to_hass(self):
         """Handle entity addition."""
+        # Load state from storage first
+        await self._load_state()
+        
+        # Track state changes to the power sensor
         async_track_state_change_event(
             self._hass, [self._source_sensor], self._handle_state_change
         )
@@ -673,7 +683,7 @@ class MonthlyEnergySensor(SensorEntity):
             else:
                 self._last_energy = 0.0
                 
-            self._save_state()
+            await self._save_state()
             self.async_write_ha_state()
 
     async def _handle_state_change(self, event):
@@ -693,7 +703,7 @@ class MonthlyEnergySensor(SensorEntity):
         self._state += energy_change
         self._last_energy = energy
         
-        self._save_state()
+        await self._save_state()
         self.async_write_ha_state()
 
     @property
