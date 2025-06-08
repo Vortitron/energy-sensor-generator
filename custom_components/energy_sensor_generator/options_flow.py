@@ -156,6 +156,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			data_schema=vol.Schema(schema),
 			errors=self._errors,
 			description_placeholders={
+				"count": len(all_power_sensors),
 				"daily_description": "Create daily energy sensors that reset at midnight",
 				"monthly_description": "Create monthly energy sensors that reset at the beginning of each month",
 				"interval_description": "Sampling interval for energy calculations (shorter intervals are more accurate but use more resources)",

@@ -76,6 +76,49 @@ def get_friendly_name_from_base(hass: HomeAssistant, base_name: str) -> str:
 	# If no sensor found, just clean up the base_name
 	return base_name.replace("_", " ").title()
 
+def get_unique_entity_name(hass: HomeAssistant, proposed_name: str, domain: str = "sensor") -> str:
+	"""Generate a unique entity name by checking for conflicts and adding suffixes if needed."""
+	entity_registry = er.async_get(hass)
+	
+	# Check if the proposed name conflicts with any existing entity
+	base_name = proposed_name
+	counter = 1
+	
+	while True:
+		# Check if any entity has this name
+		name_exists = False
+		conflicting_entity = None
+		
+		for entity_id, entry in entity_registry.entities.items():
+			if entity_id.startswith(f"{domain}.") and (
+				(entry.name and entry.name.lower() == proposed_name.lower()) or
+				(entry.original_name and entry.original_name.lower() == proposed_name.lower())
+			):
+				name_exists = True
+				conflicting_entity = entity_id
+				break
+		
+		# Also check current states for entities that might not be in registry yet
+		if not name_exists:
+			for state in hass.states.async_all():
+				if (state.entity_id.startswith(f"{domain}.") and 
+					state.attributes.get("friendly_name", "").lower() == proposed_name.lower()):
+					name_exists = True
+					conflicting_entity = state.entity_id
+					break
+		
+		if not name_exists:
+			if counter > 1:
+				_LOGGER.info(f"Entity name conflict resolved: using '{proposed_name}' instead of '{base_name}'")
+			return proposed_name
+		
+		# Name exists, try with a suffix
+		if counter == 2:  # Log only on first conflict detection
+			_LOGGER.warning(f"Entity name conflict detected: '{base_name}' already exists (conflicting entity: {conflicting_entity}). Adding suffix.")
+		
+		counter += 1
+		proposed_name = f"{base_name} ({counter})"
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
 	"""Set up the sensor platform."""
 	hass.data[DOMAIN][entry.entry_id]["async_add_entities"] = async_add_entities
@@ -190,9 +233,13 @@ class EnergySensor(SensorEntity):
         # Get friendly name from the source sensor
         friendly_name = get_friendly_name(hass, source_sensor)
         
+        # Generate unique entity name to avoid conflicts
+        proposed_name = f"{friendly_name} Energy"
+        unique_name = get_unique_entity_name(hass, proposed_name)
+        
         # Generate entity attributes
         self._attr_unique_id = f"{base_name}_energy"
-        self._attr_name = f"{friendly_name} Energy"
+        self._attr_name = unique_name
         self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
@@ -505,9 +552,13 @@ class DailyEnergySensor(SensorEntity):
         # Try different possible patterns to find the original power sensor
         friendly_name = get_friendly_name_from_base(hass, base_name)
         
+        # Generate unique entity name to avoid conflicts
+        proposed_name = f"{friendly_name} Daily Energy"
+        unique_name = get_unique_entity_name(hass, proposed_name)
+        
         # Generate entity attributes
         self._attr_unique_id = f"{base_name}_daily_energy"
-        self._attr_name = f"{friendly_name} Daily Energy"
+        self._attr_name = unique_name
         self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
@@ -650,9 +701,13 @@ class MonthlyEnergySensor(SensorEntity):
         # Try different possible patterns to find the original power sensor
         friendly_name = get_friendly_name_from_base(hass, base_name)
         
+        # Generate unique entity name to avoid conflicts
+        proposed_name = f"{friendly_name} Monthly Energy"
+        unique_name = get_unique_entity_name(hass, proposed_name)
+        
         # Generate entity attributes
         self._attr_unique_id = f"{base_name}_monthly_energy"
-        self._attr_name = f"{friendly_name} Monthly Energy"
+        self._attr_name = unique_name
         self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
