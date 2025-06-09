@@ -23,6 +23,8 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
     # Get all entity states from Home Assistant
     all_states = hass.states.async_all()
     
+    _LOGGER.debug(f"Scanning {len(all_states)} entities for power sensors...")
+    
     # Check for entities based on several criteria
     for state in all_states:
         entity_id = state.entity_id
@@ -31,16 +33,19 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
             
         # Check if it looks like a power sensor
         is_power_sensor = False
+        detection_reason = ""
         
         # 1. Check unit of measurement (most reliable)
         unit = state.attributes.get("unit_of_measurement", "")
         if unit in ["W", "w", "Watt", "watt", "Watts", "watts", "kW", "kw", "kilowatt", "kilowatts"]:
             is_power_sensor = True
+            detection_reason = f"unit '{unit}'"
             
         # 2. Check device class
         device_class = state.attributes.get("device_class", "")
         if device_class == "power":
             is_power_sensor = True
+            detection_reason += f" + device_class '{device_class}'" if detection_reason else f"device_class '{device_class}'"
             
         # 3. Check entity naming patterns
         name_patterns = ["_power", "_consumption", "_usage", "power_", "watt"]
@@ -49,6 +54,7 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
             try:
                 float(state.state)
                 is_power_sensor = True
+                detection_reason += f" + name pattern" if detection_reason else "name pattern"
             except (ValueError, TypeError):
                 # Not a numerical sensor, so name pattern is not good enough
                 pass
@@ -58,12 +64,17 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
             entity_reg = entity_registry.async_get(entity_id)
             if entity_reg and (entity_reg.unit_of_measurement in ["W", "kW"] or entity_reg.device_class == "power"):
                 is_power_sensor = True
+                detection_reason += f" + registry ({entity_reg.unit_of_measurement or entity_reg.device_class})" if detection_reason else f"registry ({entity_reg.unit_of_measurement or entity_reg.device_class})"
         except (KeyError, AttributeError):
             pass
             
         if is_power_sensor:
             power_sensors.append(entity_id)
+            _LOGGER.debug(f"✓ Detected power sensor: {entity_id} (reason: {detection_reason}, state: {state.state})")
+        elif unit:  # Log sensors with units that we didn't detect as power sensors
+            _LOGGER.debug(f"✗ Skipped sensor: {entity_id} (unit: '{unit}', device_class: '{device_class}', state: {state.state})")
             
+    _LOGGER.info(f"Detected {len(power_sensors)} power sensors total")
     return power_sensors
 
 def check_existing_energy_sensors(hass: HomeAssistant) -> dict:

@@ -238,8 +238,8 @@ class EnergySensor(SensorEntity):
         self._source_sensor = source_sensor
         self._storage_path = storage_path
         
-        # Determine power conversion factor based on source sensor unit
-        self._power_to_kw_factor = self._get_power_conversion_factor(hass, source_sensor)
+        # Initialize conversion factor - will be determined when state becomes available
+        self._power_to_kw_factor = None
         
         # Get friendly name from the source sensor
         friendly_name = get_friendly_name(hass, source_sensor)
@@ -283,31 +283,41 @@ class EnergySensor(SensorEntity):
 
     def _get_power_conversion_factor(self, hass, source_sensor):
         """Determine the conversion factor from source power unit to kW."""
-        # Get the source sensor state and attributes
-        state = hass.states.get(source_sensor)
-        if not state:
-            # Default to Watts if we can't determine the unit
-            _LOGGER.warning(f"Could not get state for {source_sensor}, assuming Watts")
-            return 1000
+        try:
+            # Get the source sensor state and attributes
+            state = hass.states.get(source_sensor)
+            if not state:
+                # Default to Watts if we can't determine the unit
+                _LOGGER.debug(f"Could not get state for {source_sensor}, assuming Watts")
+                return 1000
+                
+            # Check unit of measurement
+            unit = state.attributes.get("unit_of_measurement", "").strip()
             
-        # Check unit of measurement
-        unit = state.attributes.get("unit_of_measurement", "").strip()
-        
-        # Normalise unit to lowercase for comparison
-        unit_lower = unit.lower()
-        
-        if unit_lower in ["kw", "kilowatt", "kilowatts"]:
-            # Source is already in kW, no conversion needed
-            _LOGGER.info(f"Source sensor {source_sensor} is in {unit}, using 1:1 conversion to kW")
-            return 1
-        elif unit_lower in ["w", "watt", "watts"]:
-            # Source is in Watts, need to divide by 1000 to get kW
-            _LOGGER.info(f"Source sensor {source_sensor} is in {unit}, using 1000:1 conversion to kW")
+            # Normalise unit to lowercase for comparison
+            unit_lower = unit.lower()
+            
+            if unit_lower in ["kw", "kilowatt", "kilowatts"]:
+                # Source is already in kW, no conversion needed
+                _LOGGER.info(f"Source sensor {source_sensor} is in {unit}, using 1:1 conversion to kW")
+                return 1
+            elif unit_lower in ["w", "watt", "watts"]:
+                # Source is in Watts, need to divide by 1000 to get kW
+                _LOGGER.info(f"Source sensor {source_sensor} is in {unit}, using 1000:1 conversion to kW")
+                return 1000
+            else:
+                # Unknown or missing unit, assume Watts for backwards compatibility
+                _LOGGER.debug(f"Unknown or missing unit '{unit}' for {source_sensor}, assuming Watts")
+                return 1000
+        except Exception as e:
+            _LOGGER.error(f"Error determining power conversion factor for {source_sensor}: {e}")
             return 1000
-        else:
-            # Unknown or missing unit, assume Watts for backwards compatibility
-            _LOGGER.warning(f"Unknown or missing unit '{unit}' for {source_sensor}, assuming Watts")
-            return 1000
+
+    def _ensure_conversion_factor(self):
+        """Ensure the power conversion factor is set."""
+        if self._power_to_kw_factor is None:
+            self._power_to_kw_factor = self._get_power_conversion_factor(self._hass, self._source_sensor)
+            _LOGGER.debug(f"Set conversion factor for {self._source_sensor}: {self._power_to_kw_factor}")
 
     async def _load_state(self):
         """Load state from storage."""
@@ -380,6 +390,8 @@ class EnergySensor(SensorEntity):
                         self._last_power = power
                         self._last_update = dt_util.utcnow()
                         await self._save_state()
+                        # Ensure conversion factor is set for logging
+                        self._ensure_conversion_factor()
                         unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
                         _LOGGER.debug(f"Initialised {self._attr_name} with current power: {power}{unit_display}")
                     except Exception as e:
@@ -441,6 +453,14 @@ class EnergySensor(SensorEntity):
                 time_delta = (now - self._last_update).total_seconds()
                 delta_hours = time_delta / 3600
                 
+                # Ensure conversion factor is set
+                self._ensure_conversion_factor()
+                
+                # Safety check for conversion factor
+                if not self._power_to_kw_factor or self._power_to_kw_factor <= 0:
+                    _LOGGER.error(f"Invalid conversion factor {self._power_to_kw_factor} for {self._source_sensor}, skipping calculation")
+                    return
+                
                 # Trapezoidal rule: average power * time (kWh)
                 avg_power = (self._last_power + power) / 2
                 energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
@@ -487,25 +507,31 @@ class EnergySensor(SensorEntity):
                 except (ValueError, TypeError):
                     _LOGGER.warning(f"Invalid power state at midnight (cannot convert to float): {state.state}")
                 else:
-                    # Successfully converted to float, now try calculations and state saving
-                    try:
-                        # Calculate energy since last update
-                        delta_hours = (now - self._last_update).total_seconds() / 3600
-                        avg_power = (self._last_power + power) / 2
-                        energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
-                        
-                        if energy_kwh > 0:
-                            self._state += energy_kwh
-                            unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                            _LOGGER.debug(f"Midnight update: Added {energy_kwh:.6f} kWh, avg power: {avg_power:.2f}{unit_display}, time: {delta_hours:.4f}h")
-                        
-                        # Update values
-                        self._last_power = power
-                        self._last_update = now
-                        await self._save_state()
-                        self.async_write_ha_state()
-                    except Exception as e:
-                        _LOGGER.error(f"Error during midnight calculation for {self._attr_name}: {e}", exc_info=True)
+                    # Ensure conversion factor is set
+                    self._ensure_conversion_factor()
+                    
+                    # Safety check for conversion factor
+                    if not self._power_to_kw_factor or self._power_to_kw_factor <= 0:
+                        _LOGGER.error(f"Invalid conversion factor {self._power_to_kw_factor} for {self._source_sensor}, skipping midnight calculation")
+                        return
+                    
+                    # Calculate energy since last update
+                    delta_hours = (now - self._last_update).total_seconds() / 3600
+                    avg_power = (self._last_power + power) / 2
+                    energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
+                    
+                    if energy_kwh > 0:
+                        self._state += energy_kwh
+                        unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
+                        _LOGGER.debug(f"Midnight update: Added {energy_kwh:.6f} kWh, avg power: {avg_power:.2f}{unit_display}, time: {delta_hours:.4f}h")
+                    
+                    # Update values
+                    self._last_power = power
+                    self._last_update = now
+                    await self._save_state()
+                    self.async_write_ha_state()
+                except Exception as e:
+                    _LOGGER.error(f"Error during midnight calculation for {self._attr_name}: {e}", exc_info=True)
         finally:
             self._calculating_energy = False
 
