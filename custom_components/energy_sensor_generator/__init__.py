@@ -34,7 +34,7 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
         
         # 1. Check unit of measurement (most reliable)
         unit = state.attributes.get("unit_of_measurement", "")
-        if unit in ["W", "w", "Watt", "watt", "Watts", "watts"]:
+        if unit in ["W", "w", "Watt", "watt", "Watts", "watts", "kW", "kw", "kilowatt", "kilowatts"]:
             is_power_sensor = True
             
         # 2. Check device class
@@ -53,10 +53,10 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
                 # Not a numerical sensor, so name pattern is not good enough
                 pass
                 
-        # 4. Check for entity_registry entries with unit W or device_class power
+        # 4. Check for entity_registry entries with unit W/kW or device_class power
         try:
             entity_reg = entity_registry.async_get(entity_id)
-            if entity_reg and (entity_reg.unit_of_measurement == "W" or entity_reg.device_class == "power"):
+            if entity_reg and (entity_reg.unit_of_measurement in ["W", "kW"] or entity_reg.device_class == "power"):
                 is_power_sensor = True
         except (KeyError, AttributeError):
             pass

@@ -5,7 +5,7 @@ A Home Assistant custom integration that automatically generates kWh energy sens
 [![Add to HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=vortitron&repository=energy-sensor-generator&category=integration)
 
 ## Features
-- **Automatic Detection**: Identifies all power sensors (`unit: W`, `device_class: power`) in Home Assistant.
+- **Automatic Detection**: Identifies all power sensors (`unit: W` or `kW`, `device_class: power`) in Home Assistant.
 - **Custom Energy Calculation**: Computes kWh using a trapezoidal rule, replacing the `integration` helper.
 - **Daily and Monthly Tracking**: Tracks energy usage with automatic daily and monthly resets, replacing the `utility_meter` helper.
 - **Flexible Generation**: Supports automatic sensor creation on startup or manual triggering via a UI button.
@@ -18,12 +18,12 @@ A Home Assistant custom integration that automatically generates kWh energy sens
 The `energy_sensor_generator` integration simplifies energy monitoring by creating kWh sensors for devices like Tuya smart plugs that report power in Watts. Here's a detailed breakdown of its operation:
 
 1. **Power Sensor Detection**:
-   - The integration scans the Home Assistant entity registry for sensors with `unit_of_measurement: W` and `device_class: power` (e.g., `sensor.plug_1_power`).
+   - The integration scans the Home Assistant entity registry for sensors with `unit_of_measurement: W` or `kW` and `device_class: power` (e.g., `sensor.plug_1_power`).
    - It supports any device providing power data, such as Tuya plugs via LocalTuya or other integrations.
 
 2. **Energy Calculation**:
    - For each power sensor, it creates a custom `EnergySensor` that calculates kWh by integrating power over time.
-   - The integration uses the trapezoidal rule: `energy_kwh = (avg_power * time_delta_hours) / 1000`, where `avg_power` is the average of consecutive power readings.
+   - The integration uses the trapezoidal rule: `energy_kwh = (avg_power * time_delta_hours) / conversion_factor`, where `avg_power` is the average of consecutive power readings and `conversion_factor` is 1000 for Watts or 1 for kilowatts.
    - Energy values are updated whenever the power sensor changes, ensuring accurate accumulation.
    - Data is stored in a JSON file (`.storage/energy_sensor_generator.json`) to persist across restarts.
 
@@ -48,7 +48,7 @@ The `energy_sensor_generator` integration simplifies energy monitoring by creati
 
 ## Requirements
 - **Home Assistant**: Version 2023.6.0 or later.
-- **Power Sensors**: Devices (e.g., Tuya smart plugs) that expose power sensors with `unit: W` and `device_class: power`. LocalTuya is recommended for Tuya plugs due to faster updates.
+- **Power Sensors**: Devices (e.g., Tuya smart plugs) that expose power sensors with `unit: W` or `kW` and `device_class: power`. LocalTuya is recommended for Tuya plugs due to faster updates.
 - **HACS**: For easy installation (manual installation is also supported).
 - **No External Dependencies**: No MQTT, Node-RED, or additional integrations required.
 
@@ -141,7 +141,7 @@ Storage file (`.storage/energy_sensor_generator.json`):
 - If sensors remain unavailable after several minutes, check that the devices are properly configured and online
 
 ### No Power Sensors Found:
-Ensure your devices (e.g., Tuya plugs) expose power sensors with unit: W and device_class: power. Check in Developer Tools > States.
+Ensure your devices (e.g., Tuya plugs) expose power sensors with unit: W or kW and device_class: power. Check in Developer Tools > States.
 Use the LocalTuya integration for Tuya devices, as the official Tuya integration may not expose power data reliably.
 Energy Values Incorrect:
 Verify that power sensors update frequently (e.g., every 5-30 seconds). LocalTuya typically provides faster updates.
@@ -179,6 +179,13 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 ---
 
 ### Changelog
+
+#### Version 0.0.34
+- **Fixed kilowatt (kW) support**: The integration now properly detects power sensors with kW units (kW, kilowatt, kilowatts) and applies the correct conversion factor
+- Power sensors in kW no longer get incorrectly divided by 1000, preventing energy calculation errors
+- Enhanced power sensor detection to include kW units in the automatic scanning logic
+- Improved debug logging to show the correct unit (kW or W) in energy calculation messages
+- Added proper unit conversion handling for both Watts (W) and kilowatts (kW) power sensors
 
 #### Version 0.0.21
 - Improved device integration by attaching energy sensors directly to their source device
