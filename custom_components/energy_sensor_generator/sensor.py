@@ -507,31 +507,33 @@ class EnergySensor(SensorEntity):
                 except (ValueError, TypeError):
                     _LOGGER.warning(f"Invalid power state at midnight (cannot convert to float): {state.state}")
                 else:
-                    # Ensure conversion factor is set
-                    self._ensure_conversion_factor()
-                    
-                    # Safety check for conversion factor
-                    if not self._power_to_kw_factor or self._power_to_kw_factor <= 0:
-                        _LOGGER.error(f"Invalid conversion factor {self._power_to_kw_factor} for {self._source_sensor}, skipping midnight calculation")
-                        return
-                    
-                    # Calculate energy since last update
-                    delta_hours = (now - self._last_update).total_seconds() / 3600
-                    avg_power = (self._last_power + power) / 2
-                    energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
-                    
-                    if energy_kwh > 0:
-                        self._state += energy_kwh
-                        unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                        _LOGGER.debug(f"Midnight update: Added {energy_kwh:.6f} kWh, avg power: {avg_power:.2f}{unit_display}, time: {delta_hours:.4f}h")
-                    
-                    # Update values
-                    self._last_power = power
-                    self._last_update = now
-                    await self._save_state()
-                    self.async_write_ha_state()
-                except Exception as e:
-                    _LOGGER.error(f"Error during midnight calculation for {self._attr_name}: {e}", exc_info=True)
+                    # Successfully converted to float, now try calculations and state saving
+                    try:
+                        # Ensure conversion factor is set
+                        self._ensure_conversion_factor()
+                        
+                        # Safety check for conversion factor
+                        if not self._power_to_kw_factor or self._power_to_kw_factor <= 0:
+                            _LOGGER.error(f"Invalid conversion factor {self._power_to_kw_factor} for {self._source_sensor}, skipping midnight calculation")
+                            return
+                        
+                        # Calculate energy since last update
+                        delta_hours = (now - self._last_update).total_seconds() / 3600
+                        avg_power = (self._last_power + power) / 2
+                        energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
+                        
+                        if energy_kwh > 0:
+                            self._state += energy_kwh
+                            unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
+                            _LOGGER.debug(f"Midnight update: Added {energy_kwh:.6f} kWh, avg power: {avg_power:.2f}{unit_display}, time: {delta_hours:.4f}h")
+                        
+                        # Update values
+                        self._last_power = power
+                        self._last_update = now
+                        await self._save_state()
+                        self.async_write_ha_state()
+                    except Exception as e:
+                        _LOGGER.error(f"Error during midnight calculation for {self._attr_name}: {e}", exc_info=True)
         finally:
             self._calculating_energy = False
 
