@@ -287,9 +287,9 @@ class EnergySensor(SensorEntity):
             # Get the source sensor state and attributes
             state = hass.states.get(source_sensor)
             if not state:
-                # Default to Watts if we can't determine the unit
-                _LOGGER.warning(f"UNIT DETECTION: Could not get state for {source_sensor}, assuming Watts")
-                return 1000
+                # Return None if we can't determine the unit yet - will retry later
+                _LOGGER.debug(f"UNIT DETECTION: Could not get state for {source_sensor}, will retry when available")
+                return None
                 
             # Check unit of measurement
             unit = state.attributes.get("unit_of_measurement", "").strip()
@@ -314,14 +314,17 @@ class EnergySensor(SensorEntity):
                 return 1000
         except Exception as e:
             _LOGGER.error(f"Error determining power conversion factor for {source_sensor}: {e}")
-            return 1000
+            return None
 
     def _ensure_conversion_factor(self):
         """Ensure the power conversion factor is set."""
         if self._power_to_kw_factor is None:
             self._power_to_kw_factor = self._get_power_conversion_factor(self._hass, self._source_sensor)
-            unit_name = "kW" if self._power_to_kw_factor == 1 else "W"
-            _LOGGER.warning(f"CONVERSION FACTOR SET: {self._source_sensor} -> {self._attr_name} | Unit: {unit_name} | Factor: {self._power_to_kw_factor}")
+            if self._power_to_kw_factor is not None:
+                unit_name = "kW" if self._power_to_kw_factor == 1 else "W"
+                _LOGGER.warning(f"CONVERSION FACTOR SET: {self._source_sensor} -> {self._attr_name} | Unit: {unit_name} | Factor: {self._power_to_kw_factor}")
+            else:
+                _LOGGER.debug(f"CONVERSION FACTOR: Source sensor {self._source_sensor} not yet available, will retry")
         # Note: Factor is now set during _load_state() to enable data migration
 
     async def _load_state(self):
@@ -338,7 +341,7 @@ class EnergySensor(SensorEntity):
             # Determine current conversion factor
             current_conversion_factor = self._get_power_conversion_factor(self._hass, self._source_sensor)
             
-            # Set the current conversion factor
+            # Set the current conversion factor (may be None if source sensor not available yet)
             self._power_to_kw_factor = current_conversion_factor
             
             if last_power is not None:
@@ -476,23 +479,12 @@ class EnergySensor(SensorEntity):
                 
                 # Safety check for conversion factor
                 if not self._power_to_kw_factor or self._power_to_kw_factor <= 0:
-                    _LOGGER.error(f"Invalid conversion factor {self._power_to_kw_factor} for {self._source_sensor}, skipping calculation")
+                    _LOGGER.debug(f"Conversion factor not yet available for {self._source_sensor}, skipping calculation")
                     return
                 
                 # Trapezoidal rule: average power * time (kWh)
                 avg_power = (self._last_power + power) / 2
                 energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
-                
-                # Detailed debugging for factor of 10 issue
-                _LOGGER.warning(f"DETAILED CALC DEBUG: {self._attr_name}")
-                _LOGGER.warning(f"  Source sensor: {self._source_sensor}")
-                _LOGGER.warning(f"  Current power: {power}")
-                _LOGGER.warning(f"  Last power: {self._last_power}")
-                _LOGGER.warning(f"  Average power: {avg_power}")
-                _LOGGER.warning(f"  Time delta seconds: {time_delta}")
-                _LOGGER.warning(f"  Time delta hours: {delta_hours}")
-                _LOGGER.warning(f"  Conversion factor: {self._power_to_kw_factor}")
-                _LOGGER.warning(f"  Energy calculation: ({avg_power} * {delta_hours}) / {self._power_to_kw_factor} = {energy_kwh}")
                 
                 # Ensure we're not adding negative energy
                 if energy_kwh > 0:
@@ -543,7 +535,7 @@ class EnergySensor(SensorEntity):
                         
                         # Safety check for conversion factor
                         if not self._power_to_kw_factor or self._power_to_kw_factor <= 0:
-                            _LOGGER.error(f"Invalid conversion factor {self._power_to_kw_factor} for {self._source_sensor}, skipping midnight calculation")
+                            _LOGGER.debug(f"Conversion factor not yet available for {self._source_sensor}, skipping midnight calculation")
                             return
                         
                         # Calculate energy since last update
