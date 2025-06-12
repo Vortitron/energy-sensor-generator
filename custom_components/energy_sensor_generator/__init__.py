@@ -19,6 +19,7 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
     """Detect power sensors using various criteria for broader detection."""
     entity_registry = er.async_get(hass)
     power_sensors = []
+    kw_sensors = []
     
     # Get all entity states from Home Assistant
     all_states = hass.states.async_all()
@@ -40,6 +41,10 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
         if unit in ["W", "w", "Watt", "watt", "Watts", "watts", "kW", "kw", "kilowatt", "kilowatts"]:
             is_power_sensor = True
             detection_reason = f"unit '{unit}'"
+            
+            # Track kW sensors specifically
+            if unit.lower() in ["kw", "kilowatt", "kilowatts"]:
+                kw_sensors.append(entity_id)
             
         # 2. Check device class
         device_class = state.attributes.get("device_class", "")
@@ -65,6 +70,10 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
             if entity_reg and (entity_reg.unit_of_measurement in ["W", "kW"] or entity_reg.device_class == "power"):
                 is_power_sensor = True
                 detection_reason += f" + registry ({entity_reg.unit_of_measurement or entity_reg.device_class})" if detection_reason else f"registry ({entity_reg.unit_of_measurement or entity_reg.device_class})"
+                
+                # Track kW sensors from registry too
+                if entity_reg.unit_of_measurement == "kW":
+                    kw_sensors.append(entity_id)
         except (KeyError, AttributeError):
             pass
             
@@ -75,6 +84,8 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
             _LOGGER.debug(f"✗ Skipped sensor: {entity_id} (unit: '{unit}', device_class: '{device_class}', state: {state.state})")
             
     _LOGGER.info(f"Detected {len(power_sensors)} power sensors total")
+    if kw_sensors:
+        _LOGGER.info(f"Detected {len(kw_sensors)} kW sensors: {kw_sensors}")
     return power_sensors
 
 def check_existing_energy_sensors(hass: HomeAssistant) -> dict:
@@ -192,6 +203,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         "reset_energy_sensors",
         lambda call: reset_energy_sensors_service(hass, call, entry)
+    )
+    
+    # Register debug service for troubleshooting
+    hass.services.async_register(
+        DOMAIN,
+        "debug_sensor_detection",
+        lambda call: debug_sensor_detection_service(hass, call, entry)
     )
     
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
@@ -490,3 +508,42 @@ async def reset_energy_sensors_service(hass: HomeAssistant, call, entry: ConfigE
 				await hass.helpers.entity_component.async_update_entity(entity_id)
 	
 	_LOGGER.info(f"Reset {sensors_reset} energy sensors")
+
+async def debug_sensor_detection_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:
+	"""Service to debug sensor detection issues."""
+	_LOGGER.info("=== DEBUG: Sensor Detection Analysis ===")
+	
+	# Get power sensors using detection logic
+	all_power_sensors = detect_power_sensors(hass)
+	_LOGGER.info(f"Total detected power sensors: {len(all_power_sensors)}")
+	
+	# Get selected sensors from config
+	if entry is None:
+		entries = list(hass.data[DOMAIN].values())
+		if entries:
+			options = getattr(entries[0], "options", {})
+		else:
+			options = {}
+	else:
+		options = entry.options
+	
+	selected_sensors = options.get("selected_power_sensors", [])
+	_LOGGER.info(f"Selected sensors in config: {selected_sensors}")
+	
+	# Check each selected sensor
+	for sensor in selected_sensors:
+		state = hass.states.get(sensor)
+		if state:
+			unit = state.attributes.get("unit_of_measurement", "")
+			device_class = state.attributes.get("device_class", "")
+			_LOGGER.info(f"Sensor {sensor}: Available, unit='{unit}', device_class='{device_class}', state={state.state}")
+		else:
+			_LOGGER.warning(f"Sensor {sensor}: NOT AVAILABLE")
+	
+	# Check existing generated sensors
+	existing_generated = find_generated_sensors(hass)
+	_LOGGER.info(f"Existing generated sensors: {len(existing_generated)} groups")
+	for base_name, entities in existing_generated.items():
+		_LOGGER.info(f"  {base_name}: {entities}")
+	
+	_LOGGER.info("=== END DEBUG ===")

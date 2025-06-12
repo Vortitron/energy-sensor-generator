@@ -20,7 +20,6 @@ from .__init__ import detect_power_sensors  # Import the detect function
 class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 	def __init__(self, config_entry):
 		"""Initialize options flow."""
-		self.config_entry = config_entry
 		self.options = dict(config_entry.options)
 		self._errors = {}
 

@@ -331,3 +331,43 @@ Usage:
 Click the button to trigger the energy_sensor_generator.generate_sensors service.
 The integration will scan for power sensors and create or update the corresponding kWh sensors (*_energy, *_daily_energy, *_monthly_energy).
 Check Developer Tools > States or the Energy dashboard to confirm the new sensors.
+
+## Installation (HACS)
+
+1. Open HACS in Home Assistant
+2. Go to "Integrations"
+3. Click the three dots (⋯) in the top right corner
+4. Select "Custom repositories"
+5. Add this repository URL: `https://github.com/Vortitron/energy-sensor-generator`
+6. Select "Integration" as the category
+7. Click "Add"
+8. Search for "Energy Sensor Generator" and install it
+9. Restart Home Assistant
+10. Go to Settings → Devices & Services → Add Integration
+11. Search for "Energy Sensor Generator" and set it up
+
+## Troubleshooting
+
+### kW Sensors Not Being Added
+
+If you have power sensors with kW units that aren't being detected or added:
+
+1. **Check sensor detection**: Call the debug service by going to Developer Tools → Services and calling:
+   - Service: `energy_sensor_generator.debug_sensor_detection`
+   - This will log detailed information about detected sensors
+
+2. **Check the logs**: Look in Settings → System → Logs for messages from `energy_sensor_generator` showing:
+   - Which sensors were detected and why
+   - Whether kW sensors were found specifically
+   - Any errors during sensor creation
+
+3. **Manual selection**: In the integration's options (Settings → Devices & Services → Energy Sensor Generator → Configure), you can manually select the kW power sensors that should have energy sensors created
+
+4. **Verify sensor attributes**: Check that your kW power sensors have:
+   - `unit_of_measurement: kW` (or `kilowatt`/`kilowatts`)
+   - `device_class: power` (optional but helpful)
+   - A numeric state value
+
+### Deprecation Warnings
+
+If you see deprecation warnings about config_entry, these have been fixed in version 0.0.42+. Update to the latest version to resolve these warnings.
