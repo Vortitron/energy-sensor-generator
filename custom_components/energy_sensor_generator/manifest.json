@@ -1,7 +1,7 @@
 {
   "domain": "energy_sensor_generator",
   "name": "Energy Sensor Generator",
-  "version": "0.0.40",
+  "version": "0.0.41",
   "documentation": "https://github.com/Vortitron/energy-sensor-generator",
   "requirements": ["aiofiles"],
   "codeowners": ["@Vortitron"],

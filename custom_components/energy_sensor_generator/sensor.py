@@ -237,40 +237,32 @@ class EnergySensor(SensorEntity):
         self._base_name = base_name
         self._source_sensor = source_sensor
         self._storage_path = storage_path
+        self._device_identifiers = device_identifiers
         
-        # Initialize conversion factor - will be determined when state becomes available
-        self._power_to_kw_factor = None
-        
-        # Get friendly name from the source sensor
-        friendly_name = get_friendly_name(hass, source_sensor)
-        
-        # Generate unique entity name to avoid conflicts
-        proposed_name = f"{friendly_name} Energy"
-        unique_name = get_unique_entity_name(hass, proposed_name)
-        
-        # Generate entity attributes
+        # Sensor attributes
+        self._attr_name = f"{base_name.replace('_', ' ').title()} Energy"
         self._attr_unique_id = f"{base_name}_energy"
-        self._attr_name = unique_name
-        self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+        self._attr_icon = "mdi:flash"
         
-        # Set device info directly if provided, otherwise get from source sensor
+        # Device info for grouping
         if device_identifiers:
-            self._attr_device_info = DeviceInfo(identifiers=device_identifiers)
+            self._attr_device_info = DeviceInfo(
+                identifiers=device_identifiers,
+            )
         else:
-            # Get source sensor information to link to its device if possible
-            entity_registry = er.async_get(hass)
-            source_entity = entity_registry.async_get(source_sensor)
-            
-            # Set device info to match the source sensor's device
-            if source_entity and source_entity.device_id:
-                device_registry = dr.async_get(hass)
-                device = device_registry.async_get(source_entity.device_id)
-                if device:
-                    # Use the exact same device_info as the source sensor
-                    self._attr_device_info = DeviceInfo(identifiers=device.identifiers)
+            # Fallback device info
+            self._attr_device_info = DeviceInfo(
+                identifiers={(DOMAIN, base_name)},
+                name=f"{base_name.replace('_', ' ').title()}",
+                manufacturer="Energy Sensor Generator",
+                model="Generated Energy Sensor",
+            )
+        
+        # Conversion factor for power units (will be detected at runtime)
+        self._power_to_kw_factor = None
         
         self._state = 0.0
         self._last_power = None
@@ -279,6 +271,8 @@ class EnergySensor(SensorEntity):
         self._storage_key = f"{base_name}_energy"
         self._interval_tracker = None
         self._calculating_energy = False  # Flag to prevent concurrent calculations
+        self._calculation_count = 0  # Counter for logging frequency
+        self._first_calculation_logged = False  # Flag to log first successful calculation
         # State will be loaded in async_added_to_hass
 
     def _get_power_conversion_factor(self, hass, source_sensor):
@@ -295,22 +289,22 @@ class EnergySensor(SensorEntity):
             unit = state.attributes.get("unit_of_measurement", "").strip()
             device_class = state.attributes.get("device_class", "")
             
-            _LOGGER.warning(f"UNIT DETECTION: {source_sensor} | unit='{unit}' | device_class='{device_class}' | state={state.state}")
+            _LOGGER.debug(f"UNIT DETECTION: {source_sensor} | unit='{unit}' | device_class='{device_class}' | state={state.state}")
             
             # Normalise unit to lowercase for comparison
             unit_lower = unit.lower()
             
             if unit_lower in ["kw", "kilowatt", "kilowatts"]:
                 # Source is already in kW, no conversion needed
-                _LOGGER.warning(f"UNIT DETECTION: {source_sensor} detected as kW unit, using factor 1")
+                _LOGGER.info(f"Power unit detected for {source_sensor}: kW (conversion factor: 1)")
                 return 1
             elif unit_lower in ["w", "watt", "watts"]:
                 # Source is in Watts, need to divide by 1000 to get kW
-                _LOGGER.warning(f"UNIT DETECTION: {source_sensor} detected as W unit, using factor 1000")
+                _LOGGER.info(f"Power unit detected for {source_sensor}: W (conversion factor: 1000)")
                 return 1000
             else:
                 # Unknown or missing unit, assume Watts for backwards compatibility
-                _LOGGER.warning(f"UNIT DETECTION: {source_sensor} unknown unit '{unit}', assuming Watts (factor 1000)")
+                _LOGGER.info(f"Unknown/missing unit for {source_sensor} ('{unit}'), assuming Watts (conversion factor: 1000)")
                 return 1000
         except Exception as e:
             _LOGGER.error(f"Error determining power conversion factor for {source_sensor}: {e}")
@@ -322,7 +316,7 @@ class EnergySensor(SensorEntity):
             self._power_to_kw_factor = self._get_power_conversion_factor(self._hass, self._source_sensor)
             if self._power_to_kw_factor is not None:
                 unit_name = "kW" if self._power_to_kw_factor == 1 else "W"
-                _LOGGER.warning(f"CONVERSION FACTOR SET: {self._source_sensor} -> {self._attr_name} | Unit: {unit_name} | Factor: {self._power_to_kw_factor}")
+                _LOGGER.info(f"Conversion factor set for {self._source_sensor}: {unit_name} -> {self._attr_name} (factor: {self._power_to_kw_factor})")
             else:
                 _LOGGER.debug(f"CONVERSION FACTOR: Source sensor {self._source_sensor} not yet available, will retry")
         # Note: Factor is now set during _load_state() to enable data migration
@@ -490,7 +484,16 @@ class EnergySensor(SensorEntity):
                 if energy_kwh > 0:
                     self._state += energy_kwh
                     unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                    _LOGGER.info(f"ENERGY CALC: {self._attr_name} | Power: {power:.3f}{unit_display} | Avg: {avg_power:.3f}{unit_display} | Time: {delta_hours:.6f}h | Factor: {self._power_to_kw_factor} | Energy: {energy_kwh:.6f}kWh | Total: {self._state:.6f}kWh")
+                    self._calculation_count += 1
+                    
+                    # Log first successful calculation 
+                    if not self._first_calculation_logged:
+                        _LOGGER.info(f"Energy sensor {self._attr_name} is now tracking energy from {self._source_sensor} ({unit_display} sensor)")
+                        self._first_calculation_logged = True
+                    
+                    # Only log every 10th calculation to reduce log spam
+                    if self._calculation_count % 10 == 0:
+                        _LOGGER.debug(f"Energy calculation #{self._calculation_count}: {self._attr_name} | Power: {power:.2f}{unit_display} | Energy added: {energy_kwh:.6f}kWh | Total: {self._state:.3f}kWh")
                 else:
                     unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
                     _LOGGER.debug(f"Interval update: No energy added (delta too small), avg power: {avg_power:.2f}{unit_display}, time: {delta_hours:.4f}h")
@@ -546,7 +549,7 @@ class EnergySensor(SensorEntity):
                         if energy_kwh > 0:
                             self._state += energy_kwh
                             unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                            _LOGGER.info(f"MIDNIGHT CALC: {self._attr_name} | Power: {power:.3f}{unit_display} | Avg: {avg_power:.3f}{unit_display} | Time: {delta_hours:.6f}h | Factor: {self._power_to_kw_factor} | Energy: {energy_kwh:.6f}kWh | Total: {self._state:.6f}kWh")
+                            _LOGGER.debug(f"Midnight calculation: {self._attr_name} | Power: {power:.2f}{unit_display} | Energy added: {energy_kwh:.6f}kWh | Total: {self._state:.3f}kWh")
                         
                         # Update values
                         self._last_power = power
