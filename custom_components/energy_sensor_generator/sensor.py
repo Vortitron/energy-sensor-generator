@@ -288,26 +288,29 @@ class EnergySensor(SensorEntity):
             state = hass.states.get(source_sensor)
             if not state:
                 # Default to Watts if we can't determine the unit
-                _LOGGER.debug(f"Could not get state for {source_sensor}, assuming Watts")
+                _LOGGER.warning(f"UNIT DETECTION: Could not get state for {source_sensor}, assuming Watts")
                 return 1000
                 
             # Check unit of measurement
             unit = state.attributes.get("unit_of_measurement", "").strip()
+            device_class = state.attributes.get("device_class", "")
+            
+            _LOGGER.warning(f"UNIT DETECTION: {source_sensor} | unit='{unit}' | device_class='{device_class}' | state={state.state}")
             
             # Normalise unit to lowercase for comparison
             unit_lower = unit.lower()
             
             if unit_lower in ["kw", "kilowatt", "kilowatts"]:
                 # Source is already in kW, no conversion needed
-                _LOGGER.info(f"Source sensor {source_sensor} is in {unit}, using 1:1 conversion to kW")
+                _LOGGER.warning(f"UNIT DETECTION: {source_sensor} detected as kW unit, using factor 1")
                 return 1
             elif unit_lower in ["w", "watt", "watts"]:
                 # Source is in Watts, need to divide by 1000 to get kW
-                _LOGGER.info(f"Source sensor {source_sensor} is in {unit}, using 1000:1 conversion to kW")
+                _LOGGER.warning(f"UNIT DETECTION: {source_sensor} detected as W unit, using factor 1000")
                 return 1000
             else:
                 # Unknown or missing unit, assume Watts for backwards compatibility
-                _LOGGER.debug(f"Unknown or missing unit '{unit}' for {source_sensor}, assuming Watts")
+                _LOGGER.warning(f"UNIT DETECTION: {source_sensor} unknown unit '{unit}', assuming Watts (factor 1000)")
                 return 1000
         except Exception as e:
             _LOGGER.error(f"Error determining power conversion factor for {source_sensor}: {e}")
@@ -317,16 +320,26 @@ class EnergySensor(SensorEntity):
         """Ensure the power conversion factor is set."""
         if self._power_to_kw_factor is None:
             self._power_to_kw_factor = self._get_power_conversion_factor(self._hass, self._source_sensor)
-            _LOGGER.debug(f"Set conversion factor for {self._source_sensor}: {self._power_to_kw_factor}")
+            unit_name = "kW" if self._power_to_kw_factor == 1 else "W"
+            _LOGGER.warning(f"CONVERSION FACTOR SET: {self._source_sensor} -> {self._attr_name} | Unit: {unit_name} | Factor: {self._power_to_kw_factor}")
+        # Note: Factor is now set during _load_state() to enable data migration
 
     async def _load_state(self):
         """Load state from storage."""
         storage = await load_storage(self._storage_path)
         state_data = storage.get(self._storage_key, {})
+        
         if isinstance(state_data, dict):
             self._state = state_data.get("value", 0.0)
             last_power = state_data.get("last_power")
             last_update = state_data.get("last_update")
+            stored_conversion_factor = state_data.get("conversion_factor")
+            
+            # Determine current conversion factor
+            current_conversion_factor = self._get_power_conversion_factor(self._hass, self._source_sensor)
+            
+            # Set the current conversion factor
+            self._power_to_kw_factor = current_conversion_factor
             
             if last_power is not None:
                 self._last_power = last_power
@@ -343,7 +356,11 @@ class EnergySensor(SensorEntity):
                     self._last_update = None
         else:
             # Legacy format where state_data is just a float
-            self._state = float(state_data) if state_data else 0.0
+            legacy_value = float(state_data) if state_data else 0.0
+            current_conversion_factor = self._get_power_conversion_factor(self._hass, self._source_sensor)
+            
+            self._state = legacy_value
+            self._power_to_kw_factor = current_conversion_factor
 
     async def _save_state(self):
         """Save state to storage."""
@@ -351,7 +368,8 @@ class EnergySensor(SensorEntity):
         storage[self._storage_key] = {
             "value": self._state,
             "last_power": self._last_power,
-            "last_update": self._last_update.isoformat() if self._last_update else None
+            "last_update": self._last_update.isoformat() if self._last_update else None,
+            "conversion_factor": self._power_to_kw_factor
         }
         await save_storage(self._storage_path, storage)
 
@@ -465,11 +483,22 @@ class EnergySensor(SensorEntity):
                 avg_power = (self._last_power + power) / 2
                 energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
                 
+                # Detailed debugging for factor of 10 issue
+                _LOGGER.warning(f"DETAILED CALC DEBUG: {self._attr_name}")
+                _LOGGER.warning(f"  Source sensor: {self._source_sensor}")
+                _LOGGER.warning(f"  Current power: {power}")
+                _LOGGER.warning(f"  Last power: {self._last_power}")
+                _LOGGER.warning(f"  Average power: {avg_power}")
+                _LOGGER.warning(f"  Time delta seconds: {time_delta}")
+                _LOGGER.warning(f"  Time delta hours: {delta_hours}")
+                _LOGGER.warning(f"  Conversion factor: {self._power_to_kw_factor}")
+                _LOGGER.warning(f"  Energy calculation: ({avg_power} * {delta_hours}) / {self._power_to_kw_factor} = {energy_kwh}")
+                
                 # Ensure we're not adding negative energy
                 if energy_kwh > 0:
                     self._state += energy_kwh
                     unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                    _LOGGER.debug(f"Interval update: Added {energy_kwh:.6f} kWh, avg power: {avg_power:.2f}{unit_display}, time: {delta_hours:.4f}h, source: {state.state}{unit_display}")
+                    _LOGGER.info(f"ENERGY CALC: {self._attr_name} | Power: {power:.3f}{unit_display} | Avg: {avg_power:.3f}{unit_display} | Time: {delta_hours:.6f}h | Factor: {self._power_to_kw_factor} | Energy: {energy_kwh:.6f}kWh | Total: {self._state:.6f}kWh")
                 else:
                     unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
                     _LOGGER.debug(f"Interval update: No energy added (delta too small), avg power: {avg_power:.2f}{unit_display}, time: {delta_hours:.4f}h")
@@ -525,7 +554,7 @@ class EnergySensor(SensorEntity):
                         if energy_kwh > 0:
                             self._state += energy_kwh
                             unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                            _LOGGER.debug(f"Midnight update: Added {energy_kwh:.6f} kWh, avg power: {avg_power:.2f}{unit_display}, time: {delta_hours:.4f}h")
+                            _LOGGER.info(f"MIDNIGHT CALC: {self._attr_name} | Power: {power:.3f}{unit_display} | Avg: {avg_power:.3f}{unit_display} | Time: {delta_hours:.6f}h | Factor: {self._power_to_kw_factor} | Energy: {energy_kwh:.6f}kWh | Total: {self._state:.6f}kWh")
                         
                         # Update values
                         self._last_power = power
@@ -596,6 +625,11 @@ class EnergySensor(SensorEntity):
             attrs["last_power"] = round(self._last_power, 3)
         if self._last_update is not None:
             attrs["last_update"] = self._last_update.isoformat()
+        
+        # Add conversion factor for debugging
+        if self._power_to_kw_factor is not None:
+            attrs["power_to_kw_factor"] = self._power_to_kw_factor
+            attrs["source_unit"] = "kW" if self._power_to_kw_factor == 1 else "W"
         
         # Get interval from options
         sample_interval = 60  # Default 
