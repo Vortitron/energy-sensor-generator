@@ -409,6 +409,7 @@ class EnergySensor(SensorEntity):
                         self._ensure_conversion_factor()
                         unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
                         _LOGGER.debug(f"Initialised {self._attr_name} with current power: {power}{unit_display}")
+                        self.safe_write_ha_state()
                     except Exception as e:
                         _LOGGER.error(f"Error saving state during initialization for {self._attr_name}: {e}", exc_info=True)
                         # Still set the values even if saving fails
@@ -435,15 +436,12 @@ class EnergySensor(SensorEntity):
         )
 
     async def _handle_interval_update(self, now):
-        """Handle regular interval updates."""
-        # Prevent concurrent calculations
+        """Update energy calculation at regular intervals."""
         if self._calculating_energy:
-            _LOGGER.debug(f"Skipping interval update, calculation already in progress")
             return
             
         self._calculating_energy = True
         try:
-            # Get current power value
             state = self._hass.states.get(self._source_sensor)
             if not state or state.state in ("unknown", "unavailable"):
                 return
@@ -451,18 +449,9 @@ class EnergySensor(SensorEntity):
             try:
                 power = float(state.state)
             except (ValueError, TypeError):
-                _LOGGER.warning(f"Invalid power state (cannot convert to float): {state.state}")
+                _LOGGER.warning(f"Invalid power value: {state.state}")
                 return
                 
-            # If this is the first time we're getting a valid power reading, initialise tracking
-            if self._last_power is None or self._last_update is None:
-                _LOGGER.info(f"Source sensor {self._source_sensor} state change detected, initialising tracking for {self._attr_name}")
-                self._last_power = power
-                self._last_update = now
-                await self._save_state()
-                self.async_write_ha_state()
-                return
-            
             if self._last_power is not None and self._last_update is not None:
                 # Calculate time delta in hours since last update
                 time_delta = (now - self._last_update).total_seconds()
@@ -504,60 +493,59 @@ class EnergySensor(SensorEntity):
             self._last_power = power
             self._last_update = now
             await self._save_state()
-            self.async_write_ha_state()
+            self.safe_write_ha_state()
                 
         except Exception as e:
             _LOGGER.error(f"Unexpected error in interval update for {self._attr_name}: {e}", exc_info=True)
         finally:
             self._calculating_energy = False
-            
+
     async def _handle_midnight_update(self, now):
-        """Handle daily update at midnight."""
-        # Prevent concurrent calculations
+        """Handle midnight reset for daily energy tracking."""
         if self._calculating_energy:
-            _LOGGER.debug(f"Skipping midnight update, calculation already in progress")
             return
             
         self._calculating_energy = True
         try:
-            # Save current state
-            await self._save_state()
-            
-            # Force an immediate calculation based on the most recent power value
             state = self._hass.states.get(self._source_sensor)
-            if state and state.state not in ("unknown", "unavailable") and self._last_power is not None and self._last_update is not None:
-                try:
-                    power = float(state.state)
-                except (ValueError, TypeError):
-                    _LOGGER.warning(f"Invalid power state at midnight (cannot convert to float): {state.state}")
-                else:
-                    # Successfully converted to float, now try calculations and state saving
-                    try:
-                        # Ensure conversion factor is set
-                        self._ensure_conversion_factor()
-                        
-                        # Safety check for conversion factor
-                        if not self._power_to_kw_factor or self._power_to_kw_factor <= 0:
-                            _LOGGER.debug(f"Conversion factor not yet available for {self._source_sensor}, skipping midnight calculation")
-                            return
-                        
-                        # Calculate energy since last update
-                        delta_hours = (now - self._last_update).total_seconds() / 3600
-                        avg_power = (self._last_power + power) / 2
-                        energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
-                        
-                        if energy_kwh > 0:
-                            self._state += energy_kwh
-                            unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                            _LOGGER.debug(f"Midnight calculation: {self._attr_name} | Power: {power:.2f}{unit_display} | Energy added: {energy_kwh:.6f}kWh | Total: {self._state:.3f}kWh")
-                        
-                        # Update values
-                        self._last_power = power
-                        self._last_update = now
-                        await self._save_state()
-                        self.async_write_ha_state()
-                    except Exception as e:
-                        _LOGGER.error(f"Error during midnight calculation for {self._attr_name}: {e}", exc_info=True)
+            if not state or state.state in ("unknown", "unavailable"):
+                return
+                
+            try:
+                power = float(state.state)
+            except (ValueError, TypeError):
+                _LOGGER.warning(f"Invalid power value: {state.state}")
+                return
+                
+            if self._last_power is not None and self._last_update is not None:
+                # Calculate time delta in hours since last update
+                time_delta = (now - self._last_update).total_seconds()
+                delta_hours = time_delta / 3600
+                
+                # Ensure conversion factor is set
+                self._ensure_conversion_factor()
+                
+                # Safety check for conversion factor
+                if not self._power_to_kw_factor or self._power_to_kw_factor <= 0:
+                    _LOGGER.debug(f"Conversion factor not yet available for {self._source_sensor}, skipping midnight calculation")
+                    return
+                
+                # Calculate energy since last update
+                avg_power = (self._last_power + power) / 2
+                energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
+                
+                if energy_kwh > 0:
+                    self._state += energy_kwh
+                    unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
+                    _LOGGER.debug(f"Midnight calculation: {self._attr_name} | Power: {power:.2f}{unit_display} | Energy added: {energy_kwh:.6f}kWh | Total: {self._state:.3f}kWh")
+                
+                # Update values
+                self._last_power = power
+                self._last_update = now
+                await self._save_state()
+                self.safe_write_ha_state()
+        except Exception as e:
+            _LOGGER.error(f"Error during midnight calculation for {self._attr_name}: {e}", exc_info=True)
         finally:
             self._calculating_energy = False
 
@@ -580,7 +568,7 @@ class EnergySensor(SensorEntity):
             self._last_power = power
             self._last_update = now
             await self._save_state()
-            self.async_write_ha_state()
+            self.safe_write_ha_state()
             return
 
         # Only update tracking variables, do not perform energy calculations here
@@ -590,7 +578,7 @@ class EnergySensor(SensorEntity):
         self._last_power = power
         self._last_update = now
         # Still update the state for UI feedback
-        self.async_write_ha_state()
+        self.safe_write_ha_state()
 
     async def async_will_remove_from_hass(self):
         """Clean up resources when entity is removed."""
@@ -601,6 +589,16 @@ class EnergySensor(SensorEntity):
         
         # Save state one last time
         await self._save_state()
+
+    @property
+    def unit_of_measurement(self):
+        """Return the unit of measurement, ensuring it's always kWh."""
+        return UnitOfEnergy.KILO_WATT_HOUR
+
+    @property
+    def native_unit_of_measurement(self):
+        """Return the native unit of measurement, ensuring it's always kWh."""
+        return UnitOfEnergy.KILO_WATT_HOUR
 
     @property
     def native_value(self):
@@ -636,6 +634,23 @@ class EnergySensor(SensorEntity):
                 
         attrs["sample_interval"] = sample_interval
         return attrs
+
+    def safe_write_ha_state(self):
+        """Safely write HA state with error handling and unit verification."""
+        try:
+            # Ensure unit is always set before writing state
+            if not hasattr(self, '_attr_unit_of_measurement') or not self._attr_unit_of_measurement:
+                self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+                _LOGGER.warning(f"Unit of measurement was missing for {self._attr_name}, restored to kWh")
+            
+            # Verify the unit is correct
+            if self._attr_unit_of_measurement != UnitOfEnergy.KILO_WATT_HOUR:
+                _LOGGER.warning(f"Unit of measurement was incorrect for {self._attr_name} ({self._attr_unit_of_measurement}), correcting to kWh")
+                self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+            
+            self.async_write_ha_state()
+        except Exception as e:
+            _LOGGER.error(f"Error writing HA state for {self._attr_name}: {e}", exc_info=True)
 
 class DailyEnergySensor(SensorEntity):
     """Custom sensor for daily energy tracking."""
@@ -739,7 +754,7 @@ class DailyEnergySensor(SensorEntity):
             self._last_energy = 0.0
             
         await self._save_state()
-        self.async_write_ha_state()
+        self.safe_write_ha_state()
 
     async def _handle_state_change(self, event):
         """Update daily energy when source changes."""
@@ -758,7 +773,7 @@ class DailyEnergySensor(SensorEntity):
             _LOGGER.info(f"Source energy sensor {self._source_sensor} became available, initialising daily tracking for {self._attr_name}")
             self._last_energy = energy
             await self._save_state()
-            self.async_write_ha_state()
+            self.safe_write_ha_state()
             return
 
         # Calculate the energy change
@@ -767,7 +782,7 @@ class DailyEnergySensor(SensorEntity):
         self._last_energy = energy
         
         await self._save_state()
-        self.async_write_ha_state()
+        self.safe_write_ha_state()
 
     @property
     def native_value(self):
@@ -780,11 +795,38 @@ class DailyEnergySensor(SensorEntity):
         return round(self._state, 2)
 
     @property
+    def unit_of_measurement(self):
+        """Return the unit of measurement, ensuring it's always kWh."""
+        return UnitOfEnergy.KILO_WATT_HOUR
+
+    @property
+    def native_unit_of_measurement(self):
+        """Return the native unit of measurement, ensuring it's always kWh."""
+        return UnitOfEnergy.KILO_WATT_HOUR
+
+    @property
     def extra_state_attributes(self):
         """Return the state attributes."""
         return {
             "last_reset": self._last_reset
         }
+
+    def safe_write_ha_state(self):
+        """Safely write HA state with error handling and unit verification."""
+        try:
+            # Ensure unit is always set before writing state
+            if not hasattr(self, '_attr_unit_of_measurement') or not self._attr_unit_of_measurement:
+                self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+                _LOGGER.warning(f"Unit of measurement was missing for {self._attr_name}, restored to kWh")
+            
+            # Verify the unit is correct
+            if self._attr_unit_of_measurement != UnitOfEnergy.KILO_WATT_HOUR:
+                _LOGGER.warning(f"Unit of measurement was incorrect for {self._attr_name} ({self._attr_unit_of_measurement}), correcting to kWh")
+                self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+            
+            self.async_write_ha_state()
+        except Exception as e:
+            _LOGGER.error(f"Error writing HA state for {self._attr_name}: {e}", exc_info=True)
 
 class MonthlyEnergySensor(SensorEntity):
     """Custom sensor for monthly energy tracking."""
@@ -891,7 +933,7 @@ class MonthlyEnergySensor(SensorEntity):
                 self._last_energy = 0.0
                 
             await self._save_state()
-            self.async_write_ha_state()
+            self.safe_write_ha_state()
 
     async def _handle_state_change(self, event):
         """Update monthly energy when source changes."""
@@ -910,7 +952,7 @@ class MonthlyEnergySensor(SensorEntity):
             _LOGGER.info(f"Source energy sensor {self._source_sensor} became available, initialising monthly tracking for {self._attr_name}")
             self._last_energy = energy
             await self._save_state()
-            self.async_write_ha_state()
+            self.safe_write_ha_state()
             return
 
         # Calculate the energy change
@@ -919,7 +961,7 @@ class MonthlyEnergySensor(SensorEntity):
         self._last_energy = energy
         
         await self._save_state()
-        self.async_write_ha_state()
+        self.safe_write_ha_state()
 
     @property
     def native_value(self):
@@ -930,6 +972,16 @@ class MonthlyEnergySensor(SensorEntity):
     def state(self):
         """Return the current state."""
         return round(self._state, 2)
+
+    @property
+    def unit_of_measurement(self):
+        """Return the unit of measurement, ensuring it's always kWh."""
+        return UnitOfEnergy.KILO_WATT_HOUR
+
+    @property
+    def native_unit_of_measurement(self):
+        """Return the native unit of measurement, ensuring it's always kWh."""
+        return UnitOfEnergy.KILO_WATT_HOUR
         
     @property
     def extra_state_attributes(self):
@@ -937,3 +989,20 @@ class MonthlyEnergySensor(SensorEntity):
         return {
             "last_reset": self._last_reset
         }
+
+    def safe_write_ha_state(self):
+        """Safely write HA state with error handling and unit verification."""
+        try:
+            # Ensure unit is always set before writing state
+            if not hasattr(self, '_attr_unit_of_measurement') or not self._attr_unit_of_measurement:
+                self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+                _LOGGER.warning(f"Unit of measurement was missing for {self._attr_name}, restored to kWh")
+            
+            # Verify the unit is correct
+            if self._attr_unit_of_measurement != UnitOfEnergy.KILO_WATT_HOUR:
+                _LOGGER.warning(f"Unit of measurement was incorrect for {self._attr_name} ({self._attr_unit_of_measurement}), correcting to kWh")
+                self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+            
+            self.async_write_ha_state()
+        except Exception as e:
+            _LOGGER.error(f"Error writing HA state for {self._attr_name}: {e}", exc_info=True)
