@@ -14,6 +14,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
+from homeassistant.components import recorder
+from homeassistant.components.recorder import statistics
 from .utils import load_storage, save_storage
 from .const import DOMAIN
 
@@ -273,6 +275,7 @@ class EnergySensor(SensorEntity):
         self._calculating_energy = False  # Flag to prevent concurrent calculations
         self._calculation_count = 0  # Counter for logging frequency
         self._first_calculation_logged = False  # Flag to log first successful calculation
+        self._using_statistical = False  # Track which calculation method was last used
         # State will be loaded in async_added_to_hass
 
     def _get_power_conversion_factor(self, hass, source_sensor):
@@ -320,6 +323,47 @@ class EnergySensor(SensorEntity):
             else:
                 _LOGGER.debug(f"CONVERSION FACTOR: Source sensor {self._source_sensor} not yet available, will retry")
         # Note: Factor is now set during _load_state() to enable data migration
+
+    async def _get_statistical_power_data(self, start_time, end_time):
+        """Get statistical power data from Home Assistant's recorder."""
+        try:
+            if not recorder.get_instance(self._hass):
+                _LOGGER.debug("Recorder not available, falling back to point sampling")
+                return None
+                
+            # Get statistics for the power sensor over the time period
+            stats = await statistics.statistics_during_period(
+                self._hass,
+                start_time,
+                end_time,
+                [self._source_sensor],
+                "hour",  # Use hourly statistics for better granularity
+                units=None
+            )
+            
+            if not stats or self._source_sensor not in stats:
+                _LOGGER.debug(f"No statistical data available for {self._source_sensor}")
+                return None
+                
+            sensor_stats = stats[self._source_sensor]
+            if not sensor_stats:
+                return None
+                
+            # Calculate total energy from statistical mean values
+            total_energy_kwh = 0.0
+            for stat in sensor_stats:
+                if stat.get("mean") is not None:
+                    mean_power = float(stat["mean"])
+                    # Each statistic represents 1 hour of data
+                    energy_kwh = mean_power / self._power_to_kw_factor  # Convert to kWh
+                    total_energy_kwh += energy_kwh
+                    
+            _LOGGER.debug(f"Statistical calculation for {self._attr_name}: {len(sensor_stats)} hour periods, total energy: {total_energy_kwh:.6f}kWh")
+            return total_energy_kwh
+            
+        except Exception as e:
+            _LOGGER.warning(f"Error getting statistical data for {self._source_sensor}: {e}")
+            return None
 
     async def _load_state(self):
         """Load state from storage."""
@@ -436,12 +480,37 @@ class EnergySensor(SensorEntity):
         )
 
     async def _handle_interval_update(self, now):
-        """Update energy calculation at regular intervals."""
+        """Update energy calculation at regular intervals using statistical data when possible."""
         if self._calculating_energy:
             return
             
         self._calculating_energy = True
         try:
+            # Ensure conversion factor is set
+            self._ensure_conversion_factor()
+            
+            # Safety check for conversion factor
+            if not self._power_to_kw_factor or self._power_to_kw_factor <= 0:
+                _LOGGER.debug(f"Conversion factor not yet available for {self._source_sensor}, skipping calculation")
+                return
+            
+            # Try statistical calculation first if we have previous data and it's enabled
+            statistical_energy = None
+            use_statistical = True  # Default to True for better accuracy
+            
+            # Check if statistical calculation is disabled in options
+            for entry_id, entry_data in self._hass.data[DOMAIN].items():
+                if "options" in entry_data:
+                    use_statistical = entry_data["options"].get("use_statistical_calculation", True)
+                    break
+            
+            if use_statistical and self._last_update is not None:
+                # Only try statistical data if enough time has passed (at least 5 minutes)
+                time_delta = (now - self._last_update).total_seconds()
+                if time_delta >= 300:  # 5 minutes
+                    statistical_energy = await self._get_statistical_power_data(self._last_update, now)
+            
+            # Get current state for fallback and tracking
             state = self._hass.states.get(self._source_sensor)
             if not state or state.state in ("unknown", "unavailable"):
                 return
@@ -451,19 +520,26 @@ class EnergySensor(SensorEntity):
             except (ValueError, TypeError):
                 _LOGGER.warning(f"Invalid power value: {state.state}")
                 return
+            
+            # Use statistical data if available, otherwise fall back to trapezoidal rule
+            if statistical_energy is not None and statistical_energy > 0:
+                # Use statistical calculation
+                self._state += statistical_energy
+                self._using_statistical = True
+                unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
+                self._calculation_count += 1
                 
-            if self._last_power is not None and self._last_update is not None:
-                # Calculate time delta in hours since last update
+                # Log first successful calculation 
+                if not self._first_calculation_logged:
+                    _LOGGER.info(f"Energy sensor {self._attr_name} is now tracking energy from {self._source_sensor} ({unit_display} sensor) using statistical data")
+                    self._first_calculation_logged = True
+                
+                _LOGGER.info(f"Statistical energy calculation: {self._attr_name} | Energy added: {statistical_energy:.6f}kWh | Total: {self._state:.4f}kWh | Current power: {power:.2f}{unit_display}")
+                
+            elif self._last_power is not None and self._last_update is not None:
+                # Fall back to trapezoidal rule
                 time_delta = (now - self._last_update).total_seconds()
                 delta_hours = time_delta / 3600
-                
-                # Ensure conversion factor is set
-                self._ensure_conversion_factor()
-                
-                # Safety check for conversion factor
-                if not self._power_to_kw_factor or self._power_to_kw_factor <= 0:
-                    _LOGGER.debug(f"Conversion factor not yet available for {self._source_sensor}, skipping calculation")
-                    return
                 
                 # Trapezoidal rule: average power * time (kWh)
                 avg_power = (self._last_power + power) / 2
@@ -472,12 +548,13 @@ class EnergySensor(SensorEntity):
                 # Ensure we're not adding negative energy
                 if energy_kwh > 0:
                     self._state += energy_kwh
+                    self._using_statistical = False
                     unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
                     self._calculation_count += 1
                     
                     # Log first successful calculation 
                     if not self._first_calculation_logged:
-                        _LOGGER.info(f"Energy sensor {self._attr_name} is now tracking energy from {self._source_sensor} ({unit_display} sensor)")
+                        _LOGGER.info(f"Energy sensor {self._attr_name} is now tracking energy from {self._source_sensor} ({unit_display} sensor) using point sampling")
                         self._first_calculation_logged = True
                     
                     # Special logging for very small power values that might be getting lost
@@ -486,7 +563,7 @@ class EnergySensor(SensorEntity):
                     
                     # Only log every 10th calculation to reduce log spam
                     if self._calculation_count % 10 == 0:
-                        _LOGGER.debug(f"Energy calculation #{self._calculation_count}: {self._attr_name} | Power: {power:.2f}{unit_display} | Energy added: {energy_kwh:.6f}kWh | Total: {self._state:.4f}kWh")
+                        _LOGGER.debug(f"Point sampling calculation #{self._calculation_count}: {self._attr_name} | Power: {power:.2f}{unit_display} | Energy added: {energy_kwh:.6f}kWh | Total: {self._state:.4f}kWh")
                 else:
                     unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
                     _LOGGER.debug(f"Interval update: No energy added (delta too small), avg power: {avg_power:.2f}{unit_display}, time: {delta_hours:.4f}h, calculated energy: {energy_kwh:.8f}kWh")
@@ -630,6 +707,16 @@ class EnergySensor(SensorEntity):
         
         # Add more diagnostic information
         attrs["calculation_count"] = self._calculation_count
+        attrs["calculation_method"] = "statistical" if hasattr(self, '_using_statistical') and self._using_statistical else "point_sampling"
+        
+        # Check if statistical calculation is enabled
+        use_statistical = True
+        for entry_id, entry_data in self._hass.data[DOMAIN].items():
+            if "options" in entry_data:
+                use_statistical = entry_data["options"].get("use_statistical_calculation", True)
+                break
+        attrs["statistical_calculation_enabled"] = use_statistical
+        
         source_state = self._hass.states.get(self._source_sensor)
         if source_state:
             attrs["source_current_value"] = source_state.state

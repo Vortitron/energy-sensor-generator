@@ -6,7 +6,8 @@ A Home Assistant custom integration that automatically generates kWh energy sens
 
 ## Features
 - **Automatic Detection**: Identifies all power sensors (`unit: W` or `kW`, `device_class: power`) in Home Assistant.
-- **Custom Energy Calculation**: Computes kWh using a trapezoidal rule, replacing the `integration` helper.
+- **Smart Energy Calculation**: Uses Home Assistant's statistical data for accurate energy calculations, especially for intermittent loads like heaters, with fallback to trapezoidal rule.
+- **Statistical Accuracy**: For peaky/intermittent devices (hot water heaters, dishwashers), uses mean power values from Home Assistant's recorder instead of point sampling to avoid missing energy consumption.
 - **Daily and Monthly Tracking**: Tracks energy usage with automatic daily and monthly resets, replacing the `utility_meter` helper.
 - **Flexible Generation**: Supports automatic sensor creation on startup or manual triggering via a UI button.
 - **Energy Dashboard Compatibility**: Generates sensors with `device_class: energy` and `state_class: total_increasing` for seamless integration.
@@ -23,8 +24,11 @@ The `energy_sensor_generator` integration simplifies energy monitoring by creati
 
 2. **Energy Calculation**:
    - For each power sensor, it creates a custom `EnergySensor` that calculates kWh by integrating power over time.
-   - The integration uses the trapezoidal rule: `energy_kwh = (avg_power * time_delta_hours) / conversion_factor`, where `avg_power` is the average of consecutive power readings and `conversion_factor` is 1000 for Watts or 1 for kilowatts.
-   - Energy values are updated whenever the power sensor changes, ensuring accurate accumulation.
+   - **NEW**: The integration now intelligently chooses between two calculation methods:
+     - **Statistical Method** (Primary): Uses Home Assistant's statistical data (mean power values) from the recorder database for highly accurate energy calculations, especially for intermittent/peaky devices like hot water heaters.
+     - **Point Sampling Method** (Fallback): Uses the traditional trapezoidal rule with instantaneous power readings when statistical data is unavailable.
+   - **Why Statistical is Better**: For devices that cycle on/off frequently (heaters, dishwashers), point sampling every 60 seconds can miss significant energy consumption. Statistical calculation uses the mean power over time periods, capturing all energy usage regardless of when sampling occurs.
+   - Energy values are updated at regular intervals (default 60 seconds) with the most accurate method available.
    - Data is stored in a JSON file (`.storage/energy_sensor_generator.json`) to persist across restarts.
 
 3. **Daily and Monthly Tracking**:
@@ -179,6 +183,17 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 ---
 
 ### Changelog
+
+#### Version 0.0.45
+- **🚀 MAJOR FEATURE: Statistical Energy Calculation**: Integration now uses Home Assistant's statistical data (mean power values) from the recorder database for highly accurate energy calculations
+- **📊 Perfect for Intermittent Loads**: Especially beneficial for devices like hot water heaters, dishwashers, and other appliances that cycle on/off frequently
+- **🎯 Eliminates Missed Energy**: Statistical method captures all energy consumption regardless of sampling timing, solving the problem where point sampling could miss energy from devices that turn off between samples
+- **🔄 Intelligent Fallback**: Automatically falls back to traditional trapezoidal rule when statistical data is unavailable
+- **📈 Enhanced Precision**: Improved decimal precision consistency across all sensor types (4 decimal places)
+- **🛠️ New Diagnostic Service**: Added `diagnose_sensor` service for detailed sensor troubleshooting
+- **📋 Better Diagnostics**: Enhanced sensor attributes showing calculation method used, statistical calculation status, and more detailed source sensor information
+- **🔧 Improved Logging**: Better unit detection logging and special tracking for very small power values
+- **⚙️ Configurable**: Statistical calculation can be disabled if needed via integration options
 
 #### Version 0.0.34
 - **Fixed kilowatt (kW) support**: The integration now properly detects power sensors with kW units (kW, kilowatt, kilowatts) and applies the correct conversion factor
