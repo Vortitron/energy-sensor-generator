@@ -212,6 +212,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         lambda call: debug_sensor_detection_service(hass, call, entry)
     )
     
+    # Register diagnostic service for individual sensors
+    hass.services.async_register(
+        DOMAIN,
+        "diagnose_sensor",
+        lambda call: diagnose_sensor_service(hass, call, entry)
+    )
+    
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     
     # Set up periodic sampling for more accurate energy calculation
@@ -547,3 +554,97 @@ async def debug_sensor_detection_service(hass: HomeAssistant, call, entry: Confi
 		_LOGGER.info(f"  {base_name}: {entities}")
 	
 	_LOGGER.info("=== END DEBUG ===")
+
+async def diagnose_sensor_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:
+	"""Service to diagnose a specific energy sensor."""
+	sensor_name = call.data.get("sensor_name", "")
+	
+	if not sensor_name:
+		_LOGGER.error("No sensor name provided for diagnosis")
+		return
+	
+	_LOGGER.info(f"Diagnosing energy sensor: {sensor_name}")
+	
+	# Find the sensor entity
+	entity_registry = er.async_get(hass)
+	energy_entity = None
+	
+	# Look for the sensor by name or entity_id
+	for entity_id, entity_entry in entity_registry.entities.items():
+		if (entity_entry.platform == DOMAIN and 
+			(sensor_name in entity_id or sensor_name in (entity_entry.name or ""))):
+			energy_entity = entity_id
+			break
+	
+	if not energy_entity:
+		_LOGGER.error(f"Could not find energy sensor: {sensor_name}")
+		return
+	
+	# Get the sensor state
+	state = hass.states.get(energy_entity)
+	if not state:
+		_LOGGER.error(f"Could not get state for: {energy_entity}")
+		return
+	
+	_LOGGER.info(f"DIAGNOSIS for {energy_entity}:")
+	_LOGGER.info(f"  Current value: {state.state} {state.attributes.get('unit_of_measurement', 'N/A')}")
+	
+	# Get attributes
+	attrs = state.attributes
+	_LOGGER.info(f"  Last power: {attrs.get('last_power', 'N/A')}")
+	_LOGGER.info(f"  Last update: {attrs.get('last_update', 'N/A')}")
+	_LOGGER.info(f"  Conversion factor: {attrs.get('power_to_kw_factor', 'N/A')}")
+	_LOGGER.info(f"  Source unit: {attrs.get('source_unit', 'N/A')}")
+	_LOGGER.info(f"  Calculation count: {attrs.get('calculation_count', 'N/A')}")
+	_LOGGER.info(f"  Source current value: {attrs.get('source_current_value', 'N/A')}")
+	_LOGGER.info(f"  Source unit of measurement: {attrs.get('source_unit_of_measurement', 'N/A')}")
+	_LOGGER.info(f"  Sample interval: {attrs.get('sample_interval', 'N/A')} seconds")
+	
+	# Check source sensor
+	source_sensor = None
+	for attr_name, attr_value in attrs.items():
+		if "source" in attr_name.lower() and "sensor" in attr_name.lower():
+			source_sensor = attr_value
+			break
+	
+	if not source_sensor:
+		# Try to deduce from entity_id
+		if "_energy" in energy_entity:
+			base_name = energy_entity.replace("sensor.", "").replace("_energy", "").replace("_daily", "").replace("_monthly", "")
+			source_sensor = f"sensor.{base_name}_power"
+	
+	if source_sensor:
+		source_state = hass.states.get(source_sensor)
+		if source_state:
+			_LOGGER.info(f"SOURCE SENSOR {source_sensor}:")
+			_LOGGER.info(f"  Current value: {source_state.state}")
+			_LOGGER.info(f"  Unit: {source_state.attributes.get('unit_of_measurement', 'N/A')}")
+			_LOGGER.info(f"  Device class: {source_state.attributes.get('device_class', 'N/A')}")
+			_LOGGER.info(f"  State class: {source_state.attributes.get('state_class', 'N/A')}")
+		else:
+			_LOGGER.error(f"SOURCE SENSOR {source_sensor} NOT FOUND")
+	
+	# Get storage information
+	if entry:
+		storage_path = hass.data[DOMAIN][entry.entry_id]["storage"]
+		try:
+			storage = await load_storage(storage_path)
+			# Find storage key
+			storage_key = None
+			for key in storage.keys():
+				if sensor_name.lower() in key.lower():
+					storage_key = key
+					break
+			
+			if storage_key:
+				_LOGGER.info(f"STORAGE DATA for {storage_key}:")
+				storage_data = storage[storage_key]
+				if isinstance(storage_data, dict):
+					for k, v in storage_data.items():
+						_LOGGER.info(f"  {k}: {v}")
+				else:
+					_LOGGER.info(f"  Legacy value: {storage_data}")
+			else:
+				_LOGGER.info("No storage data found")
+		except Exception as e:
+			_LOGGER.error(f"Error reading storage: {e}")

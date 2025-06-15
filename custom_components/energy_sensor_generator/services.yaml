@@ -30,3 +30,18 @@ reset_energy_sensors:
       selector:
         text:
           multiple: true 
+
+debug_sensor_detection:
+  name: Debug Sensor Detection
+  description: Debug service to display detected power sensors and their attributes.
+
+diagnose_sensor:
+  name: Diagnose Energy Sensor
+  description: Provide detailed diagnostics for a specific energy sensor.
+  fields:
+    sensor_name:
+      name: Sensor Name
+      description: Name or entity_id of the energy sensor to diagnose (e.g., "p1ib" or "sensor.p1ib_energy").
+      required: true
+      selector:
+        text: 

@@ -289,22 +289,22 @@ class EnergySensor(SensorEntity):
             unit = state.attributes.get("unit_of_measurement", "").strip()
             device_class = state.attributes.get("device_class", "")
             
-            _LOGGER.debug(f"UNIT DETECTION: {source_sensor} | unit='{unit}' | device_class='{device_class}' | state={state.state}")
+            _LOGGER.info(f"UNIT DETECTION: {source_sensor} | unit='{unit}' | device_class='{device_class}' | state={state.state}")
             
             # Normalise unit to lowercase for comparison
             unit_lower = unit.lower()
             
             if unit_lower in ["kw", "kilowatt", "kilowatts"]:
                 # Source is already in kW, no conversion needed
-                _LOGGER.info(f"Power unit detected for {source_sensor}: kW (conversion factor: 1)")
+                _LOGGER.info(f"Power unit detected for {source_sensor}: kW (conversion factor: 1) - Current value: {state.state}")
                 return 1
             elif unit_lower in ["w", "watt", "watts"]:
                 # Source is in Watts, need to divide by 1000 to get kW
-                _LOGGER.info(f"Power unit detected for {source_sensor}: W (conversion factor: 1000)")
+                _LOGGER.info(f"Power unit detected for {source_sensor}: W (conversion factor: 1000) - Current value: {state.state}")
                 return 1000
             else:
                 # Unknown or missing unit, assume Watts for backwards compatibility
-                _LOGGER.info(f"Unknown/missing unit for {source_sensor} ('{unit}'), assuming Watts (conversion factor: 1000)")
+                _LOGGER.warning(f"Unknown/missing unit for {source_sensor} ('{unit}'), assuming Watts (conversion factor: 1000) - Current value: {state.state}")
                 return 1000
         except Exception as e:
             _LOGGER.error(f"Error determining power conversion factor for {source_sensor}: {e}")
@@ -480,12 +480,16 @@ class EnergySensor(SensorEntity):
                         _LOGGER.info(f"Energy sensor {self._attr_name} is now tracking energy from {self._source_sensor} ({unit_display} sensor)")
                         self._first_calculation_logged = True
                     
+                    # Special logging for very small power values that might be getting lost
+                    if power < 0.1 and power > 0:
+                        _LOGGER.info(f"Small power tracking: {self._attr_name} | Power: {power:.4f}{unit_display} | Energy added: {energy_kwh:.8f}kWh | Total: {self._state:.4f}kWh")
+                    
                     # Only log every 10th calculation to reduce log spam
                     if self._calculation_count % 10 == 0:
-                        _LOGGER.debug(f"Energy calculation #{self._calculation_count}: {self._attr_name} | Power: {power:.2f}{unit_display} | Energy added: {energy_kwh:.6f}kWh | Total: {self._state:.3f}kWh")
+                        _LOGGER.debug(f"Energy calculation #{self._calculation_count}: {self._attr_name} | Power: {power:.2f}{unit_display} | Energy added: {energy_kwh:.6f}kWh | Total: {self._state:.4f}kWh")
                 else:
                     unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                    _LOGGER.debug(f"Interval update: No energy added (delta too small), avg power: {avg_power:.2f}{unit_display}, time: {delta_hours:.4f}h")
+                    _LOGGER.debug(f"Interval update: No energy added (delta too small), avg power: {avg_power:.2f}{unit_display}, time: {delta_hours:.4f}h, calculated energy: {energy_kwh:.8f}kWh")
             else:
                 _LOGGER.debug(f"Interval update: Skipping calculation - missing previous power/time data for {self._attr_name}")
             
@@ -623,6 +627,13 @@ class EnergySensor(SensorEntity):
         if self._power_to_kw_factor is not None:
             attrs["power_to_kw_factor"] = self._power_to_kw_factor
             attrs["source_unit"] = "kW" if self._power_to_kw_factor == 1 else "W"
+        
+        # Add more diagnostic information
+        attrs["calculation_count"] = self._calculation_count
+        source_state = self._hass.states.get(self._source_sensor)
+        if source_state:
+            attrs["source_current_value"] = source_state.state
+            attrs["source_unit_of_measurement"] = source_state.attributes.get("unit_of_measurement", "")
         
         # Get interval from options
         sample_interval = 60  # Default 
@@ -787,12 +798,12 @@ class DailyEnergySensor(SensorEntity):
     @property
     def native_value(self):
         """Return the current state."""
-        return round(self._state, 2)
+        return round(self._state, 4)  # Match main energy sensor precision
 
     @property
     def state(self):
         """Return the current state."""
-        return round(self._state, 2)
+        return round(self._state, 4)  # Match main energy sensor precision
 
     @property
     def unit_of_measurement(self):
@@ -966,12 +977,12 @@ class MonthlyEnergySensor(SensorEntity):
     @property
     def native_value(self):
         """Return the current state."""
-        return round(self._state, 2)
+        return round(self._state, 4)  # Match main energy sensor precision
 
     @property
     def state(self):
         """Return the current state."""
-        return round(self._state, 2)
+        return round(self._state, 4)  # Match main energy sensor precision
 
     @property
     def unit_of_measurement(self):
