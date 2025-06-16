@@ -213,10 +213,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     
     # Register diagnostic service for individual sensors
+    async def diagnose_sensor_wrapper(call):
+        await diagnose_sensor_service(hass, call, entry)
+    
     hass.services.async_register(
         DOMAIN,
         "diagnose_sensor",
-        lambda call: diagnose_sensor_service(hass, call, entry)
+        diagnose_sensor_wrapper
     )
     
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
