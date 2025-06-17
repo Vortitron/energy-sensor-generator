@@ -14,7 +14,7 @@ from homeassistant.helpers.selector import (
 	NumberSelectorConfig,
 	NumberSelectorMode
 )
-from .const import DOMAIN
+from .const import DOMAIN, CONF_DEBUG_LOGGING
 from .__init__ import detect_power_sensors  # Import the detect function
 
 class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
@@ -39,6 +39,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		create_daily = self.config_entry.options.get("create_daily_sensors", True)
 		create_monthly = self.config_entry.options.get("create_monthly_sensors", True)
 		sample_interval = self.config_entry.options.get("sample_interval", 60)
+		debug_logging = self.config_entry.options.get(CONF_DEBUG_LOGGING, False)
 		
 		# Merge auto-detected and previously selected sensors for the selection list
 		all_power_sensors = {}
@@ -109,6 +110,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			create_daily = user_input.get("create_daily_sensors", True)
 			create_monthly = user_input.get("create_monthly_sensors", True)
 			sample_interval = user_input.get("sample_interval", 60)
+			debug_logging = user_input.get(CONF_DEBUG_LOGGING, False)
 			
 			if not self._errors:
 				return self.async_create_entry(
@@ -117,7 +119,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 						"selected_power_sensors": selected_sensors,
 						"create_daily_sensors": create_daily,
 						"create_monthly_sensors": create_monthly,
-						"sample_interval": sample_interval
+						"sample_interval": sample_interval,
+						CONF_DEBUG_LOGGING: debug_logging
 					}
 				)
 
@@ -150,6 +153,9 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			)
 		)
 		
+		# Add debug logging toggle
+		schema[vol.Optional(CONF_DEBUG_LOGGING, default=debug_logging)] = BooleanSelector()
+		
 		return self.async_show_form(
 			step_id="init",
 			data_schema=vol.Schema(schema),
@@ -159,6 +165,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				"daily_description": "Create daily energy sensors that reset at midnight",
 				"monthly_description": "Create monthly energy sensors that reset at the beginning of each month",
 				"interval_description": "Sampling interval for energy calculations (shorter intervals are more accurate but use more resources)",
+				"debug_description": "Enable detailed debug logging for troubleshooting (can be toggled without restarting)",
 				"restart_note": "⚠️ Note: Some changes may require a Home Assistant restart to take full effect. If sensors are removed, you may need to restart and then delete any entities marked as 'no longer provided'."
 			}
 		) 

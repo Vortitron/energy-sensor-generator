@@ -10,10 +10,31 @@ from homeassistant.helpers.event import async_track_time_interval
 from datetime import timedelta
 from .sensor import EnergySensor, DailyEnergySensor, MonthlyEnergySensor
 from .utils import load_storage, save_storage
-from .const import DOMAIN, STORAGE_FILE
+from .const import DOMAIN, STORAGE_FILE, CONF_DEBUG_LOGGING
 import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
+
+def _is_debug_enabled(hass: HomeAssistant) -> bool:
+	"""Check if debug logging is enabled for this integration."""
+	if DOMAIN not in hass.data:
+		return False
+	
+	# Check all config entries for debug setting
+	for config_entry in hass.config_entries.async_entries(DOMAIN):
+		if config_entry.options.get(CONF_DEBUG_LOGGING, False):
+			return True
+	return False
+
+def _debug_log(hass: HomeAssistant, message: str) -> None:
+	"""Log debug message only if debug logging is enabled."""
+	if _is_debug_enabled(hass):
+		_LOGGER.warning(f"DEBUG: {message}")
+
+def _info_log(hass: HomeAssistant, message: str, force: bool = False) -> None:
+	"""Log info message, respecting debug setting unless forced."""
+	if force or _is_debug_enabled(hass):
+		_LOGGER.info(message)
 
 def detect_power_sensors(hass: HomeAssistant) -> list:
     """Detect power sensors using various criteria for broader detection."""
@@ -24,7 +45,7 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
     # Get all entity states from Home Assistant
     all_states = hass.states.async_all()
     
-    _LOGGER.debug(f"Scanning {len(all_states)} entities for power sensors...")
+    _debug_log(hass, f"Scanning {len(all_states)} entities for power sensors...")
     
     # Check for entities based on several criteria
     for state in all_states:
@@ -79,13 +100,13 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
             
         if is_power_sensor:
             power_sensors.append(entity_id)
-            _LOGGER.debug(f"✓ Detected power sensor: {entity_id} (reason: {detection_reason}, state: {state.state})")
+            _debug_log(hass, f"✓ Detected power sensor: {entity_id} (reason: {detection_reason}, state: {state.state})")
         elif unit:  # Log sensors with units that we didn't detect as power sensors
-            _LOGGER.debug(f"✗ Skipped sensor: {entity_id} (unit: '{unit}', device_class: '{device_class}', state: {state.state})")
+            _debug_log(hass, f"✗ Skipped sensor: {entity_id} (unit: '{unit}', device_class: '{device_class}', state: {state.state})")
             
-    _LOGGER.info(f"Detected {len(power_sensors)} power sensors total")
+    _info_log(hass, f"Detected {len(power_sensors)} power sensors total", force=True)
     if kw_sensors:
-        _LOGGER.info(f"Detected {len(kw_sensors)} kW sensors: {kw_sensors}")
+        _info_log(hass, f"Detected {len(kw_sensors)} kW sensors: {kw_sensors}", force=True)
     return power_sensors
 
 def check_existing_energy_sensors(hass: HomeAssistant) -> dict:
@@ -149,7 +170,7 @@ def find_generated_sensors(hass: HomeAssistant) -> dict:
                     result[base_name] = []
                 result[base_name].append(entity_id)
     
-    _LOGGER.debug(f"Found {len(result)} generated sensor groups: {result}")
+    _debug_log(hass, f"Found {len(result)} generated sensor groups: {result}")
     return result
 
 def get_source_device_info(hass: HomeAssistant, source_entity_id: str):

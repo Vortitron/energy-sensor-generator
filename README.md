@@ -137,6 +137,19 @@ Storage file (`.storage/energy_sensor_generator.json`):
 
 ## Troubleshooting
 
+### Debug Logging
+- **NEW**: You can now enable detailed debug logging to help troubleshoot issues without needing a new release
+- Debug logging can be enabled during initial setup or toggled later in the integration options
+- When enabled, detailed calculation logs will be written to help diagnose energy calculation issues
+- Debug logging includes:
+  - Statistical vs point sampling calculation details
+  - Energy calculation breakdowns (power values, time deltas, conversion factors)
+  - Sensor detection and unit conversion information
+  - Interval update timing and calculation methods
+- **To enable**: Go to **Settings > Devices & Services > Energy Sensor Generator > Configure** and toggle "Debug Logging"
+- Debug messages appear in **Settings > System > Logs** with the "DEBUG:" prefix
+- **Note**: Disable debug logging once issues are resolved to reduce log verbosity
+
 ### Sensors Not Available During Startup:
 - **New in v0.0.28**: The integration is now resilient to source power sensors not being available during Home Assistant startup
 - Energy sensors are created even if source sensors aren't ready yet, and will begin tracking once sources become available

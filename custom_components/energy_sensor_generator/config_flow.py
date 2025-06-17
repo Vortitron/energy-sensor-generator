@@ -6,9 +6,10 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
-    NumberSelectorMode
+    NumberSelectorMode,
+    BooleanSelector
 )
-from .const import DOMAIN
+from .const import DOMAIN, CONF_DEBUG_LOGGING
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +31,9 @@ class EnergySensorGeneratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 title="Energy Sensor Generator", 
                 data={
                     "sample_interval": user_input.get("sample_interval", 60)
+                },
+                options={
+                    CONF_DEBUG_LOGGING: user_input.get(CONF_DEBUG_LOGGING, False)
                 }
             )
 
@@ -46,10 +50,12 @@ class EnergySensorGeneratorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         mode=NumberSelectorMode.SLIDER
                     )
                 ),
+                vol.Optional(CONF_DEBUG_LOGGING, default=False): BooleanSelector(),
             }),
             errors=errors,
             description_placeholders={
-                "interval_description": "Sampling interval for energy calculations (shorter intervals are more accurate but use more resources)"
+                "interval_description": "Sampling interval for energy calculations (shorter intervals are more accurate but use more resources)",
+                "debug_description": "Enable detailed debug logging for troubleshooting (can be toggled later in options)"
             }
         )
 
