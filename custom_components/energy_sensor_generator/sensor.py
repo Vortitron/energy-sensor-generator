@@ -527,9 +527,20 @@ class EnergySensor(SensorEntity):
             
             _LOGGER.warning(f"DEBUG: Statistical calculation enabled: {use_statistical}, available: {STATISTICS_AVAILABLE}")
             
-            # For now, disable statistical calculation and focus on point sampling working correctly
+            # Try statistical calculation if enabled and available
             statistical_energy = None
-            _LOGGER.warning(f"DEBUG: Forcing point sampling for now to debug basic functionality")
+            if use_statistical and STATISTICS_AVAILABLE:
+                try:
+                    statistical_energy = await self._get_statistical_power_data(self._last_update or (now - timedelta(minutes=5)), now)
+                    if statistical_energy is not None:
+                        _LOGGER.warning(f"DEBUG: Statistical calculation successful for {self._attr_name}: {statistical_energy:.6f}kWh")
+                    else:
+                        _LOGGER.warning(f"DEBUG: Statistical calculation returned None for {self._attr_name}, falling back to point sampling")
+                except Exception as e:
+                    _LOGGER.warning(f"DEBUG: Statistical calculation failed for {self._attr_name}: {e}, falling back to point sampling")
+                    statistical_energy = None
+            else:
+                _LOGGER.warning(f"DEBUG: Using point sampling for {self._attr_name} (statistical: {use_statistical}, available: {STATISTICS_AVAILABLE})")
             
             # Get current state for fallback and tracking
             state = self._hass.states.get(self._source_sensor)
