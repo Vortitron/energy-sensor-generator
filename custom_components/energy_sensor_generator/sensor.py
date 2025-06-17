@@ -14,8 +14,13 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
-from homeassistant.components import recorder
-from homeassistant.components.recorder import statistics
+try:
+    from homeassistant.components import recorder
+    from homeassistant.components.recorder import statistics
+    STATISTICS_AVAILABLE = True
+except ImportError:
+    STATISTICS_AVAILABLE = False
+    _LOGGER.warning("Statistics module not available, using point sampling only")
 from .utils import load_storage, save_storage
 from .const import DOMAIN
 
@@ -327,6 +332,10 @@ class EnergySensor(SensorEntity):
     async def _get_statistical_power_data(self, start_time, end_time):
         """Get statistical power data from Home Assistant's recorder."""
         try:
+            if not STATISTICS_AVAILABLE:
+                _LOGGER.debug(f"Statistics module not available for {self._attr_name}")
+                return None
+                
             if not recorder.get_instance(self._hass):
                 _LOGGER.debug(f"Recorder not available for {self._attr_name}, falling back to point sampling")
                 return None
@@ -513,16 +522,27 @@ class EnergySensor(SensorEntity):
                     use_statistical = entry_data["options"].get("use_statistical_calculation", True)
                     break
             
-            if use_statistical and self._last_update is not None:
+            _LOGGER.info(f"Statistical calculation enabled: {use_statistical}, available: {STATISTICS_AVAILABLE}")
+            
+            if use_statistical and STATISTICS_AVAILABLE and self._last_update is not None:
                 # Only try statistical data if enough time has passed (at least 2 minutes for 5-minute stats)
                 time_delta = (now - self._last_update).total_seconds()
                 if time_delta >= 120:  # 2 minutes minimum
-                    _LOGGER.debug(f"Attempting statistical calculation for {self._attr_name}, time delta: {time_delta:.0f}s")
+                    _LOGGER.info(f"Attempting statistical calculation for {self._attr_name}, time delta: {time_delta:.0f}s")
                     statistical_energy = await self._get_statistical_power_data(self._last_update, now)
                     if statistical_energy is not None:
-                        _LOGGER.debug(f"Statistical energy calculated: {statistical_energy:.6f}kWh")
+                        _LOGGER.info(f"Statistical energy calculated: {statistical_energy:.6f}kWh")
                     else:
-                        _LOGGER.debug(f"Statistical calculation failed, using point sampling")
+                        _LOGGER.info(f"Statistical calculation failed, using point sampling")
+                else:
+                    _LOGGER.debug(f"Time delta too small for statistical calculation: {time_delta:.0f}s < 120s")
+            else:
+                if not use_statistical:
+                    _LOGGER.debug("Statistical calculation disabled in options")
+                elif not STATISTICS_AVAILABLE:
+                    _LOGGER.debug("Statistics module not available")
+                elif self._last_update is None:
+                    _LOGGER.debug("No previous update time available")
             
             # Get current state for fallback and tracking
             state = self._hass.states.get(self._source_sensor)

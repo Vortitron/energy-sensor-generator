@@ -222,6 +222,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         diagnose_sensor_wrapper
     )
     
+    # Register list sensors service
+    async def list_sensors_wrapper(call):
+        await list_sensors_service(hass, call, entry)
+    
+    hass.services.async_register(
+        DOMAIN,
+        "list_sensors",
+        list_sensors_wrapper
+    )
+    
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     
     # Set up periodic sampling for more accurate energy calculation
@@ -572,15 +582,28 @@ async def diagnose_sensor_service(hass: HomeAssistant, call, entry: ConfigEntry 
 	entity_registry = er.async_get(hass)
 	energy_entity = None
 	
-	# Look for the sensor by name or entity_id
-	for entity_id, entity_entry in entity_registry.entities.items():
-		if (entity_entry.platform == DOMAIN and 
-			(sensor_name in entity_id or sensor_name in (entity_entry.name or ""))):
-			energy_entity = entity_id
-			break
+	# First, try exact match
+	if sensor_name.startswith("sensor."):
+		if sensor_name in entity_registry.entities and entity_registry.entities[sensor_name].platform == DOMAIN:
+			energy_entity = sensor_name
+	
+	# If not found, try partial matches
+	if not energy_entity:
+		for entity_id, entity_entry in entity_registry.entities.items():
+			if entity_entry.platform == DOMAIN:
+				# Check if sensor_name is part of the entity_id or name
+				if (sensor_name.lower() in entity_id.lower() or 
+					(entity_entry.name and sensor_name.lower() in entity_entry.name.lower())):
+					energy_entity = entity_id
+					_LOGGER.info(f"Found matching sensor: {entity_id}")
+					break
 	
 	if not energy_entity:
-		_LOGGER.error(f"Could not find energy sensor: {sensor_name}")
+		_LOGGER.error(f"Could not find energy sensor matching: {sensor_name}")
+		_LOGGER.info("Available energy sensors from this integration:")
+		for entity_id, entity_entry in entity_registry.entities.items():
+			if entity_entry.platform == DOMAIN:
+				_LOGGER.info(f"  {entity_id} ({entity_entry.name})")
 		return
 	
 	# Get the sensor state
@@ -651,3 +674,33 @@ async def diagnose_sensor_service(hass: HomeAssistant, call, entry: ConfigEntry 
 				_LOGGER.info("No storage data found")
 		except Exception as e:
 			_LOGGER.error(f"Error reading storage: {e}")
+
+async def list_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:
+	"""Service to list all available energy sensors from this integration."""
+	_LOGGER.info("=== LISTING ALL ENERGY SENSORS ===")
+	
+	entity_registry = er.async_get(hass)
+	energy_sensors = []
+	
+	# Find all sensors from this integration
+	for entity_id, entity_entry in entity_registry.entities.items():
+		if entity_entry.platform == DOMAIN:
+			energy_sensors.append((entity_id, entity_entry.name or "No Name"))
+	
+	_LOGGER.info(f"Found {len(energy_sensors)} energy sensors from this integration:")
+	for entity_id, name in energy_sensors:
+		state = hass.states.get(entity_id)
+		if state:
+			attrs = state.attributes
+			method = attrs.get("calculation_method", "unknown")
+			value = state.state
+			_LOGGER.info(f"  {entity_id} ({name}) - Value: {value} kWh, Method: {method}")
+		else:
+			_LOGGER.info(f"  {entity_id} ({name}) - NOT AVAILABLE")
+	
+	if not energy_sensors:
+		_LOGGER.warning("No energy sensors found from this integration!")
+		_LOGGER.info("Checking all sensors in registry:")
+		for entity_id, entity_entry in entity_registry.entities.items():
+			if "energy" in entity_id.lower():
+				_LOGGER.info(f"  {entity_id} (platform: {entity_entry.platform})")

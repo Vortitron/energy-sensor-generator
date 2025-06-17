@@ -44,4 +44,8 @@ diagnose_sensor:
       description: Name or entity_id of the energy sensor to diagnose (e.g., "p1ib" or "sensor.p1ib_energy").
       required: true
       selector:
-        text: 
+        text:
+
+list_sensors:
+  name: List Energy Sensors
+  description: List all energy sensors created by this integration with their current status. 
