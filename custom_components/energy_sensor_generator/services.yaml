@@ -48,4 +48,8 @@ diagnose_sensor:
 
 list_sensors:
   name: List Energy Sensors
-  description: List all energy sensors created by this integration with their current status. 
+  description: List all energy sensors created by this integration with their current status.
+
+test_service:
+  name: Test Service Registration
+  description: Simple test to verify that services are properly registered and working. 

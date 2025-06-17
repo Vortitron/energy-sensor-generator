@@ -499,7 +499,10 @@ class EnergySensor(SensorEntity):
 
     async def _handle_interval_update(self, now):
         """Update energy calculation at regular intervals using statistical data when possible."""
+        _LOGGER.warning(f"DEBUG: Interval update called for {self._attr_name}")
+        
         if self._calculating_energy:
+            _LOGGER.warning(f"DEBUG: Already calculating energy for {self._attr_name}, skipping")
             return
             
         self._calculating_energy = True
@@ -522,27 +525,11 @@ class EnergySensor(SensorEntity):
                     use_statistical = entry_data["options"].get("use_statistical_calculation", True)
                     break
             
-            _LOGGER.info(f"Statistical calculation enabled: {use_statistical}, available: {STATISTICS_AVAILABLE}")
+            _LOGGER.warning(f"DEBUG: Statistical calculation enabled: {use_statistical}, available: {STATISTICS_AVAILABLE}")
             
-            if use_statistical and STATISTICS_AVAILABLE and self._last_update is not None:
-                # Only try statistical data if enough time has passed (at least 2 minutes for 5-minute stats)
-                time_delta = (now - self._last_update).total_seconds()
-                if time_delta >= 120:  # 2 minutes minimum
-                    _LOGGER.info(f"Attempting statistical calculation for {self._attr_name}, time delta: {time_delta:.0f}s")
-                    statistical_energy = await self._get_statistical_power_data(self._last_update, now)
-                    if statistical_energy is not None:
-                        _LOGGER.info(f"Statistical energy calculated: {statistical_energy:.6f}kWh")
-                    else:
-                        _LOGGER.info(f"Statistical calculation failed, using point sampling")
-                else:
-                    _LOGGER.debug(f"Time delta too small for statistical calculation: {time_delta:.0f}s < 120s")
-            else:
-                if not use_statistical:
-                    _LOGGER.debug("Statistical calculation disabled in options")
-                elif not STATISTICS_AVAILABLE:
-                    _LOGGER.debug("Statistics module not available")
-                elif self._last_update is None:
-                    _LOGGER.debug("No previous update time available")
+            # For now, disable statistical calculation and focus on point sampling working correctly
+            statistical_energy = None
+            _LOGGER.warning(f"DEBUG: Forcing point sampling for now to debug basic functionality")
             
             # Get current state for fallback and tracking
             state = self._hass.states.get(self._source_sensor)
@@ -583,9 +570,13 @@ class EnergySensor(SensorEntity):
                 time_delta = (now - self._last_update).total_seconds()
                 delta_hours = time_delta / 3600
                 
+                _LOGGER.warning(f"DEBUG: Point sampling calculation for {self._attr_name} | Last power: {self._last_power} | Current power: {power} | Time delta: {time_delta:.0f}s")
+                
                 # Trapezoidal rule: average power * time (kWh)
                 avg_power = (self._last_power + power) / 2
                 energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
+                
+                _LOGGER.warning(f"DEBUG: Calculated energy: {energy_kwh:.8f}kWh | Avg power: {avg_power:.4f} | Delta hours: {delta_hours:.6f} | Conversion factor: {self._power_to_kw_factor}")
                 
                 # Ensure we're not adding negative energy
                 if energy_kwh > 0:
@@ -596,19 +587,13 @@ class EnergySensor(SensorEntity):
                     
                     # Log first successful calculation 
                     if not self._first_calculation_logged:
-                        _LOGGER.info(f"Energy sensor {self._attr_name} is now tracking energy from {self._source_sensor} ({unit_display} sensor) using point sampling")
+                        _LOGGER.warning(f"Energy sensor {self._attr_name} is now tracking energy from {self._source_sensor} ({unit_display} sensor) using point sampling")
                         self._first_calculation_logged = True
                     
-                    # Special logging for very small power values that might be getting lost
-                    if power < 0.1 and power > 0:
-                        _LOGGER.info(f"Small power tracking: {self._attr_name} | Power: {power:.4f}{unit_display} | Energy added: {energy_kwh:.8f}kWh | Total: {self._state:.4f}kWh")
-                    
-                    # Only log every 10th calculation to reduce log spam
-                    if self._calculation_count % 10 == 0:
-                        _LOGGER.debug(f"Point sampling calculation #{self._calculation_count}: {self._attr_name} | Power: {power:.2f}{unit_display} | Energy added: {energy_kwh:.6f}kWh | Total: {self._state:.4f}kWh")
+                    _LOGGER.warning(f"Point sampling: {self._attr_name} | Energy added: {energy_kwh:.8f}kWh | Total: {self._state:.4f}kWh")
                 else:
                     unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                    _LOGGER.debug(f"Interval update: No energy added (delta too small), avg power: {avg_power:.2f}{unit_display}, time: {delta_hours:.4f}h, calculated energy: {energy_kwh:.8f}kWh")
+                    _LOGGER.warning(f"DEBUG: No energy added (too small): avg power: {avg_power:.4f}{unit_display}, calculated energy: {energy_kwh:.8f}kWh")
             else:
                 _LOGGER.debug(f"Interval update: Skipping calculation - missing previous power/time data for {self._attr_name}")
             

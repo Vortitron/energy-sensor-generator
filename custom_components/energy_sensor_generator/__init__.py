@@ -214,6 +214,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     # Register diagnostic service for individual sensors
     async def diagnose_sensor_wrapper(call):
+        _LOGGER.warning("DIAGNOSE SERVICE CALLED!")  # Make sure this appears in logs
         await diagnose_sensor_service(hass, call, entry)
     
     hass.services.async_register(
@@ -224,12 +225,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     # Register list sensors service
     async def list_sensors_wrapper(call):
+        _LOGGER.warning("LIST SENSORS SERVICE CALLED!")  # Make sure this appears in logs
         await list_sensors_service(hass, call, entry)
     
     hass.services.async_register(
         DOMAIN,
         "list_sensors",
         list_sensors_wrapper
+    )
+    
+    # Test service to verify service registration
+    async def test_service_wrapper(call):
+        _LOGGER.warning("TEST SERVICE WORKING! Services are properly registered.")
+    
+    hass.services.async_register(
+        DOMAIN,
+        "test_service",
+        test_service_wrapper
     )
     
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
