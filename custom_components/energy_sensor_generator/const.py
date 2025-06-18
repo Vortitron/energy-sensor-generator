@@ -4,4 +4,5 @@ DOMAIN = "energy_sensor_generator"
 STORAGE_FILE = "energy_sensor_generator.json"
 
 # Configuration keys
-CONF_DEBUG_LOGGING = "debug_logging" 
+CONF_DEBUG_LOGGING = "debug_logging"
+CONF_USE_STATISTICAL = "use_statistical_calculation" 

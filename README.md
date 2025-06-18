@@ -150,6 +150,14 @@ Storage file (`.storage/energy_sensor_generator.json`):
 - Debug messages appear in **Settings > System > Logs** with the "DEBUG:" prefix
 - **Note**: Disable debug logging once issues are resolved to reduce log verbosity
 
+### Statistical Calculation Issues (RESOLVED)
+- **✅ FIXED**: The previous blocking database call issues have been resolved in version 0.0.47
+- **Historical Data Access**: The integration now properly uses `async_add_executor_job` to access Home Assistant's recorder data without blocking calls
+- **Enhanced Accuracy**: Statistical calculation now uses the same historical data that the Energy Dashboard uses, providing much more accurate energy calculations for devices with infrequent updates
+- **Automatic Fallback**: If historical data is unavailable, the integration gracefully falls back to point sampling
+- **Configuration**: Statistical calculation is enabled by default but can be disabled in integration options if needed
+- **Perfect for Tuya Devices**: Now properly handles devices that only update every 5+ minutes by using historical state data instead of just current power readings
+
 ### Sensors Not Available During Startup:
 - **New in v0.0.28**: The integration is now resilient to source power sensors not being available during Home Assistant startup
 - Energy sensors are created even if source sensors aren't ready yet, and will begin tracking once sources become available
@@ -196,6 +204,22 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 ---
 
 ### Changelog
+
+#### Version 0.0.47
+- **🎉 FIXED: Resolved All Blocking Database Call Issues**: Successfully implemented proper async access to Home Assistant's historical data using `async_add_executor_job`
+- **⚡ Statistical Calculation Re-Enabled**: Now properly accesses the same historical data that the Energy Dashboard uses, providing much more accurate energy calculations
+- **🔧 Enhanced Historical Data Access**: Uses `homeassistant.components.recorder.history.get_significant_states` to access real sensor data history with proper time filtering
+- **📊 Improved Accuracy for Tuya Devices**: Now properly handles devices that only update every 5+ minutes by using historical state data for energy calculations
+- **🐛 Robust Fallback System**: Gracefully falls back to point sampling if historical data is unavailable, ensuring reliability
+- **📝 Updated Configuration Options**: Statistical calculation is now enabled by default with proper async implementation
+
+#### Version 0.0.46
+- **🚨 CRITICAL FIX: Resolved Blocking Database Calls**: Fixed "Caught blocking call to _do_get_db_connection_protected" errors that were causing integration failures
+- **⚡ Statistical Calculation Temporarily Disabled**: Due to Home Assistant's recorder API blocking call issues, statistical calculation was disabled by default
+- **🔧 New Configuration Options**: Added toggle for statistical calculation in integration options (experimental/advanced users only)
+- **🐛 Point Sampling Fallback**: Integration now reliably falls back to point sampling which provides accurate energy calculations
+- **📊 Enhanced Debug Logging**: Added debug logging toggle option to help troubleshoot issues without requiring new releases
+- **📝 Improved Documentation**: Added comprehensive troubleshooting section covering debug logging and statistical calculation issues
 
 #### Version 0.0.45
 - **🚀 MAJOR FEATURE: Statistical Energy Calculation**: Integration now uses Home Assistant's statistical data (mean power values) from the recorder database for highly accurate energy calculations

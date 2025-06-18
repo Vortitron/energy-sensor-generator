@@ -22,7 +22,7 @@ except ImportError:
     STATISTICS_AVAILABLE = False
     _LOGGER.warning("Statistics module not available, using point sampling only")
 from .utils import load_storage, save_storage
-from .const import DOMAIN, CONF_DEBUG_LOGGING
+from .const import DOMAIN, CONF_DEBUG_LOGGING, CONF_USE_STATISTICAL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -351,58 +351,85 @@ class EnergySensor(SensorEntity):
         # Note: Factor is now set during _load_state() to enable data migration
 
     async def _get_statistical_power_data(self, start_time, end_time):
-        """Get statistical power data from Home Assistant's recorder."""
+        """Get statistical power data from Home Assistant's recorder using proper async methods."""
         try:
             if not STATISTICS_AVAILABLE:
-                _LOGGER.debug(f"Statistics module not available for {self._attr_name}")
+                _debug_log(self.hass, f"Statistics module not available for {self._attr_name}")
                 return None
                 
-            if not recorder.get_instance(self._hass):
-                _LOGGER.debug(f"Recorder not available for {self._attr_name}, falling back to point sampling")
+            recorder_instance = recorder.get_instance(self.hass)
+            if not recorder_instance:
+                _debug_log(self.hass, f"Recorder not available for {self._attr_name}, falling back to point sampling")
                 return None
             
-            # Calculate time difference for appropriate period selection
-            time_diff = (end_time - start_time).total_seconds()
-            period = "5minute" if time_diff < 3600 else "hour"  # Use 5-minute stats for shorter periods
+            # Import required modules for history access
+            from homeassistant.components.recorder import history
+            from functools import partial
             
-            _LOGGER.debug(f"Getting statistical data for {self._source_sensor}, period: {period}, time range: {time_diff:.0f}s")
-                
-            # Get statistics for the power sensor over the time period
-            stats = await statistics.statistics_during_period(
-                self._hass,
-                start_time,
-                end_time,
-                [self._source_sensor],
-                period,
-                units=None,
-                types={"mean"}  # We need the mean values for energy calculation
-            )
-            
-            if not stats or self._source_sensor not in stats:
-                _LOGGER.debug(f"No statistical data available for {self._source_sensor} in period {period}")
-                return None
-                
-            sensor_stats = stats[self._source_sensor]
-            if not sensor_stats:
-                _LOGGER.debug(f"Empty statistics for {self._source_sensor}")
-                return None
-                
-            # Calculate total energy from statistical mean values
-            total_energy_kwh = 0.0
-            period_hours = 1/12 if period == "5minute" else 1  # 5 minutes = 1/12 hour
-            
-            for stat in sensor_stats:
-                if stat.get("mean") is not None:
-                    mean_power = float(stat["mean"])
-                    # Calculate energy for this period
-                    energy_kwh = (mean_power * period_hours) / self._power_to_kw_factor
-                    total_energy_kwh += energy_kwh
+            # Use the proper async executor job pattern as documented in Home Assistant
+            def _get_history_data():
+                """Get historical states using the recorder history API (runs in executor)."""
+                try:
+                    # Use the same API that the Energy Dashboard and history charts use
+                    # This gets the actual historical states with proper time filtering
+                    historical_states = history.get_significant_states(
+                        self.hass,
+                        start_time,
+                        end_time,
+                        entity_ids=[self._source_sensor],
+                        minimal_response=False,
+                        significant_changes_only=False
+                    )
                     
-            _LOGGER.info(f"Statistical calculation for {self._attr_name}: {len(sensor_stats)} {period} periods, total energy: {total_energy_kwh:.6f}kWh")
-            return total_energy_kwh
+                    if not historical_states or self._source_sensor not in historical_states:
+                        return None
+                        
+                    states_list = historical_states[self._source_sensor]
+                    if len(states_list) < 2:
+                        return None
+                    
+                    # Calculate energy using trapezoidal integration on historical data
+                    total_energy = 0.0
+                    previous_state = None
+                    
+                    for state in states_list:
+                        try:
+                            power_value = float(state.state)
+                            state_time = state.last_updated
+                            
+                            if previous_state is not None:
+                                # Calculate time difference in hours
+                                time_delta = (state_time - previous_state['time']).total_seconds() / 3600.0
+                                
+                                if time_delta > 0:
+                                    # Trapezoidal rule: average of two power readings * time
+                                    avg_power = (previous_state['power'] + power_value) / 2
+                                    energy_increment = (avg_power * time_delta) / self._power_to_kw_factor
+                                    total_energy += energy_increment
+                            
+                            previous_state = {'power': power_value, 'time': state_time}
+                            
+                        except (ValueError, TypeError, AttributeError):
+                            continue
+                    
+                    return total_energy if total_energy > 0 else None
+                    
+                except Exception as e:
+                    # If any error occurs in the executor, return None to fall back gracefully
+                    return None
+            
+            # Run the database operation in the executor thread pool (Home Assistant approved method)
+            statistical_energy = await self.hass.async_add_executor_job(_get_history_data)
+            
+            if statistical_energy is not None:
+                _debug_log(self.hass, f"Successfully calculated historical energy for {self._attr_name}: {statistical_energy:.6f}kWh using {end_time - start_time} of historical data")
+            else:
+                _debug_log(self.hass, f"No historical energy data available for {self._attr_name}, using point sampling")
+                
+            return statistical_energy
             
         except Exception as e:
-            _LOGGER.warning(f"Error getting statistical data for {self._source_sensor}: {e}", exc_info=True)
+            _debug_log(self.hass, f"Error accessing historical data for {self._attr_name}: {e}, falling back to point sampling")
             return None
 
     async def _load_state(self):
@@ -539,12 +566,12 @@ class EnergySensor(SensorEntity):
             
             # Try statistical calculation first if we have previous data and it's enabled
             statistical_energy = None
-            use_statistical = True  # Default to True for better accuracy
+            use_statistical = True  # Default to True now that blocking calls are fixed
             
-            # Check if statistical calculation is disabled in options
+            # Check if statistical calculation is enabled in options
             for entry_id, entry_data in self._hass.data[DOMAIN].items():
                 if "options" in entry_data:
-                    use_statistical = entry_data["options"].get("use_statistical_calculation", True)
+                    use_statistical = entry_data["options"].get(CONF_USE_STATISTICAL, True)
                     break
             
             _debug_log(self.hass, f"Statistical calculation enabled: {use_statistical}, available: {STATISTICS_AVAILABLE}")
@@ -770,10 +797,10 @@ class EnergySensor(SensorEntity):
         attrs["calculation_method"] = "statistical" if hasattr(self, '_using_statistical') and self._using_statistical else "point_sampling"
         
         # Check if statistical calculation is enabled
-        use_statistical = True
+        use_statistical = False
         for entry_id, entry_data in self._hass.data[DOMAIN].items():
             if "options" in entry_data:
-                use_statistical = entry_data["options"].get("use_statistical_calculation", True)
+                use_statistical = entry_data["options"].get(CONF_USE_STATISTICAL, False)
                 break
         attrs["statistical_calculation_enabled"] = use_statistical
         

@@ -14,7 +14,7 @@ from homeassistant.helpers.selector import (
 	NumberSelectorConfig,
 	NumberSelectorMode
 )
-from .const import DOMAIN, CONF_DEBUG_LOGGING
+from .const import DOMAIN, CONF_DEBUG_LOGGING, CONF_USE_STATISTICAL
 from .__init__ import detect_power_sensors  # Import the detect function
 
 class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
@@ -40,6 +40,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		create_monthly = self.config_entry.options.get("create_monthly_sensors", True)
 		sample_interval = self.config_entry.options.get("sample_interval", 60)
 		debug_logging = self.config_entry.options.get(CONF_DEBUG_LOGGING, False)
+		use_statistical = self.config_entry.options.get(CONF_USE_STATISTICAL, True)  # Default True now that blocking calls are fixed
 		
 		# Merge auto-detected and previously selected sensors for the selection list
 		all_power_sensors = {}
@@ -111,6 +112,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			create_monthly = user_input.get("create_monthly_sensors", True)
 			sample_interval = user_input.get("sample_interval", 60)
 			debug_logging = user_input.get(CONF_DEBUG_LOGGING, False)
+			use_statistical = user_input.get(CONF_USE_STATISTICAL, True)
 			
 			if not self._errors:
 				return self.async_create_entry(
@@ -120,7 +122,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 						"create_daily_sensors": create_daily,
 						"create_monthly_sensors": create_monthly,
 						"sample_interval": sample_interval,
-						CONF_DEBUG_LOGGING: debug_logging
+						CONF_DEBUG_LOGGING: debug_logging,
+						CONF_USE_STATISTICAL: use_statistical
 					}
 				)
 
@@ -156,6 +159,9 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		# Add debug logging toggle
 		schema[vol.Optional(CONF_DEBUG_LOGGING, default=debug_logging)] = BooleanSelector()
 		
+		# Add statistical calculation toggle (disabled by default due to blocking call issues)
+		schema[vol.Optional(CONF_USE_STATISTICAL, default=use_statistical)] = BooleanSelector()
+		
 		return self.async_show_form(
 			step_id="init",
 			data_schema=vol.Schema(schema),
@@ -166,6 +172,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				"monthly_description": "Create monthly energy sensors that reset at the beginning of each month",
 				"interval_description": "Sampling interval for energy calculations (shorter intervals are more accurate but use more resources)",
 				"debug_description": "Enable detailed debug logging for troubleshooting (can be toggled without restarting)",
+				"statistical_description": "✅ ADVANCED: Use historical data for more accurate energy calculations when available (recommended for devices with infrequent updates like Tuya devices)",
 				"restart_note": "⚠️ Note: Some changes may require a Home Assistant restart to take full effect. If sensors are removed, you may need to restart and then delete any entities marked as 'no longer provided'."
 			}
 		) 
