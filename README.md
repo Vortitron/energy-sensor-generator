@@ -148,7 +148,13 @@ Storage file (`.storage/energy_sensor_generator.json`):
   - Interval update timing and calculation methods
 - **To enable**: Go to **Settings > Devices & Services > Energy Sensor Generator > Configure** and toggle "Debug Logging"
 - Debug messages appear in **Settings > System > Logs** with the "DEBUG:" prefix
-- **Note**: Disable debug logging once issues are resolved to reduce log verbosity
+- **Note**: Disable debug logging once issues are resolved to prevent log spam
+
+### Database Access Issues (RESOLVED ✅)
+- **Fixed in v0.0.47**: All database access now uses the proper `recorder.get_instance(hass).async_add_executor_job()` method
+- **No more frame warnings**: The integration now follows Home Assistant's best practices for database operations
+- **Improved reliability**: Historical data access is now completely async and non-blocking
+- **Better performance**: Uses the recorder's optimised database connection pool for all operations
 
 ### Statistical Calculation Issues (RESOLVED)
 - **✅ FIXED**: The previous blocking database call issues have been resolved in version 0.0.47
@@ -206,12 +212,13 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 ### Changelog
 
 #### Version 0.0.47
-- **🎉 FIXED: Resolved All Blocking Database Call Issues**: Successfully implemented proper async access to Home Assistant's historical data using `async_add_executor_job`
+- **🎉 FIXED: Resolved All Blocking Database Call Issues**: Successfully implemented proper async access to Home Assistant's historical data using `recorder.get_instance(hass).async_add_executor_job()`
 - **⚡ Statistical Calculation Re-Enabled**: Now properly accesses the same historical data that the Energy Dashboard uses, providing much more accurate energy calculations
 - **🔧 Enhanced Historical Data Access**: Uses `homeassistant.components.recorder.history.get_significant_states` to access real sensor data history with proper time filtering
 - **📊 Improved Accuracy for Tuya Devices**: Now properly handles devices that only update every 5+ minutes by using historical state data for energy calculations
 - **🐛 Robust Fallback System**: Gracefully falls back to point sampling if historical data is unavailable, ensuring reliability
 - **📝 Updated Configuration Options**: Statistical calculation is now enabled by default with proper async implementation
+- **🏗️ Database Access Fix**: Uses the specific recorder database executor to prevent frame warnings about direct database access
 
 #### Version 0.0.46
 - **🚨 CRITICAL FIX: Resolved Blocking Database Calls**: Fixed "Caught blocking call to _do_get_db_connection_protected" errors that were causing integration failures

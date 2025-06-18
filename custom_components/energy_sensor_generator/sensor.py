@@ -366,7 +366,7 @@ class EnergySensor(SensorEntity):
             from homeassistant.components.recorder import history
             from functools import partial
             
-            # Use the proper async executor job pattern as documented in Home Assistant
+            # Use the recorder's specific async executor job method as indicated by the frame warning
             def _get_history_data():
                 """Get historical states using the recorder history API (runs in executor)."""
                 try:
@@ -418,8 +418,8 @@ class EnergySensor(SensorEntity):
                     # If any error occurs in the executor, return None to fall back gracefully
                     return None
             
-            # Run the database operation in the executor thread pool (Home Assistant approved method)
-            statistical_energy = await self.hass.async_add_executor_job(_get_history_data)
+            # Use the specific recorder async executor as indicated by the frame warning
+            statistical_energy = await recorder.get_instance(self.hass).async_add_executor_job(_get_history_data)
             
             if statistical_energy is not None:
                 _debug_log(self.hass, f"Successfully calculated historical energy for {self._attr_name}: {statistical_energy:.6f}kWh using {end_time - start_time} of historical data")
