@@ -385,19 +385,30 @@ class EnergySensor(SensorEntity):
                 
             recorder_instance = recorder.get_instance(self.hass)
             if not recorder_instance:
-                _debug_log(self.hass, f"Recorder not available for {self._attr_name}, falling back to point sampling")
+                _debug_log(self.hass, f"Recorder not available for {self._attr_name}")
+                return None
+                
+            # Ensure we have a reasonable time range (at least 30 seconds)
+            time_delta = (end_time - start_time).total_seconds()
+            if time_delta < 30:
+                _debug_log(self.hass, f"Time range too short for statistical calculation ({time_delta:.1f}s) for {self._attr_name}")
                 return None
             
             # Import required modules for history access
             from homeassistant.components.recorder import history
-            from functools import partial
             
-            # Use the recorder's specific async executor job method as indicated by the frame warning
+            _debug_log(self.hass, f"Attempting statistical calculation for {self._attr_name} from {start_time} to {end_time} (duration: {time_delta:.1f}s)")
+            
+            # Get conversion factor before entering executor
+            conversion_factor = self._power_to_kw_factor
+            if not conversion_factor or conversion_factor <= 0:
+                _debug_log(self.hass, f"Invalid conversion factor ({conversion_factor}) for statistical calculation")
+                return None
+            
             def _get_history_data():
                 """Get historical states using the recorder history API (runs in executor)."""
                 try:
-                    # Use the same API that the Energy Dashboard and history charts use
-                    # This gets the actual historical states with proper time filtering
+                    # Get historical states for the power sensor
                     historical_states = history.get_significant_states(
                         self.hass,
                         start_time,
@@ -407,55 +418,88 @@ class EnergySensor(SensorEntity):
                         significant_changes_only=False
                     )
                     
+                    _debug_log(self.hass, f"History API returned data for {len(historical_states)} entities")
+                    
                     if not historical_states or self._source_sensor not in historical_states:
+                        _debug_log(self.hass, f"No historical data found for {self._source_sensor}")
                         return None
                         
                     states_list = historical_states[self._source_sensor]
+                    _debug_log(self.hass, f"Found {len(states_list)} historical states for {self._source_sensor}")
+                    
                     if len(states_list) < 2:
+                        _debug_log(self.hass, f"Not enough historical states ({len(states_list)}) for calculation")
                         return None
                     
-                    # Calculate energy using trapezoidal integration on historical data
-                    total_energy = 0.0
-                    previous_state = None
-                    
+                    # Filter out invalid states and convert to numeric values
+                    valid_states = []
                     for state in states_list:
                         try:
-                            power_value = float(state.state)
-                            state_time = state.last_updated
-                            
-                            if previous_state is not None:
-                                # Calculate time difference in hours
-                                time_delta = (state_time - previous_state['time']).total_seconds() / 3600.0
-                                
-                                if time_delta > 0:
-                                    # Trapezoidal rule: average of two power readings * time
-                                    avg_power = (previous_state['power'] + power_value) / 2
-                                    energy_increment = (avg_power * time_delta) / self._power_to_kw_factor
-                                    total_energy += energy_increment
-                            
-                            previous_state = {'power': power_value, 'time': state_time}
-                            
+                            if state.state not in ("unknown", "unavailable", None):
+                                power_value = float(state.state)
+                                if power_value >= 0:  # Only accept non-negative power values
+                                    valid_states.append({
+                                        'power': power_value,
+                                        'time': state.last_updated
+                                    })
                         except (ValueError, TypeError, AttributeError):
                             continue
                     
-                    return total_energy if total_energy > 0 else None
+                    _debug_log(self.hass, f"Filtered to {len(valid_states)} valid states from {len(states_list)} total states")
+                    
+                    if len(valid_states) < 2:
+                        _debug_log(self.hass, f"Not enough valid states ({len(valid_states)}) for calculation")
+                        return None
+                    
+                    # Sort by time to ensure chronological order
+                    valid_states.sort(key=lambda x: x['time'])
+                    
+                    # Calculate energy using trapezoidal integration
+                    total_energy = 0.0
+                    calculation_count = 0
+                    
+                    for i in range(1, len(valid_states)):
+                        prev_state = valid_states[i-1]
+                        curr_state = valid_states[i]
+                        
+                        # Calculate time difference in hours
+                        time_delta_hours = (curr_state['time'] - prev_state['time']).total_seconds() / 3600.0
+                        
+                        if time_delta_hours > 0 and time_delta_hours < 24:  # Sanity check: ignore gaps > 24 hours
+                            # Trapezoidal rule: average of two power readings * time
+                            avg_power = (prev_state['power'] + curr_state['power']) / 2
+                            
+                            # Convert to kWh using the conversion factor (passed from main thread)
+                            energy_increment = (avg_power * time_delta_hours) / conversion_factor
+                            total_energy += energy_increment
+                            calculation_count += 1
+                            
+                            _debug_log(self.hass, f"Statistical segment {calculation_count}: {prev_state['power']:.2f}W -> {curr_state['power']:.2f}W over {time_delta_hours*3600:.1f}s = {energy_increment:.8f}kWh")
+                       
+                    _debug_log(self.hass, f"Statistical calculation completed: {calculation_count} segments, total energy: {total_energy:.8f}kWh")
+                    
+                    return total_energy if total_energy > 0 and calculation_count > 0 else None
                     
                 except Exception as e:
-                    # If any error occurs in the executor, return None to fall back gracefully
+                    _debug_log(self.hass, f"Exception in statistical calculation executor: {str(e)}")
+                    import traceback
+                    _debug_log(self.hass, f"Traceback: {traceback.format_exc()}")
                     return None
             
-            # Use the specific recorder async executor as indicated by the frame warning
-            statistical_energy = await recorder.get_instance(self.hass).async_add_executor_job(_get_history_data)
+            # Use the recorder's async executor
+            statistical_energy = await recorder_instance.async_add_executor_job(_get_history_data)
             
-            if statistical_energy is not None:
-                _debug_log(self.hass, f"Successfully calculated historical energy for {self._attr_name}: {statistical_energy:.6f}kWh using {end_time - start_time} of historical data")
+            if statistical_energy is not None and statistical_energy > 0:
+                _debug_log(self.hass, f"Statistical calculation successful for {self._attr_name}: {statistical_energy:.8f}kWh over {time_delta:.1f}s")
+                return statistical_energy
             else:
-                _debug_log(self.hass, f"No historical energy data available for {self._attr_name}, using point sampling")
+                _debug_log(self.hass, f"Statistical calculation returned no energy for {self._attr_name}")
+                return None
                 
-            return statistical_energy
-            
         except Exception as e:
-            _debug_log(self.hass, f"Error accessing historical data for {self._attr_name}: {e}, falling back to point sampling")
+            _debug_log(self.hass, f"Error in statistical calculation for {self._attr_name}: {str(e)}")
+            import traceback
+            _debug_log(self.hass, f"Traceback: {traceback.format_exc()}")
             return None
 
     async def _load_state(self):
@@ -602,9 +646,29 @@ class EnergySensor(SensorEntity):
             statistical_energy = None
             if use_statistical and STATISTICS_AVAILABLE:
                 try:
-                    statistical_energy = await self._get_statistical_power_data(self._last_update or (now - timedelta(minutes=5)), now)
+                    # For statistical calculation, we need to be careful about double counting
+                    # We'll calculate energy only since the last update to avoid this
+                    if self._last_update:
+                        # Use the actual time since last update for statistical calculation
+                        stat_start_time = self._last_update
+                        stat_end_time = now
+                        
+                        # But ensure we have at least 30 seconds for a meaningful calculation
+                        time_range = (stat_end_time - stat_start_time).total_seconds()
+                        if time_range < 30:
+                            _debug_log(self.hass, f"Time range too short for statistical calculation ({time_range:.1f}s), trying extended range")
+                            # Use a slightly longer range but we'll need to subtract any previously calculated energy
+                            stat_start_time = now - timedelta(minutes=5)
+                    else:
+                        # No previous update, use a longer window for initial calculation
+                        stat_start_time = now - timedelta(minutes=10)
+                        stat_end_time = now
+                    
+                    _debug_log(self.hass, f"Using statistical time range: {stat_start_time} to {stat_end_time} ({(stat_end_time - stat_start_time).total_seconds():.1f} seconds)")
+                    statistical_energy = await self._get_statistical_power_data(stat_start_time, stat_end_time)
+                    
                     if statistical_energy is not None:
-                        _debug_log(self.hass, f"Statistical calculation successful for {self._attr_name}: {statistical_energy:.6f}kWh")
+                        _debug_log(self.hass, f"Statistical calculation successful for {self._attr_name}: {statistical_energy:.8f}kWh")
                     else:
                         if allow_point_sampling_fallback:
                             _debug_log(self.hass, f"Statistical calculation returned None for {self._attr_name}, falling back to point sampling")
