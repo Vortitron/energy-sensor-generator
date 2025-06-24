@@ -14,7 +14,13 @@ from homeassistant.helpers.selector import (
 	NumberSelectorConfig,
 	NumberSelectorMode
 )
-from .const import DOMAIN, CONF_DEBUG_LOGGING, CONF_USE_STATISTICAL
+from .const import (
+	DOMAIN, 
+	CONF_DEBUG_LOGGING, 
+	CONF_USE_STATISTICAL, 
+	CONF_ALLOW_POINT_SAMPLING_FALLBACK,
+	CONF_ENABLE_POINT_SAMPLING_BACKUP
+)
 from .__init__ import detect_power_sensors  # Import the detect function
 
 class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
@@ -41,6 +47,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		sample_interval = self.config_entry.options.get("sample_interval", 60)
 		debug_logging = self.config_entry.options.get(CONF_DEBUG_LOGGING, False)
 		use_statistical = self.config_entry.options.get(CONF_USE_STATISTICAL, True)  # Default True now that blocking calls are fixed
+		allow_point_sampling_fallback = self.config_entry.options.get(CONF_ALLOW_POINT_SAMPLING_FALLBACK, True)  # Allow fallback by default for backwards compatibility
+		enable_point_sampling_backup = self.config_entry.options.get(CONF_ENABLE_POINT_SAMPLING_BACKUP, False)  # Off by default as requested
 		
 		# Merge auto-detected and previously selected sensors for the selection list
 		all_power_sensors = {}
@@ -113,6 +121,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			sample_interval = user_input.get("sample_interval", 60)
 			debug_logging = user_input.get(CONF_DEBUG_LOGGING, False)
 			use_statistical = user_input.get(CONF_USE_STATISTICAL, True)
+			allow_point_sampling_fallback = user_input.get(CONF_ALLOW_POINT_SAMPLING_FALLBACK, True)
+			enable_point_sampling_backup = user_input.get(CONF_ENABLE_POINT_SAMPLING_BACKUP, False)
 			
 			if not self._errors:
 				return self.async_create_entry(
@@ -123,7 +133,9 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 						"create_monthly_sensors": create_monthly,
 						"sample_interval": sample_interval,
 						CONF_DEBUG_LOGGING: debug_logging,
-						CONF_USE_STATISTICAL: use_statistical
+						CONF_USE_STATISTICAL: use_statistical,
+						CONF_ALLOW_POINT_SAMPLING_FALLBACK: allow_point_sampling_fallback,
+						CONF_ENABLE_POINT_SAMPLING_BACKUP: enable_point_sampling_backup
 					}
 				)
 
@@ -162,6 +174,10 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		# Add statistical calculation toggle (disabled by default due to blocking call issues)
 		schema[vol.Optional(CONF_USE_STATISTICAL, default=use_statistical)] = BooleanSelector()
 		
+		# Add point sampling control toggles
+		schema[vol.Optional(CONF_ALLOW_POINT_SAMPLING_FALLBACK, default=allow_point_sampling_fallback)] = BooleanSelector()
+		schema[vol.Optional(CONF_ENABLE_POINT_SAMPLING_BACKUP, default=enable_point_sampling_backup)] = BooleanSelector()
+		
 		return self.async_show_form(
 			step_id="init",
 			data_schema=vol.Schema(schema),
@@ -173,6 +189,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				"interval_description": "Sampling interval for energy calculations (shorter intervals are more accurate but use more resources)",
 				"debug_description": "Enable detailed debug logging for troubleshooting (can be toggled without restarting)",
 				"statistical_description": "✅ ADVANCED: Use historical data for more accurate energy calculations when available (recommended for devices with infrequent updates like Tuya devices)",
+				"fallback_description": "🚫 ADVANCED: Allow fallback to point sampling when statistical calculation fails (disable to totally prevent point sampling)",
+				"backup_description": "⚙️ ADVANCED: Enable point sampling as backup when statistical calculation is disabled (off by default)",
 				"restart_note": "⚠️ Note: Some changes may require a Home Assistant restart to take full effect. If sensors are removed, you may need to restart and then delete any entities marked as 'no longer provided'."
 			}
 		) 

@@ -22,7 +22,13 @@ except ImportError:
     STATISTICS_AVAILABLE = False
     _LOGGER.warning("Statistics module not available, using point sampling only")
 from .utils import load_storage, save_storage
-from .const import DOMAIN, CONF_DEBUG_LOGGING, CONF_USE_STATISTICAL
+from .const import (
+	DOMAIN, 
+	CONF_DEBUG_LOGGING, 
+	CONF_USE_STATISTICAL,
+	CONF_ALLOW_POINT_SAMPLING_FALLBACK,
+	CONF_ENABLE_POINT_SAMPLING_BACKUP
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +52,26 @@ def _info_log(hass: HomeAssistant, message: str, force: bool = False) -> None:
 	"""Log info message, respecting debug setting unless forced."""
 	if force or _is_debug_enabled(hass):
 		_LOGGER.info(message)
+
+def _get_config_options(hass: HomeAssistant) -> dict:
+	"""Get configuration options from the integration."""
+	default_options = {
+		CONF_USE_STATISTICAL: True,
+		CONF_ALLOW_POINT_SAMPLING_FALLBACK: True,  # Allow fallback by default for backwards compatibility
+		CONF_ENABLE_POINT_SAMPLING_BACKUP: False,  # Off by default as requested
+	}
+	
+	# Check all config entries for options
+	for entry_id, entry_data in hass.data[DOMAIN].items():
+		if "options" in entry_data:
+			return {**default_options, **entry_data["options"]}
+	
+	# Also check direct config entries
+	for config_entry in hass.config_entries.async_entries(DOMAIN):
+		if config_entry.options:
+			return {**default_options, **config_entry.options}
+	
+	return default_options
 
 def get_friendly_name(hass: HomeAssistant, entity_id: str) -> str:
 	"""Get the friendly name for an entity, falling back to derived name from entity ID."""
@@ -564,19 +590,15 @@ class EnergySensor(SensorEntity):
                 _LOGGER.debug(f"Conversion factor not yet available for {self._source_sensor}, skipping calculation")
                 return
             
+            # Get configuration options
+            config_options = _get_config_options(self.hass)
+            use_statistical = config_options.get(CONF_USE_STATISTICAL, True)
+            allow_point_sampling_fallback = config_options.get(CONF_ALLOW_POINT_SAMPLING_FALLBACK, True)
+            enable_point_sampling_backup = config_options.get(CONF_ENABLE_POINT_SAMPLING_BACKUP, False)
+            
+            _debug_log(self.hass, f"Configuration: statistical={use_statistical}, fallback_allowed={allow_point_sampling_fallback}, backup_enabled={enable_point_sampling_backup}, stats_available={STATISTICS_AVAILABLE}")
+            
             # Try statistical calculation first if we have previous data and it's enabled
-            statistical_energy = None
-            use_statistical = True  # Default to True now that blocking calls are fixed
-            
-            # Check if statistical calculation is enabled in options
-            for entry_id, entry_data in self._hass.data[DOMAIN].items():
-                if "options" in entry_data:
-                    use_statistical = entry_data["options"].get(CONF_USE_STATISTICAL, True)
-                    break
-            
-            _debug_log(self.hass, f"Statistical calculation enabled: {use_statistical}, available: {STATISTICS_AVAILABLE}")
-            
-            # Try statistical calculation if enabled and available
             statistical_energy = None
             if use_statistical and STATISTICS_AVAILABLE:
                 try:
@@ -584,12 +606,22 @@ class EnergySensor(SensorEntity):
                     if statistical_energy is not None:
                         _debug_log(self.hass, f"Statistical calculation successful for {self._attr_name}: {statistical_energy:.6f}kWh")
                     else:
-                        _debug_log(self.hass, f"Statistical calculation returned None for {self._attr_name}, falling back to point sampling")
+                        if allow_point_sampling_fallback:
+                            _debug_log(self.hass, f"Statistical calculation returned None for {self._attr_name}, falling back to point sampling")
+                        else:
+                            _debug_log(self.hass, f"Statistical calculation returned None for {self._attr_name}, point sampling fallback disabled")
                 except Exception as e:
-                    _debug_log(self.hass, f"Statistical calculation failed for {self._attr_name}: {e}, falling back to point sampling")
+                    if allow_point_sampling_fallback:
+                        _debug_log(self.hass, f"Statistical calculation failed for {self._attr_name}: {e}, falling back to point sampling")
+                    else:
+                        _debug_log(self.hass, f"Statistical calculation failed for {self._attr_name}: {e}, point sampling fallback disabled")
                     statistical_energy = None
-            else:
-                _debug_log(self.hass, f"Using point sampling for {self._attr_name} (statistical: {use_statistical}, available: {STATISTICS_AVAILABLE})")
+            elif not use_statistical and enable_point_sampling_backup:
+                _debug_log(self.hass, f"Using point sampling backup for {self._attr_name} (statistical: {use_statistical}, backup_enabled: {enable_point_sampling_backup})")
+            elif not use_statistical and not enable_point_sampling_backup:
+                _debug_log(self.hass, f"No calculation method enabled for {self._attr_name} (statistical: {use_statistical}, backup_enabled: {enable_point_sampling_backup})")
+                # Skip all calculation if both statistical and backup are disabled
+                return
             
             # Get current state for fallback and tracking
             state = self._hass.states.get(self._source_sensor)
@@ -602,15 +634,19 @@ class EnergySensor(SensorEntity):
                 _LOGGER.warning(f"Invalid power value: {state.state}")
                 return
             
-            # Use statistical data if available, otherwise fall back to trapezoidal rule
+            # Use statistical data if available, otherwise fall back to trapezoidal rule (if allowed)
             if statistical_energy is not None and statistical_energy > 0:
                 # Sanity check: ensure statistical energy isn't unreasonably high
                 time_delta_hours = (now - self._last_update).total_seconds() / 3600
                 max_possible_energy = (3000 * time_delta_hours) / self._power_to_kw_factor  # Assume max 3kW device
                 
                 if statistical_energy > max_possible_energy:
-                    _LOGGER.warning(f"Statistical energy seems too high for {self._attr_name}: {statistical_energy:.6f}kWh vs max possible {max_possible_energy:.6f}kWh, falling back to point sampling")
-                    statistical_energy = None
+                    if allow_point_sampling_fallback:
+                        _LOGGER.warning(f"Statistical energy seems too high for {self._attr_name}: {statistical_energy:.6f}kWh vs max possible {max_possible_energy:.6f}kWh, falling back to point sampling")
+                        statistical_energy = None
+                    else:
+                        _LOGGER.warning(f"Statistical energy seems too high for {self._attr_name}: {statistical_energy:.6f}kWh vs max possible {max_possible_energy:.6f}kWh, point sampling fallback disabled - skipping calculation")
+                        return
                 else:
                     # Use statistical calculation
                     self._state += statistical_energy
@@ -624,8 +660,14 @@ class EnergySensor(SensorEntity):
                         self._first_calculation_logged = True
                     
                     _debug_log(self.hass, f"Statistical energy calculation: {self._attr_name} | Energy added: {statistical_energy:.6f}kWh | Total: {self._state:.4f}kWh | Current power: {power:.2f}{unit_display} | Time delta: {(now - self._last_update).total_seconds():.0f}s")
+               
+            # Only use point sampling if statistical failed AND fallback is allowed OR if backup is enabled and statistical is disabled
+            should_use_point_sampling = (
+                (statistical_energy is None and allow_point_sampling_fallback) or
+                (not use_statistical and enable_point_sampling_backup)
+            )
             
-            if statistical_energy is None and self._last_power is not None and self._last_update is not None:
+            if should_use_point_sampling and self._last_power is not None and self._last_update is not None:
                 # Fall back to trapezoidal rule
                 time_delta = (now - self._last_update).total_seconds()
                 delta_hours = time_delta / 3600
@@ -654,7 +696,9 @@ class EnergySensor(SensorEntity):
                 else:
                     unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
                     _debug_log(self.hass, f"No energy added (too small): avg power: {avg_power:.4f}{unit_display}, calculated energy: {energy_kwh:.8f}kWh")
-            else:
+            elif statistical_energy is None and not should_use_point_sampling:
+                _debug_log(self.hass, f"Interval update: Point sampling disabled for {self._attr_name} - no calculation performed")
+            elif not should_use_point_sampling and self._last_power is None:
                 _LOGGER.debug(f"Interval update: Skipping calculation - missing previous power/time data for {self._attr_name}")
             
             # Update values
@@ -675,6 +719,22 @@ class EnergySensor(SensorEntity):
             
         self._calculating_energy = True
         try:
+            # Get configuration options
+            config_options = _get_config_options(self.hass)
+            allow_point_sampling_fallback = config_options.get(CONF_ALLOW_POINT_SAMPLING_FALLBACK, True)
+            enable_point_sampling_backup = config_options.get(CONF_ENABLE_POINT_SAMPLING_BACKUP, False)
+            use_statistical = config_options.get(CONF_USE_STATISTICAL, True)
+            
+            # Only proceed with point sampling calculations if allowed
+            should_use_point_sampling = (
+                allow_point_sampling_fallback or 
+                (not use_statistical and enable_point_sampling_backup)
+            )
+            
+            if not should_use_point_sampling:
+                _debug_log(self.hass, f"Midnight update: Point sampling disabled for {self._attr_name}")
+                return
+            
             state = self._hass.states.get(self._source_sensor)
             if not state or state.state in ("unknown", "unavailable"):
                 return
@@ -796,13 +856,11 @@ class EnergySensor(SensorEntity):
         attrs["calculation_count"] = self._calculation_count
         attrs["calculation_method"] = "statistical" if hasattr(self, '_using_statistical') and self._using_statistical else "point_sampling"
         
-        # Check if statistical calculation is enabled
-        use_statistical = False
-        for entry_id, entry_data in self._hass.data[DOMAIN].items():
-            if "options" in entry_data:
-                use_statistical = entry_data["options"].get(CONF_USE_STATISTICAL, False)
-                break
-        attrs["statistical_calculation_enabled"] = use_statistical
+        # Get configuration options using the helper function
+        config_options = _get_config_options(self._hass)
+        attrs["statistical_calculation_enabled"] = config_options.get(CONF_USE_STATISTICAL, True)
+        attrs["point_sampling_fallback_allowed"] = config_options.get(CONF_ALLOW_POINT_SAMPLING_FALLBACK, True)
+        attrs["point_sampling_backup_enabled"] = config_options.get(CONF_ENABLE_POINT_SAMPLING_BACKUP, False)
         
         source_state = self._hass.states.get(self._source_sensor)
         if source_state:
