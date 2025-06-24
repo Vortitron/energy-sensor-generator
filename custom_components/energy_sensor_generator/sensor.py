@@ -29,6 +29,7 @@ from .const import (
 	CONF_ALLOW_POINT_SAMPLING_FALLBACK,
 	CONF_ENABLE_POINT_SAMPLING_BACKUP
 )
+import time
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,9 +45,30 @@ def _is_debug_enabled(hass: HomeAssistant) -> bool:
 	return False
 
 def _debug_log(hass: HomeAssistant, message: str) -> None:
-	"""Log debug message only if debug logging is enabled."""
+	"""Log debug message only if debug logging is enabled and not too frequently."""
 	if _is_debug_enabled(hass):
-		_LOGGER.warning(f"DEBUG: {message}")
+		# Add throttling to prevent log spam
+		current_time = time.time()
+		
+		# Create a simple throttling mechanism using the domain data
+		if DOMAIN not in hass.data:
+			return
+			
+		# Store last log times per message type to throttle similar messages
+		log_throttle_key = "_debug_log_throttle"
+		if log_throttle_key not in hass.data[DOMAIN]:
+			hass.data[DOMAIN][log_throttle_key] = {}
+		
+		# Create a simple hash of the message to group similar messages
+		import hashlib
+		message_hash = hashlib.md5(message[:50].encode()).hexdigest()[:8]  # Use first 50 chars for grouping
+		
+		last_log_time = hass.data[DOMAIN][log_throttle_key].get(message_hash, 0)
+		
+		# Only log if it's been at least 30 seconds since the last similar message
+		if current_time - last_log_time > 30:
+			_LOGGER.warning(f"DEBUG: {message}")
+			hass.data[DOMAIN][log_throttle_key][message_hash] = current_time
 
 def _info_log(hass: HomeAssistant, message: str, force: bool = False) -> None:
 	"""Log info message, respecting debug setting unless forced."""
@@ -450,10 +472,18 @@ class EnergySensor(SensorEntity):
                     total_energy = 0.0
                     calculation_count = 0
                     segments = []
+                    max_power = 0.0
+                    min_power = float('inf')
+                    total_power = 0.0
                     
                     for i in range(1, len(valid_states)):
                         prev_state = valid_states[i-1]
                         curr_state = valid_states[i]
+                        
+                        # Track power statistics
+                        max_power = max(max_power, prev_state['power'], curr_state['power'])
+                        min_power = min(min_power, prev_state['power'], curr_state['power'])
+                        total_power += prev_state['power'] + curr_state['power']
                         
                         # Calculate time difference in hours
                         time_delta_hours = (curr_state['time'] - prev_state['time']).total_seconds() / 3600.0
@@ -474,11 +504,16 @@ class EnergySensor(SensorEntity):
                                 'energy_kwh': energy_increment
                             })
                        
+                    avg_power = (total_power / (len(valid_states) * 2)) if len(valid_states) > 0 else 0.0
+                    
                     return {
                         "total_energy": total_energy if total_energy > 0 and calculation_count > 0 else None,
                         "segments": calculation_count,
                         "total_states": len(states_list),
                         "valid_states": len(valid_states),
+                        "max_power": max_power,
+                        "min_power": min_power if min_power != float('inf') else 0.0,
+                        "avg_power": avg_power,
                         "segment_details": segments[:3]  # Only return first 3 segments for logging
                     }
                     
@@ -494,10 +529,13 @@ class EnergySensor(SensorEntity):
             
             statistical_energy = statistical_data["total_energy"]
             calculation_count = statistical_data["segments"]
+            max_power = statistical_data.get("max_power", 0)
+            avg_power = statistical_data.get("avg_power", 0)
             
             if statistical_energy is not None and statistical_energy > 0:
                 _debug_log(self.hass, f"Statistical calculation successful for {self._attr_name}: {statistical_energy:.8f}kWh over {time_delta:.1f}s")
                 _debug_log(self.hass, f"  Found {statistical_data['total_states']} states, {statistical_data['valid_states']} valid, {calculation_count} segments")
+                _debug_log(self.hass, f"  Power range: {statistical_data.get('min_power', 0):.2f}W to {max_power:.2f}W, avg: {avg_power:.2f}W")
                 if statistical_data.get('segment_details'):
                     for i, seg in enumerate(statistical_data['segment_details']):
                         _debug_log(self.hass, f"  Segment {i+1}: {seg['from_power']:.2f}W -> {seg['to_power']:.2f}W over {seg['duration_seconds']:.1f}s = {seg['energy_kwh']:.8f}kWh")
@@ -653,7 +691,7 @@ class EnergySensor(SensorEntity):
             _debug_log(self.hass, f"Configuration: statistical={use_statistical}, fallback_allowed={allow_point_sampling_fallback}, backup_enabled={enable_point_sampling_backup}, stats_available={STATISTICS_AVAILABLE}")
             
             # Try statistical calculation first if we have previous data and it's enabled
-            statistical_energy = None
+            statistical_data = None
             if use_statistical and STATISTICS_AVAILABLE:
                 try:
                     # For statistical calculation, we need to be careful about double counting
@@ -663,41 +701,27 @@ class EnergySensor(SensorEntity):
                         stat_start_time = self._last_update
                         stat_end_time = now
                         
-                        # But ensure we have at least 30 seconds for a meaningful calculation
+                        # Ensure we have at least 30 seconds for a meaningful calculation
                         time_range = (stat_end_time - stat_start_time).total_seconds()
                         if time_range < 30:
-                            _debug_log(self.hass, f"Time range too short for statistical calculation ({time_range:.1f}s), trying extended range")
-                            # Use a slightly longer range but we'll need to subtract any previously calculated energy
-                            stat_start_time = now - timedelta(minutes=5)
+                            _debug_log(self.hass, f"Time range too short for statistical calculation ({time_range:.1f}s), skipping statistical calculation")
+                            # Don't extend the range - this can cause double counting!
+                            statistical_data = None
+                        else:
+                            _debug_log(self.hass, f"Using statistical time range: {stat_start_time} to {stat_end_time} ({time_range:.1f} seconds)")
+                            # Get statistical data
+                            statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
                     else:
                         # No previous update, use a longer window for initial calculation
                         stat_start_time = now - timedelta(minutes=10)
                         stat_end_time = now
-                    
-                    _debug_log(self.hass, f"Using statistical time range: {stat_start_time} to {stat_end_time} ({(stat_end_time - stat_start_time).total_seconds():.1f} seconds)")
-                    statistical_energy = await self._get_statistical_power_data(stat_start_time, stat_end_time)
-                    
-                    if statistical_energy is not None:
-                        _debug_log(self.hass, f"Statistical calculation successful for {self._attr_name}: {statistical_energy:.8f}kWh")
-                    else:
-                        if allow_point_sampling_fallback:
-                            _debug_log(self.hass, f"Statistical calculation returned None for {self._attr_name}, falling back to point sampling")
-                        else:
-                            _debug_log(self.hass, f"Statistical calculation returned None for {self._attr_name}, point sampling fallback disabled")
+                        _debug_log(self.hass, f"Initial calculation - using statistical time range: {stat_start_time} to {stat_end_time}")
+                        # Get statistical data
+                        statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
                 except Exception as e:
-                    if allow_point_sampling_fallback:
-                        _debug_log(self.hass, f"Statistical calculation failed for {self._attr_name}: {e}, falling back to point sampling")
-                    else:
-                        _debug_log(self.hass, f"Statistical calculation failed for {self._attr_name}: {e}, point sampling fallback disabled")
-                    statistical_energy = None
-            elif not use_statistical and enable_point_sampling_backup:
-                _debug_log(self.hass, f"Using point sampling backup for {self._attr_name} (statistical: {use_statistical}, backup_enabled: {enable_point_sampling_backup})")
-            elif not use_statistical and not enable_point_sampling_backup:
-                _debug_log(self.hass, f"No calculation method enabled for {self._attr_name} (statistical: {use_statistical}, backup_enabled: {enable_point_sampling_backup})")
-                # Skip all calculation if both statistical and backup are disabled
-                return
+                    _debug_log(self.hass, f"Exception during statistical calculation: {str(e)}")
+                    statistical_data = None
             
-            # Get current state for fallback and tracking
             state = self._hass.states.get(self._source_sensor)
             if not state or state.state in ("unknown", "unavailable"):
                 return
@@ -709,18 +733,21 @@ class EnergySensor(SensorEntity):
                 return
             
             # Use statistical data if available, otherwise fall back to trapezoidal rule (if allowed)
-            if statistical_energy is not None and statistical_energy > 0:
+            if statistical_data is not None and statistical_data.get("total_energy") and statistical_data["total_energy"] > 0:
+                statistical_energy = statistical_data["total_energy"]
+                max_power = statistical_data.get("max_power", 0)
+                
                 # Get the actual time range used for statistical calculation for sanity check
                 actual_time_range = (stat_end_time - stat_start_time).total_seconds() / 3600  # in hours
                 
-                # Sanity check: ensure statistical energy isn't unreasonably high
-                # Use the current power reading as a rough estimate, or 3kW if unknown
-                current_power_estimate = power if power > 0 else 3000  # Use current power or assume max 3kW
-                max_possible_energy = (current_power_estimate * actual_time_range) / self._power_to_kw_factor
+                # Improved sanity check: use the maximum power from the statistical data, not current reading
+                # This prevents false positives when current power is low but historical data shows higher consumption
+                sanity_check_power = max(max_power, power, 100)  # Use at least 100W as minimum for sanity check
+                max_possible_energy = (sanity_check_power * actual_time_range) / self._power_to_kw_factor
                 
-                _debug_log(self.hass, f"Sanity check for {self._attr_name}: calculated={statistical_energy:.6f}kWh, max_possible={max_possible_energy:.6f}kWh (power={current_power_estimate:.1f}W, time={actual_time_range:.2f}h)")
+                _debug_log(self.hass, f"Sanity check for {self._attr_name}: calculated={statistical_energy:.6f}kWh, max_possible={max_possible_energy:.6f}kWh (max_power={max_power:.1f}W, current_power={power:.1f}W, time={actual_time_range:.2f}h)")
                 
-                if statistical_energy > max_possible_energy * 1.5:  # Allow 50% margin for measurement variations
+                if statistical_energy > max_possible_energy * 2.0:  # Allow 100% margin for measurement variations
                     if allow_point_sampling_fallback:
                         _LOGGER.warning(f"Statistical energy seems too high for {self._attr_name}: {statistical_energy:.6f}kWh vs max possible {max_possible_energy:.6f}kWh, falling back to point sampling")
                         statistical_energy = None
@@ -740,47 +767,51 @@ class EnergySensor(SensorEntity):
                         self._first_calculation_logged = True
                     
                     _debug_log(self.hass, f"Statistical energy calculation: {self._attr_name} | Energy added: {statistical_energy:.8f}kWh | Total: {self._state:.4f}kWh | Current power: {power:.2f}{unit_display}")
-            else:
-                # Only use point sampling if statistical failed AND fallback is allowed OR if backup is enabled and statistical is disabled
-                should_use_point_sampling = (
-                    (statistical_energy is None and allow_point_sampling_fallback) or
-                    (not use_statistical and enable_point_sampling_backup)
-                )
+            
+            # Only use point sampling if statistical failed AND fallback is allowed OR if backup is enabled and statistical is disabled
+            # Set statistical_energy to None if we're not using it
+            if not (statistical_data is not None and statistical_data.get("total_energy") and statistical_data["total_energy"] > 0):
+                statistical_energy = None
                 
-                if should_use_point_sampling and self._last_power is not None and self._last_update is not None:
-                    # Fall back to trapezoidal rule
-                    time_delta = (now - self._last_update).total_seconds()
-                    delta_hours = time_delta / 3600
-                    
-                    _debug_log(self.hass, f"Point sampling calculation for {self._attr_name} | Last power: {self._last_power} | Current power: {power} | Time delta: {time_delta:.0f}s")
-                    
-                    # Trapezoidal rule: average power * time (kWh)
-                    avg_power = (self._last_power + power) / 2
-                    energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
-                    
-                    _debug_log(self.hass, f"Calculated energy: {energy_kwh:.8f}kWh | Avg power: {avg_power:.4f} | Delta hours: {delta_hours:.6f} | Conversion factor: {self._power_to_kw_factor}")
-                    
-                    # Ensure we're not adding negative energy
-                    if energy_kwh > 0:
-                        self._state += energy_kwh
-                        self._using_statistical = False
-                        unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                        self._calculation_count += 1
-                        
-                        # Log first successful calculation 
-                        if not self._first_calculation_logged:
-                            _info_log(self.hass, f"Energy sensor {self._attr_name} is now tracking energy from {self._source_sensor} ({unit_display} sensor) using point sampling", force=True)
-                            self._first_calculation_logged = True
-                        
-                        _debug_log(self.hass, f"Point sampling: {self._attr_name} | Energy added: {energy_kwh:.8f}kWh | Total: {self._state:.4f}kWh")
-                    else:
-                        unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                        _debug_log(self.hass, f"No energy added (too small): avg power: {avg_power:.4f}{unit_display}, calculated energy: {energy_kwh:.8f}kWh")
-                elif statistical_energy is None and not should_use_point_sampling:
-                    _debug_log(self.hass, f"Interval update: Point sampling disabled for {self._attr_name} - no calculation performed")
-                elif not should_use_point_sampling and self._last_power is None:
-                    _LOGGER.debug(f"Interval update: Skipping calculation - missing previous power/time data for {self._attr_name}")
+            should_use_point_sampling = (
+                (statistical_energy is None and allow_point_sampling_fallback) or
+                (not use_statistical and enable_point_sampling_backup)
+            )
                 
+            if should_use_point_sampling and self._last_power is not None and self._last_update is not None:
+                # Fall back to trapezoidal rule
+                time_delta = (now - self._last_update).total_seconds()
+                delta_hours = time_delta / 3600
+                
+                _debug_log(self.hass, f"Point sampling calculation for {self._attr_name} | Last power: {self._last_power} | Current power: {power} | Time delta: {time_delta:.0f}s")
+                
+                # Trapezoidal rule: average power * time (kWh)
+                avg_power = (self._last_power + power) / 2
+                energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
+                
+                _debug_log(self.hass, f"Calculated energy: {energy_kwh:.8f}kWh | Avg power: {avg_power:.4f} | Delta hours: {delta_hours:.6f} | Conversion factor: {self._power_to_kw_factor}")
+                
+                # Ensure we're not adding negative energy
+                if energy_kwh > 0:
+                    self._state += energy_kwh
+                    self._using_statistical = False
+                    unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
+                    self._calculation_count += 1
+                    
+                    # Log first successful calculation 
+                    if not self._first_calculation_logged:
+                        _info_log(self.hass, f"Energy sensor {self._attr_name} is now tracking energy from {self._source_sensor} ({unit_display} sensor) using point sampling", force=True)
+                        self._first_calculation_logged = True
+                    
+                    _debug_log(self.hass, f"Point sampling: {self._attr_name} | Energy added: {energy_kwh:.8f}kWh | Total: {self._state:.4f}kWh")
+                else:
+                    unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
+                    _debug_log(self.hass, f"No energy added (too small): avg power: {avg_power:.4f}{unit_display}, calculated energy: {energy_kwh:.8f}kWh")
+            elif statistical_energy is None and not should_use_point_sampling:
+                _debug_log(self.hass, f"Interval update: Point sampling disabled for {self._attr_name} - no calculation performed")
+            elif not should_use_point_sampling and self._last_power is None:
+                _LOGGER.debug(f"Interval update: Skipping calculation - missing previous power/time data for {self._attr_name}")
+            
             # Update values (always update regardless of calculation method used)
             self._last_power = power
             self._last_update = now
@@ -794,68 +825,11 @@ class EnergySensor(SensorEntity):
 
     async def _handle_midnight_update(self, now):
         """Handle midnight reset for daily energy tracking."""
-        if self._calculating_energy:
-            return
-            
-        self._calculating_energy = True
-        try:
-            # Get configuration options
-            config_options = _get_config_options(self.hass)
-            allow_point_sampling_fallback = config_options.get(CONF_ALLOW_POINT_SAMPLING_FALLBACK, True)
-            enable_point_sampling_backup = config_options.get(CONF_ENABLE_POINT_SAMPLING_BACKUP, False)
-            use_statistical = config_options.get(CONF_USE_STATISTICAL, True)
-            
-            # Only proceed with point sampling calculations if allowed
-            should_use_point_sampling = (
-                allow_point_sampling_fallback or 
-                (not use_statistical and enable_point_sampling_backup)
-            )
-            
-            if not should_use_point_sampling:
-                _debug_log(self.hass, f"Midnight update: Point sampling disabled for {self._attr_name}")
-                return
-            
-            state = self._hass.states.get(self._source_sensor)
-            if not state or state.state in ("unknown", "unavailable"):
-                return
-                
-            try:
-                power = float(state.state)
-            except (ValueError, TypeError):
-                _LOGGER.warning(f"Invalid power value: {state.state}")
-                return
-                
-            if self._last_power is not None and self._last_update is not None:
-                # Calculate time delta in hours since last update
-                time_delta = (now - self._last_update).total_seconds()
-                delta_hours = time_delta / 3600
-                
-                # Ensure conversion factor is set
-                self._ensure_conversion_factor()
-                
-                # Safety check for conversion factor
-                if not self._power_to_kw_factor or self._power_to_kw_factor <= 0:
-                    _LOGGER.debug(f"Conversion factor not yet available for {self._source_sensor}, skipping midnight calculation")
-                    return
-                
-                # Calculate energy since last update
-                avg_power = (self._last_power + power) / 2
-                energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
-                
-                if energy_kwh > 0:
-                    self._state += energy_kwh
-                    unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                    _LOGGER.debug(f"Midnight calculation: {self._attr_name} | Power: {power:.2f}{unit_display} | Energy added: {energy_kwh:.6f}kWh | Total: {self._state:.3f}kWh")
-                
-                # Update values
-                self._last_power = power
-                self._last_update = now
-                await self._save_state()
-                self.safe_write_ha_state()
-        except Exception as e:
-            _LOGGER.error(f"Error during midnight calculation for {self._attr_name}: {e}", exc_info=True)
-        finally:
-            self._calculating_energy = False
+        # IMPORTANT: Don't perform energy calculations here to avoid double counting
+        # Energy calculations are handled exclusively by the interval timer
+        # This is just for future midnight-specific tasks if needed
+        _debug_log(self.hass, f"Midnight update called for {self._attr_name} - no calculation performed to avoid double counting")
+        pass
 
     async def _handle_state_change(self, event):
         """Update energy when power changes."""
