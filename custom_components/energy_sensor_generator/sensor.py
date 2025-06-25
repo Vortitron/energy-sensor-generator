@@ -212,7 +212,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 	
 	# Only proceed if we have selected sensors configured
 	selected_sensors = options.get("selected_power_sensors", [])
+	_LOGGER.info(f"Setting up energy sensors for selected power sensors: {selected_sensors}")
 	if not selected_sensors:
+		_LOGGER.warning("No power sensors selected in configuration, skipping sensor setup")
 		return
 	
 	# Find existing generated sensors
@@ -225,7 +227,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 			existing_entities.append((entity_id, entity_entry.unique_id))
 	
 	# If we have existing entities, recreate them to ensure they're properly linked
-	if existing_entities:
+	# But only if we have selected sensors configured
+	if existing_entities and selected_sensors:
 		_LOGGER.info(f"Found {len(existing_entities)} existing energy sensors to recreate during setup")
 		
 		# Get storage path
@@ -256,19 +259,46 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 		
 		for base_name, sensor_types in entities_by_base.items():
 			# Determine source sensor from base name
-			source_sensor = f"sensor.{base_name}_power"
-			if source_sensor not in selected_sensors:
+			expected_source_sensor = f"sensor.{base_name}_power"
+			source_sensor = expected_source_sensor
+			
+			# Debug the mapping process
+			_LOGGER.debug(f"Recreating sensors for base_name '{base_name}', expected source: '{expected_source_sensor}'")
+			_LOGGER.debug(f"Selected sensors: {selected_sensors}")
+			
+			# Verify the expected source sensor is in the selected list
+			if expected_source_sensor not in selected_sensors:
+				_LOGGER.warning(f"Expected source sensor '{expected_source_sensor}' not found in selected sensors for {base_name}")
 				# Try to find the actual source sensor from selected sensors
+				found_source = None
 				for selected in selected_sensors:
 					selected_base = selected.replace("sensor.", "").replace("_power", "")
 					if selected_base == base_name:
-						source_sensor = selected
+						found_source = selected
 						break
+				
+				if found_source:
+					source_sensor = found_source
+					_LOGGER.info(f"Mapped {base_name} to source sensor: {source_sensor}")
+				else:
+					_LOGGER.error(f"Cannot find appropriate source sensor for {base_name}. Expected: {expected_source_sensor}, Available: {selected_sensors}")
+					# Skip this entity group if we can't find the source
+					continue
 			
 			# Check if source sensor still exists
 			if hass.states.get(source_sensor) is None:
-				_LOGGER.info(f"Source sensor {source_sensor} not yet available during startup for {base_name}, will create energy sensor anyway")
+				_LOGGER.warning(f"Source sensor {source_sensor} not yet available during startup for {base_name}")
 				# During startup, we'll proceed anyway - the sensor should handle unavailable source gracefully
+			else:
+				# Validate that this is actually a power sensor
+				source_state = hass.states.get(source_sensor)
+				unit = source_state.attributes.get("unit_of_measurement", "")
+				device_class = source_state.attributes.get("device_class", "")
+				if unit in ["kWh", "kwh"] or device_class == "energy":
+					_LOGGER.error(f"CRITICAL ERROR during startup: Source sensor {source_sensor} for {base_name} is an ENERGY sensor (unit: {unit}, device_class: {device_class}) instead of a POWER sensor. Skipping recreation.")
+					continue
+				else:
+					_LOGGER.debug(f"Validated source sensor {source_sensor} is a power sensor (unit: {unit}, device_class: {device_class})")
 			
 			# Get device identifiers for proper device grouping
 			device_identifiers = None
@@ -281,9 +311,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 			
 			# Recreate main energy sensor if it exists
 			if "main" in sensor_types:
+				# Double-check we're not creating energy sensor from energy source
+				if source_sensor.endswith("_energy"):
+					_LOGGER.error(f"PREVENTING INFINITE LOOP: Refusing to create energy sensor from energy source {source_sensor} for {base_name}")
+					continue
+				
 				energy_sensor = EnergySensor(hass, base_name, source_sensor, storage_path, device_identifiers)
 				entities_to_add.append(energy_sensor)
-				_LOGGER.debug(f"Recreated main energy sensor for {base_name}")
+				_LOGGER.debug(f"Recreated main energy sensor for {base_name} with source {source_sensor}")
 			
 			# Recreate daily sensor if it exists
 			if "daily" in sensor_types:
@@ -314,6 +349,15 @@ class EnergySensor(SensorEntity):
         self._source_sensor = source_sensor
         self._storage_path = storage_path
         self._device_identifiers = device_identifiers
+        
+        # Validate that we're not creating an energy sensor from an energy source
+        source_state = hass.states.get(source_sensor)
+        if source_state:
+            unit = source_state.attributes.get("unit_of_measurement", "")
+            device_class = source_state.attributes.get("device_class", "")
+            if unit in ["kWh", "kwh"] or device_class == "energy":
+                _LOGGER.error(f"CONFIGURATION ERROR: Cannot create energy sensor '{base_name.replace('_', ' ').title()} Energy' from energy source '{source_sensor}' (unit: {unit}, device_class: {device_class}). Energy sensors must be created from POWER sensors with unit 'W' or 'kW'. Please reconfigure this integration to monitor power sensors instead.")
+                # Don't raise an exception to avoid breaking startup, but log the error clearly
         
         # Sensor attributes
         self._attr_name = f"{base_name.replace('_', ' ').title()} Energy"
@@ -686,7 +730,7 @@ class EnergySensor(SensorEntity):
 
     async def _handle_interval_update(self, now):
         """Update energy calculation at regular intervals using statistical data when possible."""
-        _debug_log(self.hass, f"Interval update called for {self._attr_name}")
+        # Only log interval updates when they result in actual calculations to reduce spam
         
         if self._calculating_energy:
             _debug_log(self.hass, f"Already calculating energy for {self._attr_name}, skipping")
@@ -699,7 +743,7 @@ class EnergySensor(SensorEntity):
             
             # Safety check for conversion factor
             if not self._power_to_kw_factor or self._power_to_kw_factor <= 0:
-                _LOGGER.debug(f"Conversion factor not yet available for {self._source_sensor}, skipping calculation")
+                _debug_log(self.hass, f"Conversion factor not yet available for {self._source_sensor}, skipping calculation")
                 return
             
             # Get configuration options
@@ -753,14 +797,34 @@ class EnergySensor(SensorEntity):
                     statistical_data = None
             
             state = self._hass.states.get(self._source_sensor)
-            if not state or state.state in ("unknown", "unavailable"):
+            if not state:
+                _debug_log(self.hass, f"Source sensor {self._source_sensor} not found for {self._attr_name}")
+                return
+                
+            if state.state in ("unknown", "unavailable"):
+                _debug_log(self.hass, f"Source sensor {self._source_sensor} has invalid state '{state.state}' for {self._attr_name}")
                 return
                 
             try:
                 power = float(state.state)
             except (ValueError, TypeError):
-                _LOGGER.warning(f"Invalid power value: {state.state}")
+                _debug_log(self.hass, f"Invalid power value '{state.state}' from {self._source_sensor} for {self._attr_name}")
                 return
+            
+            # Log when we're actually starting calculations
+            _debug_log(self.hass, f"Interval update called for {self._attr_name} - power: {power}W, source: {self._source_sensor}")
+            
+            # Add diagnostic information about the source sensor
+            source_state = self._hass.states.get(self._source_sensor)
+            if source_state:
+                unit = source_state.attributes.get("unit_of_measurement", "unknown")
+                device_class = source_state.attributes.get("device_class", "unknown")
+                _debug_log(self.hass, f"Source sensor details: {self._source_sensor} = {power}{unit} (device_class: {device_class})")
+                
+                # Check if this is incorrectly monitoring an energy sensor instead of power sensor
+                if unit in ["kWh", "kwh"] or device_class == "energy":
+                    _LOGGER.warning(f"CONFIGURATION ERROR: {self._attr_name} is monitoring an ENERGY sensor ({self._source_sensor}) instead of a POWER sensor! This will not work correctly. Please reconfigure to monitor a power sensor with unit 'W' or 'kW'.")
+                    return
             
             # Use statistical data if available, otherwise fall back to trapezoidal rule (if allowed)
             if statistical_data is not None and statistical_data.get("total_energy") and statistical_data["total_energy"] > 0:
@@ -852,7 +916,9 @@ class EnergySensor(SensorEntity):
                 else:
                     _debug_log(self.hass, f"Interval update: Point sampling disabled for {self._attr_name} - no calculation performed")
             elif not should_use_point_sampling and self._last_power is None:
-                _LOGGER.debug(f"Interval update: Skipping calculation - missing previous power/time data for {self._attr_name}")
+                _debug_log(self.hass, f"Interval update: Skipping calculation - missing previous power/time data for {self._attr_name} (first run)")
+            elif statistical_energy is None and should_use_point_sampling and self._last_power is None:
+                _debug_log(self.hass, f"Interval update: Point sampling enabled but no previous data available for {self._attr_name} - will start tracking on next update")
             
             # Update values (always update regardless of calculation method used)
             self._last_power = power

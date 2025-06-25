@@ -102,7 +102,11 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
             power_sensors.append(entity_id)
             _debug_log(hass, f"✓ Detected power sensor: {entity_id} (reason: {detection_reason}, state: {state.state})")
         elif unit:  # Log sensors with units that we didn't detect as power sensors
-            _debug_log(hass, f"✗ Skipped sensor: {entity_id} (unit: '{unit}', device_class: '{device_class}', state: {state.state})")
+            # Specifically identify energy sensors to help with debugging
+            if unit in ["kWh", "kwh"] or device_class == "energy":
+                _debug_log(hass, f"✗ Skipped ENERGY sensor: {entity_id} (unit: '{unit}', device_class: '{device_class}', state: {state.state}) - Energy sensors cannot be used as power sources")
+            else:
+                _debug_log(hass, f"✗ Skipped sensor: {entity_id} (unit: '{unit}', device_class: '{device_class}', state: {state.state})")
             
     _info_log(hass, f"Detected {len(power_sensors)} power sensors total", force=True)
     if kw_sensors:
