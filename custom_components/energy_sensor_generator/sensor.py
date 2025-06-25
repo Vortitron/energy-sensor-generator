@@ -410,10 +410,10 @@ class EnergySensor(SensorEntity):
                 _debug_log(self.hass, f"Recorder not available for {self._attr_name}")
                 return None
                 
-            # Ensure we have a reasonable time range (at least 30 seconds)
+            # Ensure we have a reasonable time range (at least 2 minutes)
             time_delta = (end_time - start_time).total_seconds()
-            if time_delta < 30:
-                _debug_log(self.hass, f"Time range too short for statistical calculation ({time_delta:.1f}s) for {self._attr_name}")
+            if time_delta < 120:  # Increased minimum time range to 2 minutes
+                _debug_log(self.hass, f"Time range too short for statistical calculation ({time_delta:.1f}s) for {self._attr_name} - need at least 2 minutes")
                 return None
             
             # Import required modules for history access
@@ -446,7 +446,7 @@ class EnergySensor(SensorEntity):
                     states_list = historical_states[self._source_sensor]
                     
                     if len(states_list) < 2:
-                        return {"error": f"Not enough historical states ({len(states_list)})"}
+                        return {"error": f"Not enough historical states ({len(states_list)}) - need at least 2 data points for statistical calculation"}
                     
                     # Filter out invalid states and convert to numeric values
                     valid_states = []
@@ -463,7 +463,7 @@ class EnergySensor(SensorEntity):
                             continue
                     
                     if len(valid_states) < 2:
-                        return {"error": f"Not enough valid states ({len(valid_states)}) from {len(states_list)} total"}
+                        return {"error": f"Not enough valid states ({len(valid_states)}) from {len(states_list)} total - need at least 2 valid data points"}
                     
                     # Sort by time to ensure chronological order
                     valid_states.sort(key=lambda x: x['time'])
@@ -524,7 +524,27 @@ class EnergySensor(SensorEntity):
             statistical_data = await recorder_instance.async_add_executor_job(_get_history_data)
             
             if statistical_data.get("error"):
-                _debug_log(self.hass, f"Error in statistical calculation for {self._attr_name}: {statistical_data['error']}")
+                error_msg = statistical_data['error']
+                
+                # For the common "not enough states" error, provide more context and reduce spam
+                if "Not enough" in error_msg:
+                    # Only log this error occasionally to avoid spam
+                    current_time = time.time()
+                    last_logged_key = f"_insufficient_data_last_log_{self._attr_name}"
+                    if DOMAIN not in self.hass.data:
+                        return None
+                        
+                    if last_logged_key not in self.hass.data[DOMAIN]:
+                        self.hass.data[DOMAIN][last_logged_key] = 0
+                    
+                    # Only log this error every 10 minutes to avoid spam
+                    if current_time - self.hass.data[DOMAIN][last_logged_key] > 600:
+                        _debug_log(self.hass, f"Statistical calculation for {self._attr_name}: {error_msg} - This is normal for new sensors or sensors with infrequent updates")
+                        self.hass.data[DOMAIN][last_logged_key] = current_time
+                else:
+                    # For other errors, log normally
+                    _debug_log(self.hass, f"Error in statistical calculation for {self._attr_name}: {error_msg}")
+                
                 return None
             
             statistical_energy = statistical_data["total_energy"]
@@ -701,19 +721,29 @@ class EnergySensor(SensorEntity):
                         stat_start_time = self._last_update
                         stat_end_time = now
                         
-                        # Ensure we have at least 30 seconds for a meaningful calculation
+                        # Ensure we have at least 2 minutes for a meaningful statistical calculation
                         time_range = (stat_end_time - stat_start_time).total_seconds()
-                        if time_range < 30:
-                            _debug_log(self.hass, f"Time range too short for statistical calculation ({time_range:.1f}s), skipping statistical calculation")
-                            # Don't extend the range - this can cause double counting!
-                            statistical_data = None
+                        if time_range < 120:  # Increased from 30 to 120 seconds (2 minutes)
+                            _debug_log(self.hass, f"Time range too short for statistical calculation ({time_range:.1f}s), extending window to ensure data availability")
+                            # Extend the window slightly to ensure we have enough data, but be careful about double counting
+                            # Use a maximum of 5 minutes back to balance accuracy vs double counting risk
+                            stat_start_time = max(self._last_update, now - timedelta(minutes=5))
+                            time_range = (stat_end_time - stat_start_time).total_seconds()
+                            
+                            if time_range < 120:
+                                _debug_log(self.hass, f"Extended time range still too short ({time_range:.1f}s), skipping statistical calculation")
+                                statistical_data = None
+                            else:
+                                _debug_log(self.hass, f"Using extended statistical time range: {stat_start_time} to {stat_end_time} ({time_range:.1f} seconds)")
+                                # Get statistical data
+                                statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
                         else:
                             _debug_log(self.hass, f"Using statistical time range: {stat_start_time} to {stat_end_time} ({time_range:.1f} seconds)")
                             # Get statistical data
                             statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
                     else:
                         # No previous update, use a longer window for initial calculation
-                        stat_start_time = now - timedelta(minutes=10)
+                        stat_start_time = now - timedelta(minutes=30)  # Increased from 10 to 30 minutes for initial calculation
                         stat_end_time = now
                         _debug_log(self.hass, f"Initial calculation - using statistical time range: {stat_start_time} to {stat_end_time}")
                         # Get statistical data
@@ -777,6 +807,14 @@ class EnergySensor(SensorEntity):
                 (statistical_energy is None and allow_point_sampling_fallback) or
                 (not use_statistical and enable_point_sampling_backup)
             )
+            
+            # Add a special case for new sensors that don't have enough data yet
+            if (statistical_energy is None and 
+                allow_point_sampling_fallback and 
+                statistical_data and 
+                "Not enough" in str(statistical_data.get("error", ""))):
+                # For new sensors with insufficient statistical data, allow point sampling even if intervals are short
+                should_use_point_sampling = True
                 
             if should_use_point_sampling and self._last_power is not None and self._last_update is not None:
                 # Fall back to trapezoidal rule
@@ -808,7 +846,11 @@ class EnergySensor(SensorEntity):
                     unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
                     _debug_log(self.hass, f"No energy added (too small): avg power: {avg_power:.4f}{unit_display}, calculated energy: {energy_kwh:.8f}kWh")
             elif statistical_energy is None and not should_use_point_sampling:
-                _debug_log(self.hass, f"Interval update: Point sampling disabled for {self._attr_name} - no calculation performed")
+                # Provide more helpful information about why no calculation was performed
+                if not allow_point_sampling_fallback:
+                    _debug_log(self.hass, f"Interval update: Statistical calculation failed and point sampling fallback is disabled for {self._attr_name} - no calculation performed")
+                else:
+                    _debug_log(self.hass, f"Interval update: Point sampling disabled for {self._attr_name} - no calculation performed")
             elif not should_use_point_sampling and self._last_power is None:
                 _LOGGER.debug(f"Interval update: Skipping calculation - missing previous power/time data for {self._attr_name}")
             
