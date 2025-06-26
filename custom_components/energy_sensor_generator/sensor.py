@@ -79,7 +79,7 @@ def _get_config_options(hass: HomeAssistant) -> dict:
 	"""Get configuration options from the integration."""
 	default_options = {
 		CONF_USE_STATISTICAL: True,
-		CONF_ALLOW_POINT_SAMPLING_FALLBACK: True,  # Allow fallback by default for backwards compatibility
+		CONF_ALLOW_POINT_SAMPLING_FALLBACK: True,  # Allow fallback by default for reliability
 		CONF_ENABLE_POINT_SAMPLING_BACKUP: False,  # Off by default as requested
 	}
 	
@@ -394,6 +394,7 @@ class EnergySensor(SensorEntity):
         self._calculation_count = 0  # Counter for logging frequency
         self._first_calculation_logged = False  # Flag to log first successful calculation
         self._using_statistical = False  # Track which calculation method was last used
+        self._last_statistical_calculation = None  # Track when we last performed statistical calculation
         # State will be loaded in async_added_to_hass
 
     def _get_power_conversion_factor(self, hass, source_sensor):
@@ -454,9 +455,9 @@ class EnergySensor(SensorEntity):
                 _debug_log(self.hass, f"Recorder not available for {self._attr_name}")
                 return None
                 
-            # Ensure we have a reasonable time range (at least 2 minutes)
+            # Ensure we have a reasonable time range (at least 2 minutes, but preferably 5+ minutes)
             time_delta = (end_time - start_time).total_seconds()
-            if time_delta < 120:  # Increased minimum time range to 2 minutes
+            if time_delta < 120:  # 2 minutes minimum, but we'll prefer longer windows
                 _debug_log(self.hass, f"Time range too short for statistical calculation ({time_delta:.1f}s) for {self._attr_name} - need at least 2 minutes")
                 return None
             
@@ -623,6 +624,7 @@ class EnergySensor(SensorEntity):
             self._state = state_data.get("value", 0.0)
             last_power = state_data.get("last_power")
             last_update = state_data.get("last_update")
+            last_statistical_calculation = state_data.get("last_statistical_calculation")
             stored_conversion_factor = state_data.get("conversion_factor")
             
             # Determine current conversion factor
@@ -644,6 +646,17 @@ class EnergySensor(SensorEntity):
                         self._last_update = parsed_dt
                 except (ValueError, TypeError):
                     self._last_update = None
+                    
+            if last_statistical_calculation:
+                try:
+                    parsed_dt = datetime.fromisoformat(last_statistical_calculation)
+                    # If the datetime is timezone-naive, make it timezone-aware
+                    if parsed_dt.tzinfo is None:
+                        self._last_statistical_calculation = dt_util.as_utc(parsed_dt)
+                    else:
+                        self._last_statistical_calculation = parsed_dt
+                except (ValueError, TypeError):
+                    self._last_statistical_calculation = None
         else:
             # Legacy format where state_data is just a float
             legacy_value = float(state_data) if state_data else 0.0
@@ -659,6 +672,7 @@ class EnergySensor(SensorEntity):
             "value": self._state,
             "last_power": self._last_power,
             "last_update": self._last_update.isoformat() if self._last_update else None,
+            "last_statistical_calculation": self._last_statistical_calculation.isoformat() if self._last_statistical_calculation else None,
             "conversion_factor": self._power_to_kw_factor
         }
         await save_storage(self._storage_path, storage)
@@ -754,44 +768,31 @@ class EnergySensor(SensorEntity):
             
             _debug_log(self.hass, f"Configuration: statistical={use_statistical}, fallback_allowed={allow_point_sampling_fallback}, backup_enabled={enable_point_sampling_backup}, stats_available={STATISTICS_AVAILABLE}")
             
-            # Try statistical calculation first if we have previous data and it's enabled
+            # Try statistical calculation first if enabled
             statistical_data = None
             if use_statistical and STATISTICS_AVAILABLE:
                 try:
-                    # For statistical calculation, we need to be careful about double counting
-                    # We'll calculate energy only since the last update to avoid this
-                    if self._last_update:
-                        # Use the actual time since last update for statistical calculation
-                        stat_start_time = self._last_update
+                    # For statistical calculation, always use a fixed lookback window for consistency and reliability
+                    # This approach avoids double counting by tracking the last time we performed statistical calculation
+                    
+                    if hasattr(self, '_last_statistical_calculation') and self._last_statistical_calculation:
+                        # Calculate energy only since the last statistical calculation
+                        stat_start_time = self._last_statistical_calculation
                         stat_end_time = now
-                        
-                        # Ensure we have at least 2 minutes for a meaningful statistical calculation
-                        time_range = (stat_end_time - stat_start_time).total_seconds()
-                        if time_range < 120:  # Increased from 30 to 120 seconds (2 minutes)
-                            _debug_log(self.hass, f"Time range too short for statistical calculation ({time_range:.1f}s), extending window to ensure data availability")
-                            # Extend the window slightly to ensure we have enough data, but be careful about double counting
-                            # Use a maximum of 5 minutes back to balance accuracy vs double counting risk
-                            stat_start_time = max(self._last_update, now - timedelta(minutes=5))
-                            time_range = (stat_end_time - stat_start_time).total_seconds()
-                            
-                            if time_range < 120:
-                                _debug_log(self.hass, f"Extended time range still too short ({time_range:.1f}s), skipping statistical calculation")
-                                statistical_data = None
-                            else:
-                                _debug_log(self.hass, f"Using extended statistical time range: {stat_start_time} to {stat_end_time} ({time_range:.1f} seconds)")
-                                # Get statistical data
-                                statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
-                        else:
-                            _debug_log(self.hass, f"Using statistical time range: {stat_start_time} to {stat_end_time} ({time_range:.1f} seconds)")
-                            # Get statistical data
-                            statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
+                        _debug_log(self.hass, f"Using incremental statistical time range: {stat_start_time} to {stat_end_time}")
                     else:
-                        # No previous update, use a longer window for initial calculation
-                        stat_start_time = now - timedelta(minutes=30)  # Increased from 10 to 30 minutes for initial calculation
+                        # First time or no previous statistical calculation - use 15 minute window
+                        stat_start_time = now - timedelta(minutes=15)
                         stat_end_time = now
-                        _debug_log(self.hass, f"Initial calculation - using statistical time range: {stat_start_time} to {stat_end_time}")
-                        # Get statistical data
-                        statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
+                        _debug_log(self.hass, f"Initial statistical calculation - using 15 minute window: {stat_start_time} to {stat_end_time}")
+                    
+                    # Get statistical data
+                    statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
+                    
+                    # If successful, update the last statistical calculation time
+                    if statistical_data and statistical_data.get("total_energy") and statistical_data["total_energy"] > 0:
+                        self._last_statistical_calculation = now
+                        
                 except Exception as e:
                     _debug_log(self.hass, f"Exception during statistical calculation: {str(e)}")
                     statistical_data = None
@@ -919,10 +920,21 @@ class EnergySensor(SensorEntity):
                 _debug_log(self.hass, f"Interval update: Skipping calculation - missing previous power/time data for {self._attr_name} (first run)")
             elif statistical_energy is None and should_use_point_sampling and self._last_power is None:
                 _debug_log(self.hass, f"Interval update: Point sampling enabled but no previous data available for {self._attr_name} - will start tracking on next update")
+            elif statistical_energy is None and not should_use_point_sampling:
+                # Statistical calculation failed and point sampling is disabled - this is expected initially
+                if self._calculation_count == 0:
+                    _debug_log(self.hass, f"Interval update: Building statistical data for {self._attr_name} - calculations will start once sufficient historical data is available (typically 15+ minutes)")
+                else:
+                    _debug_log(self.hass, f"Interval update: Statistical calculation failed for {self._attr_name} - may need more time to build sufficient historical data")
             
             # Update values (always update regardless of calculation method used)
             self._last_power = power
             self._last_update = now
+            
+            # Log when we first start tracking
+            if self._calculation_count == 0:
+                _debug_log(self.hass, f"Starting to track power for {self._attr_name}: {power}W from {self._source_sensor}")
+            
             await self._save_state()
             self.safe_write_ha_state()
             
