@@ -790,7 +790,7 @@ class EnergySensor(SensorEntity):
                     statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
                     
                     # If successful, update the last statistical calculation time
-                    if statistical_data and statistical_data.get("total_energy") and statistical_data["total_energy"] > 0:
+                    if statistical_data is not None and isinstance(statistical_data, (int, float)) and statistical_data > 0:
                         self._last_statistical_calculation = now
                         
                 except Exception as e:
@@ -828,44 +828,26 @@ class EnergySensor(SensorEntity):
                     return
             
             # Use statistical data if available, otherwise fall back to trapezoidal rule (if allowed)
-            if statistical_data is not None and statistical_data.get("total_energy") and statistical_data["total_energy"] > 0:
-                statistical_energy = statistical_data["total_energy"]
-                max_power = statistical_data.get("max_power", 0)
+            if statistical_data is not None and isinstance(statistical_data, (int, float)) and statistical_data > 0:
+                statistical_energy = statistical_data
+                max_power = 0  # We don't have detailed power info when just getting the energy value
                 
-                # Get the actual time range used for statistical calculation for sanity check
-                actual_time_range = (stat_end_time - stat_start_time).total_seconds() / 3600  # in hours
+                # Use statistical calculation (simplified - trust the statistical calculation)
+                self._state += statistical_energy
+                self._using_statistical = True
+                unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
+                self._calculation_count += 1
                 
-                # Improved sanity check: use the maximum power from the statistical data, not current reading
-                # This prevents false positives when current power is low but historical data shows higher consumption
-                sanity_check_power = max(max_power, power, 100)  # Use at least 100W as minimum for sanity check
-                max_possible_energy = (sanity_check_power * actual_time_range) / self._power_to_kw_factor
+                # Log first successful calculation 
+                if not self._first_calculation_logged:
+                    _info_log(self.hass, f"Energy sensor {self._attr_name} is now tracking energy from {self._source_sensor} ({unit_display} sensor) using statistical data", force=True)
+                    self._first_calculation_logged = True
                 
-                _debug_log(self.hass, f"Sanity check for {self._attr_name}: calculated={statistical_energy:.6f}kWh, max_possible={max_possible_energy:.6f}kWh (max_power={max_power:.1f}W, current_power={power:.1f}W, time={actual_time_range:.2f}h)")
-                
-                if statistical_energy > max_possible_energy * 2.0:  # Allow 100% margin for measurement variations
-                    if allow_point_sampling_fallback:
-                        _LOGGER.warning(f"Statistical energy seems too high for {self._attr_name}: {statistical_energy:.6f}kWh vs max possible {max_possible_energy:.6f}kWh, falling back to point sampling")
-                        statistical_energy = None
-                    else:
-                        _LOGGER.warning(f"Statistical energy seems too high for {self._attr_name}: {statistical_energy:.6f}kWh vs max possible {max_possible_energy:.6f}kWh, point sampling fallback disabled - skipping calculation")
-                        return
-                else:
-                    # Use statistical calculation
-                    self._state += statistical_energy
-                    self._using_statistical = True
-                    unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                    self._calculation_count += 1
-                    
-                    # Log first successful calculation 
-                    if not self._first_calculation_logged:
-                        _info_log(self.hass, f"Energy sensor {self._attr_name} is now tracking energy from {self._source_sensor} ({unit_display} sensor) using statistical data", force=True)
-                        self._first_calculation_logged = True
-                    
-                    _debug_log(self.hass, f"Statistical energy calculation: {self._attr_name} | Energy added: {statistical_energy:.8f}kWh | Total: {self._state:.4f}kWh | Current power: {power:.2f}{unit_display}")
+                _debug_log(self.hass, f"Statistical energy calculation: {self._attr_name} | Energy added: {statistical_energy:.8f}kWh | Total: {self._state:.4f}kWh | Current power: {power:.2f}{unit_display}")
             
             # Only use point sampling if statistical failed AND fallback is allowed OR if backup is enabled and statistical is disabled
             # Set statistical_energy to None if we're not using it
-            if not (statistical_data is not None and statistical_data.get("total_energy") and statistical_data["total_energy"] > 0):
+            if not (statistical_data is not None and isinstance(statistical_data, (int, float)) and statistical_data > 0):
                 statistical_energy = None
                 
             should_use_point_sampling = (
@@ -874,12 +856,8 @@ class EnergySensor(SensorEntity):
             )
             
             # Add a special case for new sensors that don't have enough data yet
-            if (statistical_energy is None and 
-                allow_point_sampling_fallback and 
-                statistical_data and 
-                "Not enough" in str(statistical_data.get("error", ""))):
-                # For new sensors with insufficient statistical data, allow point sampling even if intervals are short
-                should_use_point_sampling = True
+            # (This check is no longer needed since statistical_data is now a float when successful)
+            # The "Not enough" errors are handled in the _get_statistical_power_data function
                 
             if should_use_point_sampling and self._last_power is not None and self._last_update is not None:
                 # Fall back to trapezoidal rule
