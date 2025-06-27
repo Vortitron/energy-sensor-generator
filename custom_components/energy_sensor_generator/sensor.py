@@ -832,8 +832,15 @@ class EnergySensor(SensorEntity):
                 statistical_energy = statistical_data
                 max_power = 0  # We don't have detailed power info when just getting the energy value
                 
+                # Debug: Log the exact state before and after addition
+                old_state = self._state
+                
                 # Use statistical calculation (simplified - trust the statistical calculation)
                 self._state += statistical_energy
+                
+                # Debug: Log the precise calculation
+                _debug_log(self.hass, f"PRECISE DEBUG: {self._attr_name} | Before: {old_state:.10f}kWh | Adding: {statistical_energy:.10f}kWh | After: {self._state:.10f}kWh")
+                
                 self._using_statistical = True
                 unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
                 self._calculation_count += 1
