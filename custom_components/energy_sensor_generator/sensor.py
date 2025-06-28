@@ -444,7 +444,7 @@ class EnergySensor(SensorEntity):
         # Note: Factor is now set during _load_state() to enable data migration
 
     async def _get_statistical_power_data(self, start_time, end_time):
-        """Get statistical power data from Home Assistant's recorder using proper async methods."""
+        """Calculate energy using left Riemann sum (same method as Home Assistant's integration sensor)."""
         try:
             if not STATISTICS_AVAILABLE:
                 _debug_log(self.hass, f"Statistics module not available for {self._attr_name}")
@@ -455,9 +455,9 @@ class EnergySensor(SensorEntity):
                 _debug_log(self.hass, f"Recorder not available for {self._attr_name}")
                 return None
                 
-            # Ensure we have a reasonable time range (at least 2 minutes, but preferably 5+ minutes)
+            # Ensure we have a reasonable time range (at least 2 minutes)
             time_delta = (end_time - start_time).total_seconds()
-            if time_delta < 120:  # 2 minutes minimum, but we'll prefer longer windows
+            if time_delta < 120:  # 2 minutes minimum
                 _debug_log(self.hass, f"Time range too short for statistical calculation ({time_delta:.1f}s) for {self._attr_name} - need at least 2 minutes")
                 return None
             
@@ -513,7 +513,8 @@ class EnergySensor(SensorEntity):
                     # Sort by time to ensure chronological order
                     valid_states.sort(key=lambda x: x['time'])
                     
-                    # Calculate energy using trapezoidal integration
+                    # Calculate energy using LEFT Riemann sum (like Home Assistant's integration sensor)
+                    # This method assumes constant power between readings, which is correct for IoT devices
                     total_energy = 0.0
                     calculation_count = 0
                     segments = []
@@ -528,28 +529,29 @@ class EnergySensor(SensorEntity):
                         # Track power statistics
                         max_power = max(max_power, prev_state['power'], curr_state['power'])
                         min_power = min(min_power, prev_state['power'], curr_state['power'])
-                        total_power += prev_state['power'] + curr_state['power']
+                        total_power += prev_state['power']
                         
                         # Calculate time difference in hours
                         time_delta_hours = (curr_state['time'] - prev_state['time']).total_seconds() / 3600.0
                         
-                        if time_delta_hours > 0 and time_delta_hours < 24:  # Sanity check: ignore gaps > 24 hours
-                            # Trapezoidal rule: average of two power readings * time
-                            avg_power = (prev_state['power'] + curr_state['power']) / 2
+                        # Skip unreasonably large gaps (> 6 hours) as they're likely data gaps
+                        if time_delta_hours > 0 and time_delta_hours < 6:
+                            # LEFT Riemann sum: use the previous power value for the entire interval
+                            # This correctly handles devices that are either ON at a fixed power or OFF (0W)
+                            power = prev_state['power']
                             
-                            # Convert to kWh using the conversion factor (passed from main thread)
-                            energy_increment = (avg_power * time_delta_hours) / conversion_factor
+                            # Convert to kWh using the conversion factor
+                            energy_increment = (power * time_delta_hours) / conversion_factor
                             total_energy += energy_increment
                             calculation_count += 1
                             
                             segments.append({
-                                'from_power': prev_state['power'],
-                                'to_power': curr_state['power'],
+                                'power': power,
                                 'duration_seconds': time_delta_hours * 3600,
                                 'energy_kwh': energy_increment
                             })
                        
-                    avg_power = (total_power / (len(valid_states) * 2)) if len(valid_states) > 0 else 0.0
+                    avg_power = (total_power / calculation_count) if calculation_count > 0 else 0.0
                     
                     return {
                         "total_energy": total_energy if total_energy > 0 and calculation_count > 0 else None,
@@ -603,7 +605,7 @@ class EnergySensor(SensorEntity):
                 _debug_log(self.hass, f"  Power range: {statistical_data.get('min_power', 0):.2f}W to {max_power:.2f}W, avg: {avg_power:.2f}W")
                 if statistical_data.get('segment_details'):
                     for i, seg in enumerate(statistical_data['segment_details']):
-                        _debug_log(self.hass, f"  Segment {i+1}: {seg['from_power']:.2f}W -> {seg['to_power']:.2f}W over {seg['duration_seconds']:.1f}s = {seg['energy_kwh']:.8f}kWh")
+                        _debug_log(self.hass, f"  Segment {i+1}: {seg['power']:.2f}W over {seg['duration_seconds']:.1f}s = {seg['energy_kwh']:.8f}kWh")
                 return statistical_energy
             else:
                 _debug_log(self.hass, f"Statistical calculation returned no energy for {self._attr_name}")
@@ -786,7 +788,7 @@ class EnergySensor(SensorEntity):
                         stat_end_time = now
                         _debug_log(self.hass, f"Initial statistical calculation - using 15 minute window: {stat_start_time} to {stat_end_time}")
                     
-                    # Get statistical data
+                    # Get statistical data using LEFT Riemann sum (like HA's integration sensor)
                     statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
                     
                     # If successful, update the last statistical calculation time
