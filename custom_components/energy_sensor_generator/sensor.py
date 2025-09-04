@@ -14,6 +14,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
+
+_LOGGER = logging.getLogger(__name__)
+
 try:
     from homeassistant.components import recorder
     from homeassistant.components.recorder import statistics
@@ -30,8 +33,6 @@ from .const import (
 	CONF_ENABLE_POINT_SAMPLING_BACKUP
 )
 import time
-
-_LOGGER = logging.getLogger(__name__)
 
 def _is_debug_enabled(hass: HomeAssistant) -> bool:
 	"""Check if debug logging is enabled for this integration."""
@@ -455,10 +456,10 @@ class EnergySensor(SensorEntity):
                 _debug_log(self.hass, f"Recorder not available for {self._attr_name}")
                 return None
                 
-            # Ensure we have a reasonable time range (at least 2 minutes)
+            # Ensure we have a reasonable time range (at least 1 minute)
             time_delta = (end_time - start_time).total_seconds()
-            if time_delta < 120:  # 2 minutes minimum
-                _debug_log(self.hass, f"Time range too short for statistical calculation ({time_delta:.1f}s) for {self._attr_name} - need at least 2 minutes")
+            if time_delta < 60:  # 1 minute minimum
+                _debug_log(self.hass, f"Time range too short for statistical calculation ({time_delta:.1f}s) for {self._attr_name} - need at least 1 minute")
                 return None
             
             # Import required modules for history access
@@ -734,6 +735,22 @@ class EnergySensor(SensorEntity):
             self._handle_interval_update,
             timedelta(seconds=sample_interval)
         )
+        
+        # If interval is a multiple of 60 seconds, align updates to wall-clock minutes
+        if sample_interval % 60 == 0:
+            try:
+                # Cancel the non-aligned interval tracker
+                if self._interval_tracker:
+                    self._interval_tracker()
+            except Exception:
+                pass
+            step_minutes = max(1, int(sample_interval // 60))
+            self._interval_tracker = async_track_time_change(
+                self._hass,
+                self._handle_interval_update,
+                minute=list(range(0, 60, step_minutes)),
+                second=0
+            )
         
         # Also set up a midnight update to ensure we get regular updates
         async_track_time_change(

@@ -11,6 +11,7 @@ A Home Assistant custom integration that automatically generates kWh energy sens
 - **Daily and Monthly Tracking**: Tracks energy usage with automatic daily and monthly resets, replacing the `utility_meter` helper.
 - **Flexible Generation**: Supports automatic sensor creation on startup or manual triggering via a UI button.
 - **Energy Dashboard Compatibility**: Generates sensors with `device_class: energy` and `state_class: total_increasing` for seamless integration.
+- **Minute-Aligned Scheduling**: When the update interval is a multiple of 60 seconds, updates are aligned to wall-clock minutes to ensure Energy dashboard buckets match upstream devices.
 - **Persistent Storage**: Saves energy data to a JSON file to survive Home Assistant restarts.
 - **No Dependencies**: Pure Python implementation, no need for MQTT, Node-RED, or external integrations.
 - **HACS Ready**: Easily installed via the Home Assistant Community Store (HACS).
