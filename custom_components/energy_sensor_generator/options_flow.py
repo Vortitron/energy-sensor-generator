@@ -44,6 +44,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		# Get current settings
 		create_daily = self.config_entry.options.get("create_daily_sensors", True)
 		create_monthly = self.config_entry.options.get("create_monthly_sensors", True)
+		create_weekly = self.config_entry.options.get("create_weekly_sensors", True)
+		create_annual = self.config_entry.options.get("create_annual_sensors", True)
 		sample_interval = self.config_entry.options.get("sample_interval", 60)
 		debug_logging = self.config_entry.options.get(CONF_DEBUG_LOGGING, False)
 		use_statistical = self.config_entry.options.get(CONF_USE_STATISTICAL, True)  # Default True now that blocking calls are fixed
@@ -118,6 +120,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			# Get other options
 			create_daily = user_input.get("create_daily_sensors", True)
 			create_monthly = user_input.get("create_monthly_sensors", True)
+			create_weekly = user_input.get("create_weekly_sensors", True)
+			create_annual = user_input.get("create_annual_sensors", True)
 			sample_interval = user_input.get("sample_interval", 60)
 			debug_logging = user_input.get(CONF_DEBUG_LOGGING, False)
 			use_statistical = user_input.get(CONF_USE_STATISTICAL, True)
@@ -131,6 +135,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 						"selected_power_sensors": selected_sensors,
 						"create_daily_sensors": create_daily,
 						"create_monthly_sensors": create_monthly,
+						"create_weekly_sensors": create_weekly,
+						"create_annual_sensors": create_annual,
 						"sample_interval": sample_interval,
 						CONF_DEBUG_LOGGING: debug_logging,
 						CONF_USE_STATISTICAL: use_statistical,
@@ -156,6 +162,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		# Add sensor type options
 		schema[vol.Optional("create_daily_sensors", default=create_daily)] = BooleanSelector()
 		schema[vol.Optional("create_monthly_sensors", default=create_monthly)] = BooleanSelector()
+		schema[vol.Optional("create_weekly_sensors", default=create_weekly)] = BooleanSelector()
+		schema[vol.Optional("create_annual_sensors", default=create_annual)] = BooleanSelector()
 		
 		# Add sampling interval
 		schema[vol.Optional("sample_interval", default=sample_interval)] = NumberSelector(

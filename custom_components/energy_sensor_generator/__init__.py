@@ -8,7 +8,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 from datetime import timedelta
-from .sensor import EnergySensor, DailyEnergySensor, MonthlyEnergySensor
+from .sensor import EnergySensor, DailyEnergySensor, MonthlyEnergySensor, WeeklyEnergySensor, AnnualEnergySensor
 from .utils import load_storage, save_storage
 from .const import DOMAIN, STORAGE_FILE, CONF_DEBUG_LOGGING
 import voluptuous as vol
@@ -167,6 +167,10 @@ def find_generated_sensors(hass: HomeAssistant) -> dict:
                     base_name = unique_id.replace("_daily_energy", "")
                 elif "_monthly_energy" in unique_id:
                     base_name = unique_id.replace("_monthly_energy", "")
+                elif "_weekly_energy" in unique_id:
+                    base_name = unique_id.replace("_weekly_energy", "")
+                elif "_annual_energy" in unique_id:
+                    base_name = unique_id.replace("_annual_energy", "")
                 else:
                     base_name = unique_id.replace("_energy", "")
                 
@@ -373,9 +377,11 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
         _LOGGER.warning("No power sensors found for energy sensor generation.")
         return
 
-    # Check if we should create daily and monthly sensors
+    # Check if we should create period sensors
     create_daily = options.get("create_daily_sensors", True)
     create_monthly = options.get("create_monthly_sensors", True)
+    create_weekly = options.get("create_weekly_sensors", True)
+    create_annual = options.get("create_annual_sensors", True)
     
     # Find existing generated sensors
     existing_generated = find_generated_sensors(hass)
@@ -404,10 +410,12 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
         if base_name in existing_generated:
             existing_entities = existing_generated[base_name]
             
-            # Find main, daily, and monthly entities
+            # Find main, daily, monthly, weekly, and annual entities
             main_entity = next((e for e in existing_entities if e.endswith(f"{base_name}_energy")), None)
             daily_entity = next((e for e in existing_entities if "_daily_energy" in e), None)
             monthly_entity = next((e for e in existing_entities if "_monthly_energy" in e), None)
+            weekly_entity = next((e for e in existing_entities if "_weekly_energy" in e), None)
+            annual_entity = next((e for e in existing_entities if "_annual_energy" in e), None)
             
             # Keep track of entities we're keeping
             if main_entity:
@@ -426,6 +434,16 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
                 # Should remove monthly entity
                 entity_registry.async_remove(monthly_entity)
                 _LOGGER.debug(f"Removed monthly entity {monthly_entity}")
+            if create_weekly and weekly_entity:
+                entity_ids_to_keep.add(weekly_entity)
+            elif weekly_entity:
+                entity_registry.async_remove(weekly_entity)
+                _LOGGER.debug(f"Removed weekly entity {weekly_entity}")
+            if create_annual and annual_entity:
+                entity_ids_to_keep.add(annual_entity)
+            elif annual_entity:
+                entity_registry.async_remove(annual_entity)
+                _LOGGER.debug(f"Removed annual entity {annual_entity}")
             
             # If we're missing daily/monthly but should have them, create them
             if create_daily and not daily_entity:
@@ -437,6 +455,14 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
                 device_identifiers = get_source_device_info(hass, sensor)
                 monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
                 entities.append(monthly_sensor)
+            if create_weekly and not weekly_entity:
+                device_identifiers = get_source_device_info(hass, sensor)
+                weekly_sensor = WeeklyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
+                entities.append(weekly_sensor)
+            if create_annual and not annual_entity:
+                device_identifiers = get_source_device_info(hass, sensor)
+                annual_sensor = AnnualEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
+                entities.append(annual_sensor)
                 
             # Note: For existing entities, they should be handled by async_setup_entry
             # which will recreate and re-add them to ensure proper linking during reload
@@ -469,6 +495,12 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
         if create_monthly:
             monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
             entities.append(monthly_sensor)
+        if create_weekly:
+            weekly_sensor = WeeklyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
+            entities.append(weekly_sensor)
+        if create_annual:
+            annual_sensor = AnnualEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
+            entities.append(annual_sensor)
 
     # Remove entities that are no longer needed
     for base_name, entity_ids in existing_generated.items():
@@ -530,6 +562,10 @@ async def reset_energy_sensors_service(hass: HomeAssistant, call, entry: ConfigE
 				storage_key = f"{base_name}_daily_energy"
 			elif "_monthly_energy" in entity_id:
 				storage_key = f"{base_name}_monthly_energy"
+			elif "_weekly_energy" in entity_id:
+				storage_key = f"{base_name}_weekly_energy"
+			elif "_annual_energy" in entity_id:
+				storage_key = f"{base_name}_annual_energy"
 			else:
 				storage_key = f"{base_name}_energy"
 			

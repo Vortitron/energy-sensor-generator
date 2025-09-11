@@ -247,6 +247,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 			elif "_monthly_energy" in unique_id:
 				base_name = unique_id.replace("_monthly_energy", "")
 				sensor_type = "monthly"
+			elif "_weekly_energy" in unique_id:
+				base_name = unique_id.replace("_weekly_energy", "")
+				sensor_type = "weekly"
+			elif "_annual_energy" in unique_id:
+				base_name = unique_id.replace("_annual_energy", "")
+				sensor_type = "annual"
 			else:
 				base_name = unique_id.replace("_energy", "")
 				sensor_type = "main"
@@ -332,6 +338,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 				monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
 				entities_to_add.append(monthly_sensor)
 				_LOGGER.debug(f"Recreated monthly energy sensor for {base_name}")
+			# Recreate weekly sensor if it exists
+			if "weekly" in sensor_types:
+				weekly_sensor = WeeklyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
+				entities_to_add.append(weekly_sensor)
+				_LOGGER.debug(f"Recreated weekly energy sensor for {base_name}")
+			# Recreate annual sensor if it exists
+			if "annual" in sensor_types:
+				annual_sensor = AnnualEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
+				entities_to_add.append(annual_sensor)
+				_LOGGER.debug(f"Recreated annual energy sensor for {base_name}")
 		
 		# Add all recreated entities
 		if entities_to_add:
@@ -760,6 +776,7 @@ class EnergySensor(SensorEntity):
             minute=0,
             second=0
         )
+        self.safe_write_ha_state()
 
     async def _handle_interval_update(self, now):
         """Update energy calculation at regular intervals using statistical data when possible."""
@@ -1158,6 +1175,7 @@ class DailyEnergySensor(SensorEntity):
             minute=0,
             second=0
         )
+        self.safe_write_ha_state()
 
     async def _handle_midnight_reset(self, now):
         """Reset at midnight."""
@@ -1334,6 +1352,7 @@ class MonthlyEnergySensor(SensorEntity):
             minute=0,
             second=0
         )
+        self.safe_write_ha_state()
 
     async def _handle_month_reset(self, now):
         """Reset at first day of month."""
@@ -1427,3 +1446,277 @@ class MonthlyEnergySensor(SensorEntity):
             self.async_write_ha_state()
         except Exception as e:
             _LOGGER.error(f"Error writing HA state for {self._attr_name}: {e}", exc_info=True)
+
+class WeeklyEnergySensor(SensorEntity):
+	"""Custom sensor for weekly energy tracking (ISO week, resets Monday)."""
+
+	def __init__(self, hass, base_name, source_sensor, storage_path, device_identifiers=None):
+		"""Initialize the sensor."""
+		self._hass = hass
+		self._base_name = base_name
+		self._source_sensor = source_sensor
+		self._storage_path = storage_path
+		friendly_name = get_friendly_name_from_base(hass, base_name)
+		proposed_name = f"{friendly_name} Weekly Energy"
+		unique_name = get_unique_entity_name(hass, proposed_name)
+		self._attr_unique_id = f"{base_name}_weekly_energy"
+		self._attr_name = unique_name
+		self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+		self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+		self._attr_device_class = SensorDeviceClass.ENERGY
+		self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+		if device_identifiers:
+			self._attr_device_info = DeviceInfo(identifiers=device_identifiers)
+		else:
+			entity_registry = er.async_get(hass)
+			source_entity = entity_registry.async_get(source_sensor)
+			if source_entity and source_entity.device_id:
+				device_registry = dr.async_get(hass)
+				device = device_registry.async_get(source_entity.device_id)
+				if device:
+					self._attr_device_info = DeviceInfo(identifiers=device.identifiers)
+		self._state = 0.0
+		self._last_energy = 0.0
+		self._last_reset = None
+		self._storage_key = f"{base_name}_weekly_energy"
+
+	async def _load_state(self):
+		"""Load state from storage."""
+		storage = await load_storage(self._storage_path)
+		state_data = storage.get(self._storage_key, {})
+		self._state = state_data.get("value", 0.0)
+		self._last_reset = state_data.get("last_reset", dt_util.utcnow().isoformat())
+		self._last_energy = state_data.get("last_energy", 0.0)
+
+	async def _save_state(self):
+		"""Save state to storage."""
+		storage = await load_storage(self._storage_path)
+		storage[self._storage_key] = {
+			"value": self._state,
+			"last_reset": self._last_reset,
+			"last_energy": self._last_energy
+		}
+		await save_storage(self._storage_path, storage)
+
+	async def async_added_to_hass(self):
+		"""Handle entity addition."""
+		await self._load_state()
+		async_track_state_change_event(
+			self._hass, [self._source_sensor], self._handle_state_change
+		)
+		# Check each midnight whether it's Monday (ISO week start)
+		async_track_time_change(
+			self._hass,
+			self._handle_week_reset,
+			hour=0,
+			minute=0,
+			second=0
+		)
+		self.safe_write_ha_state()
+
+	async def _handle_week_reset(self, now):
+		"""Reset at the start of ISO week (Monday)."""
+		if now.weekday() == 0:
+			_LOGGER.info(f"Weekly reset for {self._attr_name}")
+			self._state = 0.0
+			self._last_reset = now.isoformat()
+			state = self._hass.states.get(self._source_sensor)
+			if state and state.state not in ("unknown", "unavailable"):
+				try:
+					self._last_energy = float(state.state)
+				except (ValueError, TypeError):
+					self._last_energy = 0.0
+			else:
+				self._last_energy = 0.0
+			await self._save_state()
+			self.safe_write_ha_state()
+
+	async def _handle_state_change(self, event):
+		"""Update weekly energy when source changes."""
+		new_state = event.data.get("new_state")
+		if new_state is None or new_state.state in ("unknown", "unavailable"):
+			return
+		try:
+			energy = float(new_state.state)
+		except ValueError:
+			_LOGGER.warning(f"Invalid energy value: {new_state.state}")
+			return
+		if self._last_energy == 0.0:
+			_LOGGER.info(f"Source energy sensor {self._source_sensor} became available, initialising weekly tracking for {self._attr_name}")
+			self._last_energy = energy
+			await self._save_state()
+			self.safe_write_ha_state()
+			return
+		energy_change = max(0, energy - self._last_energy)
+		self._state += energy_change
+		self._last_energy = energy
+		await self._save_state()
+		self.safe_write_ha_state()
+
+	@property
+	def native_value(self):
+		return round(self._state, 4)
+
+	@property
+	def state(self):
+		return round(self._state, 4)
+
+	@property
+	def unit_of_measurement(self):
+		return UnitOfEnergy.KILO_WATT_HOUR
+
+	@property
+	def native_unit_of_measurement(self):
+		return UnitOfEnergy.KILO_WATT_HOUR
+
+	@property
+	def extra_state_attributes(self):
+		return {
+			"last_reset": self._last_reset
+		}
+
+	def safe_write_ha_state(self):
+		try:
+			if not hasattr(self, '_attr_unit_of_measurement') or not self._attr_unit_of_measurement:
+				self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+				_LOGGER.warning(f"Unit of measurement was missing for {self._attr_name}, restored to kWh")
+			if self._attr_unit_of_measurement != UnitOfEnergy.KILO_WATT_HOUR:
+				_LOGGER.warning(f"Unit of measurement was incorrect for {self._attr_name} ({self._attr_unit_of_measurement}), correcting to kWh")
+				self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+			self.async_write_ha_state()
+		except Exception as e:
+			_LOGGER.error(f"Error writing HA state for {self._attr_name}: {e}", exc_info=True)
+
+class AnnualEnergySensor(SensorEntity):
+	"""Custom sensor for annual energy tracking (resets 1 Jan)."""
+
+	def __init__(self, hass, base_name, source_sensor, storage_path, device_identifiers=None):
+		self._hass = hass
+		self._base_name = base_name
+		self._source_sensor = source_sensor
+		self._storage_path = storage_path
+		friendly_name = get_friendly_name_from_base(hass, base_name)
+		proposed_name = f"{friendly_name} Annual Energy"
+		unique_name = get_unique_entity_name(hass, proposed_name)
+		self._attr_unique_id = f"{base_name}_annual_energy"
+		self._attr_name = unique_name
+		self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+		self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+		self._attr_device_class = SensorDeviceClass.ENERGY
+		self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+		if device_identifiers:
+			self._attr_device_info = DeviceInfo(identifiers=device_identifiers)
+		else:
+			entity_registry = er.async_get(hass)
+			source_entity = entity_registry.async_get(source_sensor)
+			if source_entity and source_entity.device_id:
+				device_registry = dr.async_get(hass)
+				device = device_registry.async_get(source_entity.device_id)
+				if device:
+					self._attr_device_info = DeviceInfo(identifiers=device.identifiers)
+		self._state = 0.0
+		self._last_energy = 0.0
+		self._last_reset = None
+		self._storage_key = f"{base_name}_annual_energy"
+
+	async def _load_state(self):
+		storage = await load_storage(self._storage_path)
+		state_data = storage.get(self._storage_key, {})
+		self._state = state_data.get("value", 0.0)
+		self._last_reset = state_data.get("last_reset", dt_util.utcnow().isoformat())
+		self._last_energy = state_data.get("last_energy", 0.0)
+
+	async def _save_state(self):
+		storage = await load_storage(self._storage_path)
+		storage[self._storage_key] = {
+			"value": self._state,
+			"last_reset": self._last_reset,
+			"last_energy": self._last_energy
+		}
+		await save_storage(self._storage_path, storage)
+
+	async def async_added_to_hass(self):
+		await self._load_state()
+		async_track_state_change_event(
+			self._hass, [self._source_sensor], self._handle_state_change
+		)
+		# Check each midnight whether it's 1 Jan
+		async_track_time_change(
+			self._hass,
+			self._handle_year_reset,
+			hour=0,
+			minute=0,
+			second=0
+		)
+		self.safe_write_ha_state()
+
+	async def _handle_year_reset(self, now):
+		if now.month == 1 and now.day == 1:
+			_LOGGER.info(f"Annual reset for {self._attr_name}")
+			self._state = 0.0
+			self._last_reset = now.isoformat()
+			state = self._hass.states.get(self._source_sensor)
+			if state and state.state not in ("unknown", "unavailable"):
+				try:
+					self._last_energy = float(state.state)
+				except (ValueError, TypeError):
+					self._last_energy = 0.0
+			else:
+				self._last_energy = 0.0
+			await self._save_state()
+			self.safe_write_ha_state()
+
+	async def _handle_state_change(self, event):
+		new_state = event.data.get("new_state")
+		if new_state is None or new_state.state in ("unknown", "unavailable"):
+			return
+		try:
+			energy = float(new_state.state)
+		except ValueError:
+			_LOGGER.warning(f"Invalid energy value: {new_state.state}")
+			return
+		if self._last_energy == 0.0:
+			_LOGGER.info(f"Source energy sensor {self._source_sensor} became available, initialising annual tracking for {self._attr_name}")
+			self._last_energy = energy
+			await self._save_state()
+			self.safe_write_ha_state()
+			return
+		energy_change = max(0, energy - self._last_energy)
+		self._state += energy_change
+		self._last_energy = energy
+		await self._save_state()
+		self.safe_write_ha_state()
+
+	@property
+	def native_value(self):
+		return round(self._state, 4)
+
+	@property
+	def state(self):
+		return round(self._state, 4)
+
+	@property
+	def unit_of_measurement(self):
+		return UnitOfEnergy.KILO_WATT_HOUR
+
+	@property
+	def native_unit_of_measurement(self):
+		return UnitOfEnergy.KILO_WATT_HOUR
+
+	@property
+	def extra_state_attributes(self):
+		return {
+			"last_reset": self._last_reset
+		}
+
+	def safe_write_ha_state(self):
+		try:
+			if not hasattr(self, '_attr_unit_of_measurement') or not self._attr_unit_of_measurement:
+				self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+				_LOGGER.warning(f"Unit of measurement was missing for {self._attr_name}, restored to kWh")
+			if self._attr_unit_of_measurement != UnitOfEnergy.KILO_WATT_HOUR:
+				_LOGGER.warning(f"Unit of measurement was incorrect for {self._attr_name} ({self._attr_unit_of_measurement}), correcting to kWh")
+				self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+			self.async_write_ha_state()
+		except Exception as e:
+			_LOGGER.error(f"Error writing HA state for {self._attr_name}: {e}", exc_info=True)
