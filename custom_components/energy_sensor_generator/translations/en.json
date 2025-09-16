@@ -18,17 +18,17 @@
     "step": {
       "init": {
         "title": "Select Power Sensors",
-        "description": "Select which power sensors (in Watts/kW) should have energy sensors (kWh) generated. Found {count} power sensors in your system.",
+        "description": "Select which power sensors (in Watts/kW) should have energy sensors (kWh) generated. Energy sensors will be created automatically when you submit. Found {count} power sensors in your system.",
         "data": {
-          "selected_power_sensors": "Auto-detected power sensors",
-          "custom_power_sensor": "Add another sensor (with autocomplete)",
+          "selected_power_sensors": "Select power sensors to monitor",
+          "custom_power_sensor": "Add any sensor (for if it isn't marked as a power sensor)",
           "period_sensors": "Create sensors for periods",
           "show_advanced": "Configure advanced settings (after submit) →"
         }
       },
       "advanced": {
         "title": "Advanced Settings",
-        "description": "Configure advanced settings for energy sensor generation.",
+        "description": "Configure advanced settings for energy sensor generation. Sensors will be created automatically when you submit.",
         "data": {
           "sample_interval": "Sampling interval",
           "debug_logging": "Enable debug logging",

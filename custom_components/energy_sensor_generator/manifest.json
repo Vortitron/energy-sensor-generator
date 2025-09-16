@@ -1,7 +1,7 @@
 {
   "domain": "energy_sensor_generator",
   "name": "Energy Sensor Generator",
-  "version": "0.0.68",
+  "version": "0.0.69",
   "documentation": "https://github.com/Vortitron/energy-sensor-generator",
   "requirements": [],
   "codeowners": ["@Vortitron"],
@@ -9,6 +9,6 @@
   "config_flow": true,
   "dependencies": [],
   "homeassistant": "2023.6.0",
-  "icon": "mdi:flash"
+  "icon": "mdi:energy"
 }
 
