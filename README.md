@@ -8,11 +8,13 @@ A Home Assistant custom integration that automatically generates kWh energy sens
 - **Automatic Detection**: Identifies all power sensors (`unit: W` or `kW`, `device_class: power`) in Home Assistant.
 - **Smart Energy Calculation**: Uses Home Assistant's statistical data for accurate energy calculations, especially for intermittent loads like heaters, with fallback to trapezoidal rule.
 - **Statistical Accuracy**: For peaky/intermittent devices (hot water heaters, dishwashers), uses mean power values from Home Assistant's recorder instead of point sampling to avoid missing energy consumption.
-- **Daily and Monthly Tracking**: Tracks energy usage with automatic daily and monthly resets, replacing the `utility_meter` helper.
+- **Daily, Weekly, Monthly, Annual Tracking**: Tracks energy usage with automatic resets (midnight, Monday, 1st of month, 1 Jan), replacing the `utility_meter` helper.
+- **Synthetic Grid Total (optional)**: Enable an optional aggregate energy entity that sums all generated energy sensors so you can bring up the Energy dashboard on a dev system without a real grid entity.
 - **Flexible Generation**: Supports automatic sensor creation on startup or manual triggering via a UI button.
 - **Energy Dashboard Compatibility**: Generates sensors with `device_class: energy` and `state_class: total_increasing` for seamless integration.
 - **Minute-Aligned Scheduling**: When the update interval is a multiple of 60 seconds, updates are aligned to wall-clock minutes to ensure Energy dashboard buckets match upstream devices.
 - **Persistent Storage**: Saves energy data to a JSON file to survive Home Assistant restarts.
+- **Restart-resilient daily/monthly sensors**: Daily and monthly sensors restore their last values at startup and do not temporarily show 0 after a Home Assistant restart.
 - **No Dependencies**: Pure Python implementation, no need for MQTT, Node-RED, or external integrations.
 - **HACS Ready**: Easily installed via the Home Assistant Community Store (HACS).
 
@@ -30,12 +32,11 @@ The `energy_sensor_generator` integration simplifies energy monitoring by creati
      - **Point Sampling Method** (Fallback): Uses the traditional trapezoidal rule with instantaneous power readings when statistical data is unavailable.
    - **Why Statistical is Better**: For devices that cycle on/off frequently (heaters, dishwashers), point sampling every 60 seconds can miss significant energy consumption. Statistical calculation uses the mean power over time periods, capturing all energy usage regardless of when sampling occurs.
    - Energy values are updated at regular intervals (default 60 seconds) with the most accurate method available.
-   - Data is stored in a JSON file (`.storage/energy_sensor_generator.json`) to persist across restarts.
+   - Data is stored via Home Assistant's Store at `.storage/energy_sensor_generator` to persist across restarts.
 
-3. **Daily and Monthly Tracking**:
-   - For each power sensor, it creates `DailyEnergySensor` and `MonthlyEnergySensor` entities (e.g., `sensor.plug_1_daily_energy`, `sensor.plug_1_monthly_energy`).
-   - These sensors track the cumulative kWh from the `EnergySensor` and reset automatically at midnight (daily) or the 1st of the month (monthly).
-   - Reset times and values are stored in the JSON file for continuity.
+3. **Period Tracking**:
+   - For each power sensor, it can create `DailyEnergySensor`, `WeeklyEnergySensor`, `MonthlyEnergySensor`, and `AnnualEnergySensor` entities (e.g., `sensor.plug_1_daily_energy`, `sensor.plug_1_weekly_energy`, `sensor.plug_1_monthly_energy`, `sensor.plug_1_annual_energy`).
+   - Resets: daily at midnight; weekly on Monday (ISO week start); monthly on the first day; annual on 1 January.
 
 4. **Sensor Generation**:
    - **Automatic Mode**: If enabled in the config flow, sensors are generated when Home Assistant starts or the integration is reloaded.
@@ -47,7 +48,7 @@ The `energy_sensor_generator` integration simplifies energy monitoring by creati
    - Users can add `*_daily_energy` or `*_monthly_energy` sensors to the dashboard for visualization.
 
 6. **Storage and Performance**:
-   - Energy data is saved in `.storage/energy_sensor_generator.json`, with minimal disk usage (a few KB per sensor).
+   - Energy data is saved in `.storage/energy_sensor_generator` using Home Assistant's Store, with debounced/atomic writes and minimal disk usage.
    - The integration uses efficient event handling (`async_track_state_change_event`) to monitor power sensor updates, scaling well for multiple devices.
    - Update frequency is configurable via the `update_interval` setting (default: 60 seconds).
 
@@ -78,6 +79,7 @@ Follow these steps to install the `energy_sensor_generator` integration:
    - Configure the options:
      - **Auto Generate**: Enable to create sensors automatically on startup (recommended).
      - **Update Interval**: Set the frequency (in seconds) for energy calculations (default: 60).
+     - **Synthetic Grid Total**: Optional. Creates `sensor.synthetic_grid_total_energy` that sums all generated energy sensors. Disabled by default.
    - Click **Submit** to complete setup.
 
 4. **Add a Lovelace Button** (Optional for Manual Mode):
@@ -97,7 +99,7 @@ Follow these steps to install the `energy_sensor_generator` integration:
 5. **Add Sensors to Energy Dashboard**:
    - Go to **Settings > Dashboards > Energy**.
    - Under **Individual Devices**, click **Add Device**.
-   - Select the generated sensors (e.g., `sensor.plug_1_daily_energy`, `sensor.plug_1_monthly_energy`).
+   - Select the generated sensors (e.g., `sensor.plug_1_daily_energy`, `sensor.plug_1_weekly_energy`, `sensor.plug_1_monthly_energy`, `sensor.plug_1_annual_energy`).
    - Save to display energy usage in the dashboard.
 
 ## Usage
@@ -110,7 +112,7 @@ Follow these steps to install the `energy_sensor_generator` integration:
 - **Device Swap Handling**:
   - If you swap a device between power sockets, use the `Reassign Energy Data` service to transfer energy data to the new device association.
   - Call the service `energy_sensor_generator.reassign_energy_data` with parameters `from_device` and `to_device` (e.g., `plug_1` to `plug_2`).
-  - This updates the storage file to associate energy data with the new device name.
+  - This updates the stored data to associate energy with the new device name.
 - **Monitoring**:
   - View sensor states in **Developer Tools > States** (e.g., `sensor.plug_1_energy`, `sensor.plug_1_daily_energy`).
   - Check energy usage in the **Energy** dashboard.
@@ -127,7 +129,7 @@ For a power sensor `sensor.plug_1_power`, the integration creates:
 - `sensor.plug_1_daily_energy`: Daily kWh, resets at midnight (e.g., `0.45 kWh`).
 - `sensor.plug_1_monthly_energy`: Monthly kWh, resets on the 1st (e.g., `12.67 kWh`).
 
-Storage file (`.storage/energy_sensor_generator.json`):
+Storage entry (`.storage/energy_sensor_generator`):
 ```json
 {
   "plug_1_energy": {"value": 5.23},
@@ -165,7 +167,9 @@ Storage file (`.storage/energy_sensor_generator.json`):
 - **Configuration**: Statistical calculation is enabled by default but can be disabled in integration options if needed
 - **Perfect for Tuya Devices**: Now properly handles devices that only update every 5+ minutes by using historical state data instead of just current power readings
 
-### Sensors Not Available During Startup:
+### Sensors Not Available During Startup / Values show 0 after restart
+- The integration persists values in `.storage/energy_sensor_generator` and now publishes restored states immediately on startup.
+- If you briefly saw 0 previously after a restart, this has been addressed; values should appear as they were before the restart until the next update/reset boundary.
 - **New in v0.0.28**: The integration is now resilient to source power sensors not being available during Home Assistant startup
 - Energy sensors are created even if source sensors aren't ready yet, and will begin tracking once sources become available
 - Look for log messages like "Source sensor not yet available during startup" - this is normal and expected
@@ -193,7 +197,7 @@ Limitations
 Power Sensor Update Frequency:
 Energy calculation accuracy depends on how often power sensors update. Tuya plugs using the official integration may update sporadically; LocalTuya is recommended.
 Storage:
-The JSON storage file grows with the number of sensors but remains small (a few KB per sensor). Monitor disk space for large installations.
+The `.storage/energy_sensor_generator` Store entry grows with the number of sensors but remains small (a few KB per sensor). Monitor disk space for very large installations.
 Energy Dashboard:
 If Home Assistant's Energy dashboard rejects custom sensors (unlikely), a future version may add MQTT support as a fallback.
 Contributing

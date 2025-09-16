@@ -18,12 +18,32 @@
     "step": {
       "init": {
         "title": "Select Power Sensors",
-        "description": "Select which power sensors (in Watts) should have energy sensors (kWh) generated. Found {count} power sensors in your system.",
+        "description": "Select which power sensors (in Watts/kW) should have energy sensors (kWh) generated. Found {count} power sensors in your system.",
         "data": {
           "selected_power_sensors": "Auto-detected power sensors",
-          "custom_power_sensor": "Add another sensor (with autocomplete)"
+          "custom_power_sensor": "Add another sensor (with autocomplete)",
+          "period_sensors": "Create sensors for periods",
+          "show_advanced": "Configure advanced settings (after submit) →"
+        }
+      },
+      "advanced": {
+        "title": "Advanced Settings",
+        "description": "Configure advanced settings for energy sensor generation.",
+        "data": {
+          "sample_interval": "Sampling interval",
+          "debug_logging": "Enable debug logging",
+          "use_statistical_calculation": "Use statistical calculation",
+          "create_synthetic_grid_total": "Create synthetic 'Grid total' energy sensor (requires reload)"
         }
       }
+    },
+    "fields": {
+      "period_sensors": "Create sensors for periods",
+      "create_synthetic_grid_total": "Create synthetic 'Grid total' energy sensor (requires reload)",
+      "show_advanced": "Configure advanced settings (after submit) →",
+      "sample_interval": "Sampling interval",
+      "debug_logging": "Enable debug logging",
+      "use_statistical_calculation": "Use statistical calculation"
     },
     "error": {
       "invalid_entity_format": "Invalid entity format. All entities must start with 'sensor.'"
