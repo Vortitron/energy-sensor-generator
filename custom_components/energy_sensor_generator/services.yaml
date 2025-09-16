@@ -53,3 +53,49 @@ list_sensors:
 test_service:
   name: Test Service Registration
   description: Simple test to verify that services are properly registered and working. 
+
+export_energy_data:
+  name: Export Energy Data
+  description: Export the integration's stored energy data to a JSON file for backup/migration.
+  fields:
+    target_path:
+      name: Target Path
+      description: Relative path under Home Assistant config to write the backup file (e.g. backups/energy_backup.json). If omitted, a timestamped file will be created in the config folder.
+      required: false
+      selector:
+        text:
+
+import_energy_data:
+  name: Import Energy Data
+  description: Import energy data from a JSON file. Supports merge/replace and optional reassignment of device base names.
+  fields:
+    source_path:
+      name: Source Path
+      description: Relative path under Home Assistant config to the JSON file to import.
+      required: true
+      selector:
+        text:
+    mode:
+      name: Mode
+      description: 'Import mode: "merge" (default) merges with existing data, "replace" overwrites all existing data.'
+      required: false
+      default: merge
+      selector:
+        select:
+          options:
+            - merge
+            - replace
+    reassign_from:
+      name: Reassign From (base names)
+      description: Optional list of base names to reassign from (e.g. old device base names, like plug_1).
+      required: false
+      selector:
+        text:
+          multiple: true
+    reassign_to:
+      name: Reassign To (base names)
+      description: Optional list of base names to reassign to (must match length of Reassign From).
+      required: false
+      selector:
+        text:
+          multiple: true

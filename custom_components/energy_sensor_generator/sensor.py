@@ -14,6 +14,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.restore_state import RestoreEntity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,13 +25,11 @@ try:
 except ImportError:
     STATISTICS_AVAILABLE = False
     _LOGGER.warning("Statistics module not available, using point sampling only")
-from .utils import load_storage, save_storage
+from .utils import StorageManager
 from .const import (
 	DOMAIN, 
 	CONF_DEBUG_LOGGING, 
-	CONF_USE_STATISTICAL,
-	CONF_ALLOW_POINT_SAMPLING_FALLBACK,
-	CONF_ENABLE_POINT_SAMPLING_BACKUP
+	CONF_USE_STATISTICAL
 )
 import time
 
@@ -79,15 +78,16 @@ def _info_log(hass: HomeAssistant, message: str, force: bool = False) -> None:
 def _get_config_options(hass: HomeAssistant) -> dict:
 	"""Get configuration options from the integration."""
 	default_options = {
-		CONF_USE_STATISTICAL: True,
-		CONF_ALLOW_POINT_SAMPLING_FALLBACK: True,  # Allow fallback by default for reliability
-		CONF_ENABLE_POINT_SAMPLING_BACKUP: False,  # Off by default as requested
+		CONF_USE_STATISTICAL: True,  # Use statistical calculation by default
 	}
 	
-	# Check all config entries for options
-	for entry_id, entry_data in hass.data[DOMAIN].items():
-		if "options" in entry_data:
-			return {**default_options, **entry_data["options"]}
+	# Check all hass.data domain entries safely (some keys are floats used for throttling)
+	for _, entry_data in hass.data.get(DOMAIN, {}).items():
+		try:
+			if isinstance(entry_data, dict) and "options" in entry_data and isinstance(entry_data["options"], dict):
+				return {**default_options, **entry_data["options"]}
+		except Exception:
+			continue
 	
 	# Also check direct config entries
 	for config_entry in hass.config_entries.async_entries(DOMAIN):
@@ -168,19 +168,18 @@ def get_unique_entity_name(hass: HomeAssistant, proposed_name: str, domain: str 
 		is_own_entity = False
 		
 		for entity_id, entry in entity_registry.entities.items():
-			if entity_id.startswith(f"{domain}.") and (
-				(entry.name and entry.name.lower() == proposed_name.lower()) or
-				(entry.original_name and entry.original_name.lower() == proposed_name.lower())
-			):
-				# Check if this conflicting entity is from our own integration
-				if entry.platform == DOMAIN:
-					# It's our own entity, don't treat as conflict
-					is_own_entity = True
-					_LOGGER.debug(f"Detected own entity with name '{proposed_name}': {entity_id}")
-				else:
-					name_exists = True
-					conflicting_entity = entity_id
-				break
+			if entity_id.startswith(f"{domain}."):
+				_curr_name = (entry.name or entry.original_name or "").lower()
+				if _curr_name == proposed_name.lower():
+					# Check if this conflicting entity is from our own integration
+					if entry.platform == DOMAIN:
+						# It's our own entity, don't treat as conflict
+						is_own_entity = True
+						_LOGGER.debug(f"Detected own entity with name '{proposed_name}': {entity_id}")
+					else:
+						name_exists = True
+						conflicting_entity = entity_id
+					break
 		
 		# Also check current states for entities that might not be in registry yet
 		# But skip this check if we already found it's our own entity
@@ -206,7 +205,9 @@ def get_unique_entity_name(hass: HomeAssistant, proposed_name: str, domain: str 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
 	"""Set up the sensor platform."""
-	hass.data[DOMAIN][entry.entry_id]["async_add_entities"] = async_add_entities
+	# Store the async_add_entities callback for later use by generate_sensors_service
+	if DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]:
+		hass.data[DOMAIN][entry.entry_id]["async_add_entities"] = async_add_entities
 	
 	# Check if we need to recreate existing entities during reload
 	options = entry.options
@@ -232,10 +233,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 	if existing_entities and selected_sensors:
 		_LOGGER.info(f"Found {len(existing_entities)} existing energy sensors to recreate during setup")
 		
-		# Get storage path
-		from .const import STORAGE_FILE
-		from pathlib import Path
-		storage_path = Path(hass.config.path(STORAGE_FILE))
+		# Get storage manager - retrieve from the integration's data
+		storage_manager = None
+		if DOMAIN in hass.data:
+			for entry_data in hass.data[DOMAIN].values():
+				if isinstance(entry_data, dict) and "storage_manager" in entry_data:
+					storage_manager = entry_data["storage_manager"]
+					break
+		
+		if not storage_manager:
+			# Fallback: create a storage manager for this entry
+			storage_manager = StorageManager(hass)
 		
 		# Group entities by base name
 		entities_by_base = {}
@@ -323,29 +331,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 					_LOGGER.error(f"PREVENTING INFINITE LOOP: Refusing to create energy sensor from energy source {source_sensor} for {base_name}")
 					continue
 				
-				energy_sensor = EnergySensor(hass, base_name, source_sensor, storage_path, device_identifiers)
+				energy_sensor = EnergySensor(hass, base_name, source_sensor, storage_manager, device_identifiers)
 				entities_to_add.append(energy_sensor)
 				_LOGGER.debug(f"Recreated main energy sensor for {base_name} with source {source_sensor}")
 			
 			# Recreate daily sensor if it exists
 			if "daily" in sensor_types:
-				daily_sensor = DailyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
+				daily_sensor = DailyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
 				entities_to_add.append(daily_sensor)
 				_LOGGER.debug(f"Recreated daily energy sensor for {base_name}")
 			
 			# Recreate monthly sensor if it exists  
 			if "monthly" in sensor_types:
-				monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
+				monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
 				entities_to_add.append(monthly_sensor)
 				_LOGGER.debug(f"Recreated monthly energy sensor for {base_name}")
 			# Recreate weekly sensor if it exists
 			if "weekly" in sensor_types:
-				weekly_sensor = WeeklyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
+				weekly_sensor = WeeklyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
 				entities_to_add.append(weekly_sensor)
 				_LOGGER.debug(f"Recreated weekly energy sensor for {base_name}")
 			# Recreate annual sensor if it exists
 			if "annual" in sensor_types:
-				annual_sensor = AnnualEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_path, device_identifiers)
+				annual_sensor = AnnualEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
 				entities_to_add.append(annual_sensor)
 				_LOGGER.debug(f"Recreated annual energy sensor for {base_name}")
 		
@@ -356,7 +364,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 	
 	return
 
-class EnergySensor(SensorEntity):
+class EnergySensor(SensorEntity, RestoreEntity):
     """Custom sensor to calculate kWh from power (Watts)."""
 
     def __init__(self, hass, base_name, source_sensor, storage_path, device_identifiers=None):
@@ -364,7 +372,9 @@ class EnergySensor(SensorEntity):
         self._hass = hass
         self._base_name = base_name
         self._source_sensor = source_sensor
-        self._storage_path = storage_path
+        # Backwards compat: storage_path param may be Path; but prefer StorageManager
+        self._storage_manager: StorageManager | None = storage_path if isinstance(storage_path, StorageManager) else None
+        self._storage_path = storage_path  # kept for type compatibility
         self._device_identifiers = device_identifiers
         
         # Validate that we're not creating an energy sensor from an energy source
@@ -383,6 +393,7 @@ class EnergySensor(SensorEntity):
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
         self._attr_icon = "mdi:flash"
+        self._attr_entity_registry_enabled_default = True  # Ensure sensors are enabled by default
         
         # Device info for grouping
         if device_identifiers:
@@ -412,6 +423,7 @@ class EnergySensor(SensorEntity):
         self._first_calculation_logged = False  # Flag to log first successful calculation
         self._using_statistical = False  # Track which calculation method was last used
         self._last_statistical_calculation = None  # Track when we last performed statistical calculation
+        self._last_save_ts = 0
         # State will be loaded in async_added_to_hass
 
     def _get_power_conversion_factor(self, hass, source_sensor):
@@ -636,7 +648,12 @@ class EnergySensor(SensorEntity):
 
     async def _load_state(self):
         """Load state from storage."""
-        storage = await load_storage(self._storage_path)
+        if self._storage_manager:
+            storage = await self._storage_manager.async_load()
+        else:
+            from homeassistant.helpers import storage as ha_storage
+            store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+            storage = await store.async_load() or {}
         state_data = storage.get(self._storage_key, {})
         
         if isinstance(state_data, dict):
@@ -686,7 +703,12 @@ class EnergySensor(SensorEntity):
 
     async def _save_state(self):
         """Save state to storage."""
-        storage = await load_storage(self._storage_path)
+        if self._storage_manager:
+            storage = await self._storage_manager.async_load()
+        else:
+            from homeassistant.helpers import storage as ha_storage
+            store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+            storage = await store.async_load() or {}
         storage[self._storage_key] = {
             "value": self._state,
             "last_power": self._last_power,
@@ -694,15 +716,39 @@ class EnergySensor(SensorEntity):
             "last_statistical_calculation": self._last_statistical_calculation.isoformat() if self._last_statistical_calculation else None,
             "conversion_factor": self._power_to_kw_factor
         }
-        await save_storage(self._storage_path, storage)
+        try:
+            if self._storage_manager:
+                await self._storage_manager.async_save(storage)
+            else:
+                from homeassistant.helpers import storage as ha_storage
+                store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+                await store.async_save(storage)
+        except Exception:
+            pass
+
+    async def _save_state_throttled(self, min_interval: int = 30):
+        """Save state if at least min_interval seconds passed since last save."""
+        now_ts = time.time()
+        if (now_ts - self._last_save_ts) < min_interval:
+            return
+        self._last_save_ts = now_ts
+        await self._save_state()
 
     async def async_added_to_hass(self):
         """Handle entity addition."""
         # Load state from storage first
         await self._load_state()
+        # Try HA restore cache if storage empty
+        if self._state == 0.0:
+            last = await self.async_get_last_state()
+            try:
+                if last and last.state not in ("unknown", "unavailable", None):
+                    self._state = float(last.state)
+            except (ValueError, TypeError):
+                pass
         
         # Track state changes to the power sensor
-        async_track_state_change_event(
+        self._unsub_state_change = async_track_state_change_event(
             self._hass, [self._source_sensor], self._handle_state_change
         )
         
@@ -710,10 +756,14 @@ class EnergySensor(SensorEntity):
         sample_interval = 60  # Default 60 seconds if not specified
         
         # Try to get the configured sample interval from the integration's options
-        for entry_id, entry_data in self._hass.data[DOMAIN].items():
-            if "options" in entry_data:
-                sample_interval = entry_data["options"].get("sample_interval", 60)
-                break
+        for entry_id, entry_data in self._hass.data.get(DOMAIN, {}).items():
+            try:
+                options = entry_data.get("options") if isinstance(entry_data, dict) else None
+                if isinstance(options, dict):
+                    sample_interval = options.get("sample_interval", 60)
+                    break
+            except Exception:
+                pass
         
         _LOGGER.debug(f"Setting up energy calculation with {sample_interval} second interval for {self._attr_name}")
         
@@ -743,7 +793,7 @@ class EnergySensor(SensorEntity):
                         self._last_update = dt_util.utcnow()
             else:
                 # Source sensor not yet available - this is normal during startup
-                _LOGGER.info(f"Source sensor {self._source_sensor} not yet available for {self._attr_name} - will initialise when available")
+                _debug_log(self.hass, f"Source sensor {self._source_sensor} not yet available during startup for {self._base_name}")
         
         # Set up regular sampling interval for reliable energy calculation
         self._interval_tracker = async_track_time_interval(
@@ -769,7 +819,7 @@ class EnergySensor(SensorEntity):
             )
         
         # Also set up a midnight update to ensure we get regular updates
-        async_track_time_change(
+        self._unsub_midnight_update = async_track_time_change(
             self._hass,
             self._handle_midnight_update,
             hour=0,
@@ -799,10 +849,8 @@ class EnergySensor(SensorEntity):
             # Get configuration options
             config_options = _get_config_options(self.hass)
             use_statistical = config_options.get(CONF_USE_STATISTICAL, True)
-            allow_point_sampling_fallback = config_options.get(CONF_ALLOW_POINT_SAMPLING_FALLBACK, True)
-            enable_point_sampling_backup = config_options.get(CONF_ENABLE_POINT_SAMPLING_BACKUP, False)
             
-            _debug_log(self.hass, f"Configuration: statistical={use_statistical}, fallback_allowed={allow_point_sampling_fallback}, backup_enabled={enable_point_sampling_backup}, stats_available={STATISTICS_AVAILABLE}")
+            _debug_log(self.hass, f"Configuration: statistical={use_statistical}, stats_available={STATISTICS_AVAILABLE}")
             
             # Try statistical calculation first if enabled
             statistical_data = None
@@ -810,7 +858,6 @@ class EnergySensor(SensorEntity):
                 try:
                     # For statistical calculation, always use a fixed lookback window for consistency and reliability
                     # This approach avoids double counting by tracking the last time we performed statistical calculation
-                    
                     if hasattr(self, '_last_statistical_calculation') and self._last_statistical_calculation:
                         # Calculate energy only since the last statistical calculation
                         stat_start_time = self._last_statistical_calculation
@@ -821,18 +868,15 @@ class EnergySensor(SensorEntity):
                         stat_start_time = now - timedelta(minutes=15)
                         stat_end_time = now
                         _debug_log(self.hass, f"Initial statistical calculation - using 15 minute window: {stat_start_time} to {stat_end_time}")
-                    
                     # Get statistical data using LEFT Riemann sum (like HA's integration sensor)
                     statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
-                    
                     # If successful, update the last statistical calculation time
                     if statistical_data is not None and isinstance(statistical_data, (int, float)) and statistical_data > 0:
                         self._last_statistical_calculation = now
-                        
                 except Exception as e:
                     _debug_log(self.hass, f"Exception during statistical calculation: {str(e)}")
                     statistical_data = None
-            
+                
             state = self._hass.states.get(self._source_sensor)
             if not state:
                 _debug_log(self.hass, f"Source sensor {self._source_sensor} not found for {self._attr_name}")
@@ -857,108 +901,58 @@ class EnergySensor(SensorEntity):
                 unit = source_state.attributes.get("unit_of_measurement", "unknown")
                 device_class = source_state.attributes.get("device_class", "unknown")
                 _debug_log(self.hass, f"Source sensor details: {self._source_sensor} = {power}{unit} (device_class: {device_class})")
-                
                 # Check if this is incorrectly monitoring an energy sensor instead of power sensor
-                if unit in ["kWh", "kwh"] or device_class == "energy":
+                if unit in ("kWh", "kwh") or device_class == "energy":
                     _LOGGER.warning(f"CONFIGURATION ERROR: {self._attr_name} is monitoring an ENERGY sensor ({self._source_sensor}) instead of a POWER sensor! This will not work correctly. Please reconfigure to monitor a power sensor with unit 'W' or 'kW'.")
                     return
             
-            # Use statistical data if available, otherwise fall back to trapezoidal rule (if allowed)
+            # Use statistical data if available, otherwise fall back to trapezoidal rule
             if statistical_data is not None and isinstance(statistical_data, (int, float)) and statistical_data > 0:
-                statistical_energy = statistical_data
-                max_power = 0  # We don't have detailed power info when just getting the energy value
-                
-                # Debug: Log the exact state before and after addition
                 old_state = self._state
-                
-                # Use statistical calculation (simplified - trust the statistical calculation)
-                self._state += statistical_energy
-                
-                # Debug: Log the precise calculation
-                _debug_log(self.hass, f"PRECISE DEBUG: {self._attr_name} | Before: {old_state:.10f}kWh | Adding: {statistical_energy:.10f}kWh | After: {self._state:.10f}kWh")
-                
+                self._state += statistical_data
+                _debug_log(self.hass, f"PRECISE DEBUG: {self._attr_name} | Before: {old_state:.10f}kWh | Adding: {statistical_data:.10f}kWh | After: {self._state:.10f}kWh")
                 self._using_statistical = True
                 unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
                 self._calculation_count += 1
-                
-                # Log first successful calculation 
                 if not self._first_calculation_logged:
                     _info_log(self.hass, f"Energy sensor {self._attr_name} is now tracking energy from {self._source_sensor} ({unit_display} sensor) using statistical data", force=True)
                     self._first_calculation_logged = True
-                
-                _debug_log(self.hass, f"Statistical energy calculation: {self._attr_name} | Energy added: {statistical_energy:.8f}kWh | Total: {self._state:.4f}kWh | Current power: {power:.2f}{unit_display}")
-            
-            # Only use point sampling if statistical failed AND fallback is allowed OR if backup is enabled and statistical is disabled
-            # Set statistical_energy to None if we're not using it
-            if not (statistical_data is not None and isinstance(statistical_data, (int, float)) and statistical_data > 0):
-                statistical_energy = None
-                
-            should_use_point_sampling = (
-                (statistical_energy is None and allow_point_sampling_fallback) or
-                (not use_statistical and enable_point_sampling_backup)
-            )
-            
-            # Add a special case for new sensors that don't have enough data yet
-            # (This check is no longer needed since statistical_data is now a float when successful)
-            # The "Not enough" errors are handled in the _get_statistical_power_data function
-                
-            if should_use_point_sampling and self._last_power is not None and self._last_update is not None:
-                # Fall back to trapezoidal rule
-                time_delta = (now - self._last_update).total_seconds()
-                delta_hours = time_delta / 3600
-                
-                _debug_log(self.hass, f"Point sampling calculation for {self._attr_name} | Last power: {self._last_power} | Current power: {power} | Time delta: {time_delta:.0f}s")
-                
-                # Trapezoidal rule: average power * time (kWh)
-                avg_power = (self._last_power + power) / 2
-                energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
-                
-                _debug_log(self.hass, f"Calculated energy: {energy_kwh:.8f}kWh | Avg power: {avg_power:.4f} | Delta hours: {delta_hours:.6f} | Conversion factor: {self._power_to_kw_factor}")
-                
-                # Ensure we're not adding negative energy
-                if energy_kwh > 0:
-                    self._state += energy_kwh
-                    self._using_statistical = False
-                    unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                    self._calculation_count += 1
-                    
-                    # Log first successful calculation 
-                    if not self._first_calculation_logged:
-                        _info_log(self.hass, f"Energy sensor {self._attr_name} is now tracking energy from {self._source_sensor} ({unit_display} sensor) using point sampling", force=True)
-                        self._first_calculation_logged = True
-                    
-                    _debug_log(self.hass, f"Point sampling: {self._attr_name} | Energy added: {energy_kwh:.8f}kWh | Total: {self._state:.4f}kWh")
+                _debug_log(self.hass, f"Statistical energy calculation: {self._attr_name} | Energy added: {statistical_data:.8f}kWh | Total: {self._state:.4f}kWh | Current power: {power:.2f}{unit_display}")
+            else:
+                # Point sampling fallback using trapezoidal rule
+                if self._last_power is not None and self._last_update is not None:
+                    time_delta = (now - self._last_update).total_seconds()
+                    delta_hours = time_delta / 3600
+                    _debug_log(self.hass, f"Point sampling calculation for {self._attr_name} | Last power: {self._last_power} | Current power: {power} | Time delta: {time_delta:.0f}s")
+                    avg_power = (self._last_power + power) / 2
+                    energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
+                    _debug_log(self.hass, f"Calculated energy: {energy_kwh:.8f}kWh | Avg power: {avg_power:.4f} | Delta hours: {delta_hours:.6f} | Conversion factor: {self._power_to_kw_factor}")
+                    if energy_kwh > 0:
+                        self._state += energy_kwh
+                        self._using_statistical = False
+                        unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
+                        self._calculation_count += 1
+                        if not self._first_calculation_logged:
+                            _info_log(self.hass, f"Energy sensor {self._attr_name} is now tracking energy from {self._source_sensor} ({unit_display} sensor) using point sampling", force=True)
+                            self._first_calculation_logged = True
+                        _debug_log(self.hass, f"Point sampling: {self._attr_name} | Energy added: {energy_kwh:.8f}kWh | Total: {self._state:.4f}kWh")
+                    else:
+                        unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
+                        _debug_log(self.hass, f"No energy added (too small): avg power: {avg_power:.4f}{unit_display}, calculated energy: {energy_kwh:.8f}kWh")
                 else:
-                    unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
-                    _debug_log(self.hass, f"No energy added (too small): avg power: {avg_power:.4f}{unit_display}, calculated energy: {energy_kwh:.8f}kWh")
-            elif statistical_energy is None and not should_use_point_sampling:
-                # Provide more helpful information about why no calculation was performed
-                if not allow_point_sampling_fallback:
-                    _debug_log(self.hass, f"Interval update: Statistical calculation failed and point sampling fallback is disabled for {self._attr_name} - no calculation performed")
-                else:
-                    _debug_log(self.hass, f"Interval update: Point sampling disabled for {self._attr_name} - no calculation performed")
-            elif not should_use_point_sampling and self._last_power is None:
-                _debug_log(self.hass, f"Interval update: Skipping calculation - missing previous power/time data for {self._attr_name} (first run)")
-            elif statistical_energy is None and should_use_point_sampling and self._last_power is None:
-                _debug_log(self.hass, f"Interval update: Point sampling enabled but no previous data available for {self._attr_name} - will start tracking on next update")
-            elif statistical_energy is None and not should_use_point_sampling:
-                # Statistical calculation failed and point sampling is disabled - this is expected initially
+                    _debug_log(self.hass, f"Interval update: Point sampling enabled but no previous data available for {self._attr_name} - will start tracking on next update")
+                
+                # Update values (always update regardless of calculation method used)
+                self._last_power = power
+                self._last_update = now
+                
+                # Log when we first start tracking
                 if self._calculation_count == 0:
-                    _debug_log(self.hass, f"Interval update: Building statistical data for {self._attr_name} - calculations will start once sufficient historical data is available (typically 15+ minutes)")
-                else:
-                    _debug_log(self.hass, f"Interval update: Statistical calculation failed for {self._attr_name} - may need more time to build sufficient historical data")
-            
-            # Update values (always update regardless of calculation method used)
-            self._last_power = power
-            self._last_update = now
-            
-            # Log when we first start tracking
-            if self._calculation_count == 0:
-                _debug_log(self.hass, f"Starting to track power for {self._attr_name}: {power}W from {self._source_sensor}")
-            
-            await self._save_state()
-            self.safe_write_ha_state()
-            
+                    _debug_log(self.hass, f"Starting to track power for {self._attr_name}: {power}W from {self._source_sensor}")
+                
+                await self._save_state()
+                self.safe_write_ha_state()
+                
         except Exception as e:
             _LOGGER.error(f"Unexpected error in interval update for {self._attr_name}: {e}", exc_info=True)
         finally:
@@ -987,10 +981,10 @@ class EnergySensor(SensorEntity):
 
         # If this is the first time we're getting a valid power reading, initialise tracking
         if self._last_power is None or self._last_update is None:
-            _LOGGER.info(f"Source sensor {self._source_sensor} state change detected, initialising tracking for {self._attr_name}")
+            _debug_log(self.hass, f"Source sensor {self._source_sensor} state change detected, initialising tracking for {self._attr_name}")
             self._last_power = power
             self._last_update = now
-            await self._save_state()
+            await self._save_state_throttled(30)
             self.safe_write_ha_state()
             return
 
@@ -1005,6 +999,16 @@ class EnergySensor(SensorEntity):
 
     async def async_will_remove_from_hass(self):
         """Clean up resources when entity is removed."""
+        try:
+            if hasattr(self, "_unsub_state") and self._unsub_state:
+                self._unsub_state()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_unsub_month") and self._unsub_month:
+                self._unsub_month()
+        except Exception:
+            pass
         # Cancel interval tracking
         if self._interval_tracker:
             self._interval_tracker()
@@ -1012,6 +1016,22 @@ class EnergySensor(SensorEntity):
         
         # Save state one last time
         await self._save_state()
+        # Unsubscribe listeners
+        try:
+            if hasattr(self, "_unsub_state_change") and self._unsub_state_change:
+                self._unsub_state_change()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_unsub_midnight") and self._unsub_midnight:
+                self._unsub_midnight()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_unsub_midnight_update") and self._unsub_midnight_update:
+                self._unsub_midnight_update()
+        except Exception:
+            pass
 
     @property
     def unit_of_measurement(self):
@@ -1054,8 +1074,6 @@ class EnergySensor(SensorEntity):
         # Get configuration options using the helper function
         config_options = _get_config_options(self._hass)
         attrs["statistical_calculation_enabled"] = config_options.get(CONF_USE_STATISTICAL, True)
-        attrs["point_sampling_fallback_allowed"] = config_options.get(CONF_ALLOW_POINT_SAMPLING_FALLBACK, True)
-        attrs["point_sampling_backup_enabled"] = config_options.get(CONF_ENABLE_POINT_SAMPLING_BACKUP, False)
         
         source_state = self._hass.states.get(self._source_sensor)
         if source_state:
@@ -1065,10 +1083,14 @@ class EnergySensor(SensorEntity):
         # Get interval from options
         sample_interval = 60  # Default 
         # Try to get the configured sample interval from the integration's options
-        for entry_id, entry_data in self._hass.data[DOMAIN].items():
-            if "options" in entry_data:
-                sample_interval = entry_data["options"].get("sample_interval", 60)
-                break
+        for entry_id, entry_data in self._hass.data.get(DOMAIN, {}).items():
+            try:
+                options = entry_data.get("options") if isinstance(entry_data, dict) else None
+                if isinstance(options, dict):
+                    sample_interval = options.get("sample_interval", 60)
+                    break
+            except Exception:
+                pass
                 
         attrs["sample_interval"] = sample_interval
         return attrs
@@ -1090,7 +1112,7 @@ class EnergySensor(SensorEntity):
         except Exception as e:
             _LOGGER.error(f"Error writing HA state for {self._attr_name}: {e}", exc_info=True)
 
-class DailyEnergySensor(SensorEntity):
+class DailyEnergySensor(SensorEntity, RestoreEntity):
     """Custom sensor for daily energy tracking."""
 
     def __init__(self, hass, base_name, source_sensor, storage_path, device_identifiers=None):
@@ -1098,6 +1120,8 @@ class DailyEnergySensor(SensorEntity):
         self._hass = hass
         self._base_name = base_name
         self._source_sensor = source_sensor
+        # Prefer StorageManager if provided
+        self._storage_manager: StorageManager | None = storage_path if isinstance(storage_path, StorageManager) else None
         self._storage_path = storage_path
         
         # Get friendly name - for daily/monthly sensors, derive from base_name
@@ -1116,6 +1140,7 @@ class DailyEnergySensor(SensorEntity):
         self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+        self._attr_entity_registry_enabled_default = True
         
         # Set device info directly if provided, otherwise get from source sensor
         if device_identifiers:
@@ -1141,7 +1166,12 @@ class DailyEnergySensor(SensorEntity):
 
     async def _load_state(self):
         """Load state from storage."""
-        storage = await load_storage(self._storage_path)
+        if self._storage_manager:
+            storage = await self._storage_manager.async_load()
+        else:
+            from homeassistant.helpers import storage as ha_storage
+            store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+            storage = await store.async_load() or {}
         state_data = storage.get(self._storage_key, {})
         self._state = state_data.get("value", 0.0)
         self._last_reset = state_data.get("last_reset", dt_util.utcnow().isoformat())
@@ -1149,26 +1179,44 @@ class DailyEnergySensor(SensorEntity):
 
     async def _save_state(self):
         """Save state to storage."""
-        storage = await load_storage(self._storage_path)
+        if self._storage_manager:
+            storage = await self._storage_manager.async_load()
+        else:
+            from homeassistant.helpers import storage as ha_storage
+            store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+            storage = await store.async_load() or {}
         storage[self._storage_key] = {
             "value": self._state,
             "last_reset": self._last_reset,
             "last_energy": self._last_energy
         }
-        await save_storage(self._storage_path, storage)
+        if self._storage_manager:
+            await self._storage_manager.async_save(storage)
+        else:
+            from homeassistant.helpers import storage as ha_storage
+            store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+            await store.async_save(storage)
 
     async def async_added_to_hass(self):
         """Handle entity addition."""
         # Load state from storage first
         await self._load_state()
+        # Restore HA cache if storage empty
+        if self._state == 0.0:
+            last = await self.async_get_last_state()
+            try:
+                if last and last.state not in ("unknown", "unavailable", None):
+                    self._state = float(last.state)
+            except (ValueError, TypeError):
+                pass
         
         # Track state changes to the power sensor
-        async_track_state_change_event(
+        self._unsub_state = async_track_state_change_event(
             self._hass, [self._source_sensor], self._handle_state_change
         )
         
         # Set up midnight reset
-        async_track_time_change(
+        self._unsub_midnight = async_track_time_change(
             self._hass,
             self._handle_midnight_reset,
             hour=0,
@@ -1195,6 +1243,19 @@ class DailyEnergySensor(SensorEntity):
         await self._save_state()
         self.safe_write_ha_state()
 
+    async def async_will_remove_from_hass(self):
+        """Clean up resources when entity is removed."""
+        try:
+            if hasattr(self, "_unsub_state") and self._unsub_state:
+                self._unsub_state()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_unsub_midnight") and self._unsub_midnight:
+                self._unsub_midnight()
+        except Exception:
+            pass
+
     async def _handle_state_change(self, event):
         """Update daily energy when source changes."""
         new_state = event.data.get("new_state")
@@ -1209,7 +1270,7 @@ class DailyEnergySensor(SensorEntity):
 
         # If this is the first time we're getting a valid energy reading, initialise tracking
         if self._last_energy == 0.0:
-            _LOGGER.info(f"Source energy sensor {self._source_sensor} became available, initialising daily tracking for {self._attr_name}")
+            _debug_log(self.hass, f"Source energy sensor {self._source_sensor} became available, initialising daily tracking for {self._attr_name}")
             self._last_energy = energy
             await self._save_state()
             self.safe_write_ha_state()
@@ -1267,7 +1328,7 @@ class DailyEnergySensor(SensorEntity):
         except Exception as e:
             _LOGGER.error(f"Error writing HA state for {self._attr_name}: {e}", exc_info=True)
 
-class MonthlyEnergySensor(SensorEntity):
+class MonthlyEnergySensor(SensorEntity, RestoreEntity):
     """Custom sensor for monthly energy tracking."""
 
     def __init__(self, hass, base_name, source_sensor, storage_path, device_identifiers=None):
@@ -1275,6 +1336,7 @@ class MonthlyEnergySensor(SensorEntity):
         self._hass = hass
         self._base_name = base_name
         self._source_sensor = source_sensor
+        self._storage_manager: StorageManager | None = storage_path if isinstance(storage_path, StorageManager) else None
         self._storage_path = storage_path
         
         # Get friendly name - for daily/monthly sensors, derive from base_name
@@ -1293,6 +1355,7 @@ class MonthlyEnergySensor(SensorEntity):
         self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+        self._attr_entity_registry_enabled_default = True
         
         # Set device info directly if provided, otherwise get from source sensor
         if device_identifiers:
@@ -1318,7 +1381,12 @@ class MonthlyEnergySensor(SensorEntity):
 
     async def _load_state(self):
         """Load state from storage."""
-        storage = await load_storage(self._storage_path)
+        if self._storage_manager:
+            storage = await self._storage_manager.async_load()
+        else:
+            from homeassistant.helpers import storage as ha_storage
+            store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+            storage = await store.async_load() or {}
         state_data = storage.get(self._storage_key, {})
         self._state = state_data.get("value", 0.0)
         self._last_reset = state_data.get("last_reset", dt_util.utcnow().isoformat())
@@ -1326,26 +1394,43 @@ class MonthlyEnergySensor(SensorEntity):
 
     async def _save_state(self):
         """Save state to storage."""
-        storage = await load_storage(self._storage_path)
+        if self._storage_manager:
+            storage = await self._storage_manager.async_load()
+        else:
+            from homeassistant.helpers import storage as ha_storage
+            store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+            storage = await store.async_load() or {}
         storage[self._storage_key] = {
             "value": self._state,
             "last_reset": self._last_reset,
             "last_energy": self._last_energy
         }
-        await save_storage(self._storage_path, storage)
+        if self._storage_manager:
+            await self._storage_manager.async_save(storage)
+        else:
+            from homeassistant.helpers import storage as ha_storage
+            store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+            await store.async_save(storage)
 
     async def async_added_to_hass(self):
         """Handle entity addition."""
         # Load state from storage first
         await self._load_state()
+        if self._state == 0.0:
+            last = await self.async_get_last_state()
+            try:
+                if last and last.state not in ("unknown", "unavailable", None):
+                    self._state = float(last.state)
+            except (ValueError, TypeError):
+                pass
         
         # Track state changes to the power sensor
-        async_track_state_change_event(
+        self._unsub_state = async_track_state_change_event(
             self._hass, [self._source_sensor], self._handle_state_change
         )
         
         # Set up first-of-month reset (check at midnight each day)
-        async_track_time_change(
+        self._unsub_month = async_track_time_change(
             self._hass,
             self._handle_month_reset,
             hour=0,
@@ -1389,7 +1474,7 @@ class MonthlyEnergySensor(SensorEntity):
 
         # If this is the first time we're getting a valid energy reading, initialise tracking
         if self._last_energy == 0.0:
-            _LOGGER.info(f"Source energy sensor {self._source_sensor} became available, initialising monthly tracking for {self._attr_name}")
+            _debug_log(self.hass, f"Source energy sensor {self._source_sensor} became available, initialising monthly tracking for {self._attr_name}")
             self._last_energy = energy
             await self._save_state()
             self.safe_write_ha_state()
@@ -1402,6 +1487,19 @@ class MonthlyEnergySensor(SensorEntity):
         
         await self._save_state()
         self.safe_write_ha_state()
+
+    async def async_will_remove_from_hass(self):
+        """Clean up resources when entity is removed."""
+        try:
+            if hasattr(self, "_unsub_state") and self._unsub_state:
+                self._unsub_state()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_unsub_month") and self._unsub_month:
+                self._unsub_month()
+        except Exception:
+            pass
 
     @property
     def native_value(self):
@@ -1447,7 +1545,7 @@ class MonthlyEnergySensor(SensorEntity):
         except Exception as e:
             _LOGGER.error(f"Error writing HA state for {self._attr_name}: {e}", exc_info=True)
 
-class WeeklyEnergySensor(SensorEntity):
+class WeeklyEnergySensor(SensorEntity, RestoreEntity):
 	"""Custom sensor for weekly energy tracking (ISO week, resets Monday)."""
 
 	def __init__(self, hass, base_name, source_sensor, storage_path, device_identifiers=None):
@@ -1455,6 +1553,7 @@ class WeeklyEnergySensor(SensorEntity):
 		self._hass = hass
 		self._base_name = base_name
 		self._source_sensor = source_sensor
+		self._storage_manager: StorageManager | None = storage_path if isinstance(storage_path, StorageManager) else None
 		self._storage_path = storage_path
 		friendly_name = get_friendly_name_from_base(hass, base_name)
 		proposed_name = f"{friendly_name} Weekly Energy"
@@ -1465,6 +1564,7 @@ class WeeklyEnergySensor(SensorEntity):
 		self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
 		self._attr_device_class = SensorDeviceClass.ENERGY
 		self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+		self._attr_entity_registry_enabled_default = True
 		if device_identifiers:
 			self._attr_device_info = DeviceInfo(identifiers=device_identifiers)
 		else:
@@ -1482,7 +1582,13 @@ class WeeklyEnergySensor(SensorEntity):
 
 	async def _load_state(self):
 		"""Load state from storage."""
-		storage = await load_storage(self._storage_path)
+		# Load once; if write fails due to FD exhaustion, skip instead of looping
+		if self._storage_manager:
+			storage = await self._storage_manager.async_load()
+		else:
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			storage = await store.async_load() or {}
 		state_data = storage.get(self._storage_key, {})
 		self._state = state_data.get("value", 0.0)
 		self._last_reset = state_data.get("last_reset", dt_util.utcnow().isoformat())
@@ -1490,22 +1596,48 @@ class WeeklyEnergySensor(SensorEntity):
 
 	async def _save_state(self):
 		"""Save state to storage."""
-		storage = await load_storage(self._storage_path)
+		if self._storage_manager:
+			storage = await self._storage_manager.async_load()
+		else:
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			storage = await store.async_load() or {}
 		storage[self._storage_key] = {
 			"value": self._state,
 			"last_reset": self._last_reset,
 			"last_energy": self._last_energy
 		}
-		await save_storage(self._storage_path, storage)
+		try:
+			if self._storage_manager:
+				await self._storage_manager.async_save(storage)
+			else:
+				from homeassistant.helpers import storage as ha_storage
+				store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+				await store.async_save(storage)
+		except Exception as e:
+			_DEBUG = False
+			try:
+				_DEBUG = _is_debug_enabled(self._hass)
+			except Exception:
+				pass
+			if _DEBUG:
+				_LOGGER.warning(f"Skipping storage save due to error: {e}")
 
 	async def async_added_to_hass(self):
 		"""Handle entity addition."""
 		await self._load_state()
-		async_track_state_change_event(
+		if self._state == 0.0:
+			last = await self.async_get_last_state()
+			try:
+				if last and last.state not in ("unknown", "unavailable", None):
+					self._state = float(last.state)
+			except (ValueError, TypeError):
+				pass
+		self._unsub_state = async_track_state_change_event(
 			self._hass, [self._source_sensor], self._handle_state_change
 		)
 		# Check each midnight whether it's Monday (ISO week start)
-		async_track_time_change(
+		self._unsub_week = async_track_time_change(
 			self._hass,
 			self._handle_week_reset,
 			hour=0,
@@ -1513,6 +1645,19 @@ class WeeklyEnergySensor(SensorEntity):
 			second=0
 		)
 		self.safe_write_ha_state()
+
+	async def async_will_remove_from_hass(self):
+		"""Clean up resources when entity is removed."""
+		try:
+			if hasattr(self, "_unsub_state") and self._unsub_state:
+				self._unsub_state()
+		except Exception:
+			pass
+		try:
+			if hasattr(self, "_unsub_week") and self._unsub_week:
+				self._unsub_week()
+		except Exception:
+			pass
 
 	async def _handle_week_reset(self, now):
 		"""Reset at the start of ISO week (Monday)."""
@@ -1542,7 +1687,7 @@ class WeeklyEnergySensor(SensorEntity):
 			_LOGGER.warning(f"Invalid energy value: {new_state.state}")
 			return
 		if self._last_energy == 0.0:
-			_LOGGER.info(f"Source energy sensor {self._source_sensor} became available, initialising weekly tracking for {self._attr_name}")
+			_debug_log(self.hass, f"Source energy sensor {self._source_sensor} became available, initialising weekly tracking for {self._attr_name}")
 			self._last_energy = energy
 			await self._save_state()
 			self.safe_write_ha_state()
@@ -1587,13 +1732,14 @@ class WeeklyEnergySensor(SensorEntity):
 		except Exception as e:
 			_LOGGER.error(f"Error writing HA state for {self._attr_name}: {e}", exc_info=True)
 
-class AnnualEnergySensor(SensorEntity):
+class AnnualEnergySensor(SensorEntity, RestoreEntity):
 	"""Custom sensor for annual energy tracking (resets 1 Jan)."""
 
 	def __init__(self, hass, base_name, source_sensor, storage_path, device_identifiers=None):
 		self._hass = hass
 		self._base_name = base_name
 		self._source_sensor = source_sensor
+		self._storage_manager: StorageManager | None = storage_path if isinstance(storage_path, StorageManager) else None
 		self._storage_path = storage_path
 		friendly_name = get_friendly_name_from_base(hass, base_name)
 		proposed_name = f"{friendly_name} Annual Energy"
@@ -1604,6 +1750,7 @@ class AnnualEnergySensor(SensorEntity):
 		self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
 		self._attr_device_class = SensorDeviceClass.ENERGY
 		self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+		self._attr_entity_registry_enabled_default = True
 		if device_identifiers:
 			self._attr_device_info = DeviceInfo(identifiers=device_identifiers)
 		else:
@@ -1620,28 +1767,50 @@ class AnnualEnergySensor(SensorEntity):
 		self._storage_key = f"{base_name}_annual_energy"
 
 	async def _load_state(self):
-		storage = await load_storage(self._storage_path)
+		if self._storage_manager:
+			storage = await self._storage_manager.async_load()
+		else:
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			storage = await store.async_load() or {}
 		state_data = storage.get(self._storage_key, {})
 		self._state = state_data.get("value", 0.0)
 		self._last_reset = state_data.get("last_reset", dt_util.utcnow().isoformat())
 		self._last_energy = state_data.get("last_energy", 0.0)
 
 	async def _save_state(self):
-		storage = await load_storage(self._storage_path)
+		if self._storage_manager:
+			storage = await self._storage_manager.async_load()
+		else:
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			storage = await store.async_load() or {}
 		storage[self._storage_key] = {
 			"value": self._state,
 			"last_reset": self._last_reset,
 			"last_energy": self._last_energy
 		}
-		await save_storage(self._storage_path, storage)
+		if self._storage_manager:
+			await self._storage_manager.async_save(storage)
+		else:
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			await store.async_save(storage)
 
 	async def async_added_to_hass(self):
 		await self._load_state()
-		async_track_state_change_event(
+		if self._state == 0.0:
+			last = await self.async_get_last_state()
+			try:
+				if last and last.state not in ("unknown", "unavailable", None):
+					self._state = float(last.state)
+			except (ValueError, TypeError):
+				pass
+		self._unsub_state = async_track_state_change_event(
 			self._hass, [self._source_sensor], self._handle_state_change
 		)
 		# Check each midnight whether it's 1 Jan
-		async_track_time_change(
+		self._unsub_year = async_track_time_change(
 			self._hass,
 			self._handle_year_reset,
 			hour=0,
@@ -1649,6 +1818,19 @@ class AnnualEnergySensor(SensorEntity):
 			second=0
 		)
 		self.safe_write_ha_state()
+
+	async def async_will_remove_from_hass(self):
+		"""Clean up resources when entity is removed."""
+		try:
+			if hasattr(self, "_unsub_state") and self._unsub_state:
+				self._unsub_state()
+		except Exception:
+			pass
+		try:
+			if hasattr(self, "_unsub_year") and self._unsub_year:
+				self._unsub_year()
+		except Exception:
+			pass
 
 	async def _handle_year_reset(self, now):
 		if now.month == 1 and now.day == 1:
@@ -1676,7 +1858,7 @@ class AnnualEnergySensor(SensorEntity):
 			_LOGGER.warning(f"Invalid energy value: {new_state.state}")
 			return
 		if self._last_energy == 0.0:
-			_LOGGER.info(f"Source energy sensor {self._source_sensor} became available, initialising annual tracking for {self._attr_name}")
+			_debug_log(self.hass, f"Source energy sensor {self._source_sensor} became available, initialising annual tracking for {self._attr_name}")
 			self._last_energy = energy
 			await self._save_state()
 			self.safe_write_ha_state()
@@ -1716,6 +1898,131 @@ class AnnualEnergySensor(SensorEntity):
 				_LOGGER.warning(f"Unit of measurement was missing for {self._attr_name}, restored to kWh")
 			if self._attr_unit_of_measurement != UnitOfEnergy.KILO_WATT_HOUR:
 				_LOGGER.warning(f"Unit of measurement was incorrect for {self._attr_name} ({self._attr_unit_of_measurement}), correcting to kWh")
+				self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+			self.async_write_ha_state()
+		except Exception as e:
+			_LOGGER.error(f"Error writing HA state for {self._attr_name}: {e}", exc_info=True)
+
+
+class SyntheticGridTotalEnergySensor(SensorEntity):
+	"""Synthetic grid total energy sensor that sums all generated energy sensors."""
+
+	def __init__(self, hass: HomeAssistant):
+		self._hass = hass
+		self._attr_name = "Synthetic Grid Total Energy"
+		self._attr_unique_id = "synthetic_grid_total_energy"
+		self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+		self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+		self._attr_device_class = SensorDeviceClass.ENERGY
+		self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+		self._attr_entity_registry_enabled_default = True
+		self._attr_device_info = DeviceInfo(
+			identifiers={(DOMAIN, "synthetic_grid_total")},
+			name="Synthetic Grid",
+			manufacturer="Energy Sensor Generator",
+			model="Synthetic Grid Total"
+		)
+		self._state = 0.0
+		self._sources = set()
+		self._unsub_listeners = []
+		self._rescan_interval = None
+
+	def _find_sources(self) -> set:
+		"""Find main energy sensors created by this integration to include in the total."""
+		entity_registry = er.async_get(self._hass)
+		sources = set()
+		for entity_id, entry in entity_registry.entities.items():
+			if entry.platform != DOMAIN:
+				continue
+			# Only include main energy sensors (exclude period variants)
+			uid = entry.unique_id or ""
+			if uid == self._attr_unique_id:
+				continue
+			if uid.endswith("_energy") and not any(x in uid for x in ["_daily_energy", "_monthly_energy", "_weekly_energy", "_annual_energy"]):
+				sources.add(entity_id)
+		return sources
+
+	async def async_added_to_hass(self):
+		await self._setup_sources_and_listeners()
+		# Periodically rescan to pick up newly added sensors
+		self._rescan_interval = async_track_time_interval(
+			self._hass,
+			self._handle_rescan,
+			timedelta(seconds=60)
+		)
+		self.safe_write_ha_state()
+
+	async def async_will_remove_from_hass(self):
+		for unsub in self._unsub_listeners:
+			try:
+				unsub()
+			except Exception:
+				pass
+		self._unsub_listeners = []
+		if self._rescan_interval:
+			try:
+				self._rescan_interval()
+			except Exception:
+				pass
+			self._rescan_interval = None
+
+	async def _setup_sources_and_listeners(self):
+		new_sources = self._find_sources()
+		if new_sources != self._sources:
+			# Update listeners
+			for unsub in self._unsub_listeners:
+				try:
+					unsub()
+				except Exception:
+					pass
+			self._unsub_listeners = []
+			self._sources = new_sources
+			if self._sources:
+				self._unsub_listeners.append(
+					async_track_state_change_event(self._hass, list(self._sources), self._handle_source_change)
+				)
+		await self._recalculate_total()
+
+	async def _handle_rescan(self, now):
+		await self._setup_sources_and_listeners()
+
+	async def _handle_source_change(self, event):
+		await self._recalculate_total()
+
+	async def _recalculate_total(self):
+		total = 0.0
+		for entity_id in self._sources:
+			state = self._hass.states.get(entity_id)
+			if not state or state.state in ("unknown", "unavailable"):
+				continue
+			try:
+				value = float(state.state)
+			except (ValueError, TypeError):
+				continue
+			if value >= 0:
+				total += value
+		self._state = total
+		self.safe_write_ha_state()
+
+	@property
+	def native_value(self):
+		return round(self._state, 4)
+
+	@property
+	def state(self):
+		return round(self._state, 4)
+
+	@property
+	def extra_state_attributes(self):
+		return {
+			"sources": sorted(list(self._sources))
+		}
+
+	def safe_write_ha_state(self):
+		try:
+			if not hasattr(self, '_attr_unit_of_measurement') or not self._attr_unit_of_measurement:
+				self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+			if self._attr_unit_of_measurement != UnitOfEnergy.KILO_WATT_HOUR:
 				self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
 			self.async_write_ha_state()
 		except Exception as e:

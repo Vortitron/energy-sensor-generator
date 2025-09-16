@@ -18,8 +18,7 @@ from .const import (
 	DOMAIN, 
 	CONF_DEBUG_LOGGING, 
 	CONF_USE_STATISTICAL, 
-	CONF_ALLOW_POINT_SAMPLING_FALLBACK,
-	CONF_ENABLE_POINT_SAMPLING_BACKUP
+	CONF_CREATE_SYNTHETIC_GRID_TOTAL
 )
 from .__init__ import detect_power_sensors  # Import the detect function
 
@@ -28,6 +27,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		"""Initialize options flow."""
 		self.options = dict(config_entry.options)
 		self._errors = {}
+		self._user_defaults = {}
+		self._show_advanced = False
 
 	async def async_step_init(self, user_input=None):
 		"""Manage the options for the integration."""
@@ -41,17 +42,31 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		# Get current selections if present
 		current_sensors = self.config_entry.options.get("selected_power_sensors", [])
 		
-		# Get current settings
-		create_daily = self.config_entry.options.get("create_daily_sensors", True)
-		create_monthly = self.config_entry.options.get("create_monthly_sensors", True)
-		create_weekly = self.config_entry.options.get("create_weekly_sensors", True)
-		create_annual = self.config_entry.options.get("create_annual_sensors", True)
-		sample_interval = self.config_entry.options.get("sample_interval", 60)
-		debug_logging = self.config_entry.options.get(CONF_DEBUG_LOGGING, False)
-		use_statistical = self.config_entry.options.get(CONF_USE_STATISTICAL, True)  # Default True now that blocking calls are fixed
-		allow_point_sampling_fallback = self.config_entry.options.get(CONF_ALLOW_POINT_SAMPLING_FALLBACK, True)  # Allow fallback by default for backwards compatibility
-		enable_point_sampling_backup = self.config_entry.options.get(CONF_ENABLE_POINT_SAMPLING_BACKUP, False)  # Off by default as requested
+		# Handle navigation to advanced step
+		if user_input is not None:
+			requested_show_advanced = user_input.get("show_advanced", False)
+			# Navigate to advanced step if requested
+			if requested_show_advanced:
+				self._user_defaults = dict(user_input)
+				return await self.async_step_advanced()
+		else:
+			requested_show_advanced = False
 		
+		# Compose defaults from saved options and any prior user edits
+		defaults = {**self.config_entry.options, **self._user_defaults}
+		
+		# Get current settings
+		create_daily = defaults.get("create_daily_sensors", True)
+		create_monthly = defaults.get("create_monthly_sensors", True)
+		create_weekly = defaults.get("create_weekly_sensors", True)
+		create_annual = defaults.get("create_annual_sensors", True)
+		
+		# Advanced settings (hidden by default)
+		sample_interval = defaults.get("sample_interval", 60)
+		debug_logging = defaults.get(CONF_DEBUG_LOGGING, False)
+		use_statistical = defaults.get(CONF_USE_STATISTICAL, True)
+		synthetic_grid_total = defaults.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
+
 		# Merge auto-detected and previously selected sensors for the selection list
 		all_power_sensors = {}
 		
@@ -117,17 +132,19 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			if custom_sensor and custom_sensor not in selected_sensors:
 				selected_sensors.append(custom_sensor)
 			
-			# Get other options
-			create_daily = user_input.get("create_daily_sensors", True)
-			create_monthly = user_input.get("create_monthly_sensors", True)
-			create_weekly = user_input.get("create_weekly_sensors", True)
-			create_annual = user_input.get("create_annual_sensors", True)
+			# Get period sensor options - parse from multi-select
+			period_sensors = user_input.get("period_sensors", ["daily", "monthly", "weekly", "annual"])
+			create_daily = "daily" in period_sensors
+			create_monthly = "monthly" in period_sensors
+			create_weekly = "weekly" in period_sensors
+			create_annual = "annual" in period_sensors
+			
+			# Advanced options (only if advanced is shown)
 			sample_interval = user_input.get("sample_interval", 60)
 			debug_logging = user_input.get(CONF_DEBUG_LOGGING, False)
 			use_statistical = user_input.get(CONF_USE_STATISTICAL, True)
-			allow_point_sampling_fallback = user_input.get(CONF_ALLOW_POINT_SAMPLING_FALLBACK, True)
-			enable_point_sampling_backup = user_input.get(CONF_ENABLE_POINT_SAMPLING_BACKUP, False)
-			
+			synthetic_grid_total = user_input.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
+
 			if not self._errors:
 				return self.async_create_entry(
 					title="Power Sensors", 
@@ -140,8 +157,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 						"sample_interval": sample_interval,
 						CONF_DEBUG_LOGGING: debug_logging,
 						CONF_USE_STATISTICAL: use_statistical,
-						CONF_ALLOW_POINT_SAMPLING_FALLBACK: allow_point_sampling_fallback,
-						CONF_ENABLE_POINT_SAMPLING_BACKUP: enable_point_sampling_backup
+						CONF_CREATE_SYNTHETIC_GRID_TOTAL: synthetic_grid_total
 					}
 				)
 
@@ -159,13 +175,102 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			EntitySelectorConfig(domain="sensor", multiple=False)
 		)
 		
-		# Add sensor type options
-		schema[vol.Optional("create_daily_sensors", default=create_daily)] = BooleanSelector()
-		schema[vol.Optional("create_monthly_sensors", default=create_monthly)] = BooleanSelector()
-		schema[vol.Optional("create_weekly_sensors", default=create_weekly)] = BooleanSelector()
-		schema[vol.Optional("create_annual_sensors", default=create_annual)] = BooleanSelector()
+		# Create period sensors multi-select
+		default_periods = []
+		if create_daily:
+			default_periods.append("daily")
+		if create_monthly:
+			default_periods.append("monthly")
+		if create_weekly:
+			default_periods.append("weekly")
+		if create_annual:
+			default_periods.append("annual")
 		
-		# Add sampling interval
+		schema[vol.Optional("period_sensors", default=default_periods)] = SelectSelector(
+			SelectSelectorConfig(
+				options=[
+					{"value": "daily", "label": "Daily"},
+					{"value": "weekly", "label": "Weekly"},
+					{"value": "monthly", "label": "Monthly"},
+					{"value": "annual", "label": "Annual"}
+				],
+				multiple=True,
+				mode=SelectSelectorMode.DROPDOWN
+			)
+		)
+		
+		
+		# Show advanced (navigates to next step)
+		schema[vol.Optional("show_advanced", default=False)] = BooleanSelector()
+		
+		# Note: Advanced fields moved to dedicated step
+		
+		return self.async_show_form(
+			step_id="init",
+			data_schema=vol.Schema(schema),
+			errors=self._errors,
+			description_placeholders={
+				"count": len(all_power_sensors)
+			}
+		) 
+
+	async def async_step_advanced(self, user_input=None):
+		"""Advanced settings step."""
+		self._errors = {}
+		defaults = {**self.config_entry.options, **self._user_defaults}
+		sample_interval = defaults.get("sample_interval", 60)
+		debug_logging = defaults.get(CONF_DEBUG_LOGGING, False)
+		use_statistical = defaults.get(CONF_USE_STATISTICAL, True)
+		synthetic_grid_total = defaults.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
+		
+		if user_input is not None:
+			# Update defaults with advanced settings
+			self._user_defaults.update(user_input)
+			
+			# Process all the data and save
+			all_data = {**self._user_defaults}
+			
+			# Parse sensor selections from user defaults
+			selected_sensors = []
+			for key, value in all_data.items():
+				if key.startswith("sensor_") and value:
+					actual_sensor_id = key[7:]  # Remove "sensor_" prefix
+					selected_sensors.append(actual_sensor_id)
+			
+			# Add custom sensor if provided
+			custom_sensor = all_data.get("custom_power_sensor", "")
+			if custom_sensor and custom_sensor not in selected_sensors:
+				selected_sensors.append(custom_sensor)
+			
+			# Get period sensor options
+			period_sensors = all_data.get("period_sensors", ["daily", "monthly", "weekly", "annual"])
+			create_daily = "daily" in period_sensors
+			create_monthly = "monthly" in period_sensors
+			create_weekly = "weekly" in period_sensors
+			create_annual = "annual" in period_sensors
+			
+			# Get other options
+			synthetic_grid_total = all_data.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
+			sample_interval = user_input.get("sample_interval", 60)
+			debug_logging = user_input.get(CONF_DEBUG_LOGGING, False)
+			use_statistical = user_input.get(CONF_USE_STATISTICAL, True)
+			
+			return self.async_create_entry(
+				title="Power Sensors",
+				data={
+					"selected_power_sensors": selected_sensors,
+					"create_daily_sensors": create_daily,
+					"create_monthly_sensors": create_monthly,
+					"create_weekly_sensors": create_weekly,
+					"create_annual_sensors": create_annual,
+					"sample_interval": sample_interval,
+					CONF_DEBUG_LOGGING: debug_logging,
+					CONF_USE_STATISTICAL: use_statistical,
+					CONF_CREATE_SYNTHETIC_GRID_TOTAL: synthetic_grid_total
+				}
+			)
+
+		schema = {}
 		schema[vol.Optional("sample_interval", default=sample_interval)] = NumberSelector(
 			NumberSelectorConfig(
 				min=5,
@@ -175,30 +280,16 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				mode=NumberSelectorMode.SLIDER
 			)
 		)
-		
-		# Add debug logging toggle
 		schema[vol.Optional(CONF_DEBUG_LOGGING, default=debug_logging)] = BooleanSelector()
-		
-		# Add statistical calculation toggle (disabled by default due to blocking call issues)
 		schema[vol.Optional(CONF_USE_STATISTICAL, default=use_statistical)] = BooleanSelector()
-		
-		# Add point sampling control toggles
-		schema[vol.Optional(CONF_ALLOW_POINT_SAMPLING_FALLBACK, default=allow_point_sampling_fallback)] = BooleanSelector()
-		schema[vol.Optional(CONF_ENABLE_POINT_SAMPLING_BACKUP, default=enable_point_sampling_backup)] = BooleanSelector()
-		
+				# Option to create synthetic grid total
+		schema[vol.Optional(CONF_CREATE_SYNTHETIC_GRID_TOTAL, default=synthetic_grid_total)] = BooleanSelector()
+
 		return self.async_show_form(
-			step_id="init",
+			step_id="advanced",
 			data_schema=vol.Schema(schema),
 			errors=self._errors,
 			description_placeholders={
-				"count": len(all_power_sensors),
-				"daily_description": "Create daily energy sensors that reset at midnight",
-				"monthly_description": "Create monthly energy sensors that reset at the beginning of each month",
-				"interval_description": "Sampling interval for energy calculations (shorter intervals are more accurate but use more resources)",
-				"debug_description": "Enable detailed debug logging for troubleshooting (can be toggled without restarting)",
-				"statistical_description": "✅ ADVANCED: Use historical data for more accurate energy calculations when available (recommended for devices with infrequent updates like Tuya devices)",
-				"fallback_description": "🚫 ADVANCED: Allow fallback to point sampling when statistical calculation fails (disable to totally prevent point sampling)",
-				"backup_description": "⚙️ ADVANCED: Enable point sampling as backup when statistical calculation is disabled (off by default)",
-				"restart_note": "⚠️ Note: Some changes may require a Home Assistant restart to take full effect. If sensors are removed, you may need to restart and then delete any entities marked as 'no longer provided'."
+				"description": "Configure advanced settings for energy sensor generation."
 			}
-		) 
+		)
