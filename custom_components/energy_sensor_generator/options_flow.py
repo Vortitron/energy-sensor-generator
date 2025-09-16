@@ -66,7 +66,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		debug_logging = defaults.get(CONF_DEBUG_LOGGING, False)
 		use_statistical = defaults.get(CONF_USE_STATISTICAL, True)
 		synthetic_grid_total = defaults.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
-
+		
 		# Merge auto-detected and previously selected sensors for the selection list
 		all_power_sensors = {}
 		
@@ -96,8 +96,26 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				if device and device.name:
 					device_name = device.name
 			
-			# Use device name if available, otherwise use friendly name
-			display_name = device_name if device_name else friendly_name
+			# Create comprehensive display name
+			if device_name and friendly_name and device_name != friendly_name:
+				# Check if friendly name already contains device name to avoid redundancy
+				if device_name.lower() in friendly_name.lower():
+					display_name = friendly_name
+				else:
+					# Show both device and sensor name if they're different
+					display_name = f"{device_name} - {friendly_name}"
+			elif device_name:
+				# Use device name if sensor name is generic or missing
+				display_name = device_name
+			else:
+				# Fallback to friendly name or entity ID
+				display_name = friendly_name
+			
+			# Add entity ID suffix for disambiguation if needed (useful for debugging)
+			# Only show if display name doesn't clearly identify the sensor
+			if not any(part in display_name.lower() for part in ['power', 'energy', 'watt']) and entity_id != display_name:
+				display_name = f"{display_name} ({entity_id.split('.')[-1]})"
+			
 			all_power_sensors[sensor] = display_name
 			
 		# Add custom sensors that were previously selected
@@ -113,19 +131,31 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 					if device and device.name:
 						device_name = device.name
 				
-				# Use device name if available, otherwise use friendly name
-				display_name = device_name if device_name else friendly_name
+				# Create comprehensive display name
+				if device_name and friendly_name and device_name != friendly_name:
+					# Check if friendly name already contains device name to avoid redundancy
+					if device_name.lower() in friendly_name.lower():
+						display_name = friendly_name
+					else:
+						# Show both device and sensor name if they're different
+						display_name = f"{device_name} - {friendly_name}"
+				elif device_name:
+					# Use device name if sensor name is generic or missing
+					display_name = device_name
+				else:
+					# Fallback to friendly name or entity ID
+					display_name = friendly_name
+				
+				# Add entity ID suffix for disambiguation if needed (useful for debugging)
+				# Only show if display name doesn't clearly identify the sensor
+				if not any(part in display_name.lower() for part in ['power', 'energy', 'watt']) and sensor != display_name:
+					display_name = f"{display_name} ({sensor.split('.')[-1]})"
+				
 				all_power_sensors[sensor] = display_name
 		
 		if user_input is not None:
-			selected_sensors = []
-			
-			# Process checkbox selections
-			for sensor_id, selected in user_input.items():
-				if sensor_id.startswith("sensor_") and selected:
-					# Extract the actual sensor ID from the field name
-					actual_sensor_id = sensor_id[7:]  # Remove "sensor_" prefix
-					selected_sensors.append(actual_sensor_id)
+			# Get selected sensors from multi-select
+			selected_sensors = user_input.get("selected_power_sensors", [])
 			
 			# Add custom sensor if provided
 			custom_sensor = user_input.get("custom_power_sensor", "")
@@ -144,9 +174,10 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			debug_logging = user_input.get(CONF_DEBUG_LOGGING, False)
 			use_statistical = user_input.get(CONF_USE_STATISTICAL, True)
 			synthetic_grid_total = user_input.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
-
+			
 			if not self._errors:
-				return self.async_create_entry(
+				# Create the configuration entry first
+				result = self.async_create_entry(
 					title="Power Sensors", 
 					data={
 						"selected_power_sensors": selected_sensors,
@@ -161,14 +192,30 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 					}
 				)
 
-		# Create individual checkbox for each sensor
+				# Automatically generate sensors for the new configuration
+				hass = self.hass
+				hass.async_create_task(self._async_generate_sensors_after_config())
+				
+				return result
+
+		# Create schema for sensor selection
 		schema = {}
 		
-		# Add checkboxes for each sensor
+		# Use MultiSelectSelector for better display of sensor names
+		sensor_options = []
 		for sensor_id, display_name in all_power_sensors.items():
-			# Only show as selected if it was previously selected
-			is_selected = sensor_id in validated_current_sensors
-			schema[vol.Optional(f"sensor_{sensor_id}", default=is_selected, description=display_name)] = bool
+			sensor_options.append({
+				"value": sensor_id,
+				"label": display_name
+			})
+		
+		schema[vol.Optional("selected_power_sensors", default=validated_current_sensors)] = SelectSelector(
+			SelectSelectorConfig(
+				options=sensor_options,
+				multiple=True,
+				mode=SelectSelectorMode.DROPDOWN
+			)
+		)
 		
 		# Add custom sensor field
 		schema[vol.Optional("custom_power_sensor")] = EntitySelector(
@@ -230,12 +277,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			# Process all the data and save
 			all_data = {**self._user_defaults}
 			
-			# Parse sensor selections from user defaults
-			selected_sensors = []
-			for key, value in all_data.items():
-				if key.startswith("sensor_") and value:
-					actual_sensor_id = key[7:]  # Remove "sensor_" prefix
-					selected_sensors.append(actual_sensor_id)
+			# Get selected sensors from user defaults
+			selected_sensors = all_data.get("selected_power_sensors", [])
 			
 			# Add custom sensor if provided
 			custom_sensor = all_data.get("custom_power_sensor", "")
@@ -255,7 +298,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			debug_logging = user_input.get(CONF_DEBUG_LOGGING, False)
 			use_statistical = user_input.get(CONF_USE_STATISTICAL, True)
 			
-			return self.async_create_entry(
+			# Create the configuration entry
+			result = self.async_create_entry(
 				title="Power Sensors",
 				data={
 					"selected_power_sensors": selected_sensors,
@@ -269,6 +313,12 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 					CONF_CREATE_SYNTHETIC_GRID_TOTAL: synthetic_grid_total
 				}
 			)
+			
+			# Automatically generate sensors for the new configuration
+			hass = self.hass
+			hass.async_create_task(self._async_generate_sensors_after_config())
+			
+			return result
 
 		schema = {}
 		schema[vol.Optional("sample_interval", default=sample_interval)] = NumberSelector(
@@ -284,7 +334,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		schema[vol.Optional(CONF_USE_STATISTICAL, default=use_statistical)] = BooleanSelector()
 				# Option to create synthetic grid total
 		schema[vol.Optional(CONF_CREATE_SYNTHETIC_GRID_TOTAL, default=synthetic_grid_total)] = BooleanSelector()
-
+		
 		return self.async_show_form(
 			step_id="advanced",
 			data_schema=vol.Schema(schema),
@@ -292,4 +342,41 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			description_placeholders={
 				"description": "Configure advanced settings for energy sensor generation."
 			}
+		)
+	
+	async def _async_generate_sensors_after_config(self):
+		"""Generate sensors automatically after configuration is saved."""
+		import asyncio
+		import logging
+		_LOGGER = logging.getLogger(__name__)
+		
+		# Wait a short time for the config entry to be fully processed
+		await asyncio.sleep(2)
+		
+		try:
+			# Import the generate_sensors_service function
+			from .__init__ import generate_sensors_service
+			
+			_LOGGER.info("Auto-generating energy sensors after configuration update...")
+			
+			# Call the service to generate sensors
+			await generate_sensors_service(self.hass, None, self.config_entry)
+			
+			_LOGGER.info("Energy sensors generated successfully after configuration update")
+			
+			# Send a persistent notification to the user
+			self.hass.components.persistent_notification.async_create(
+				message="Energy sensors have been created automatically based on your new configuration. Check the Entities page to see your new sensors.",
+				title="Energy Sensor Generator",
+				notification_id="energy_sensor_generator_created"
+			)
+			
+		except Exception as e:
+			_LOGGER.error(f"Failed to auto-generate sensors after configuration: {e}")
+			
+			# Send error notification to user
+			self.hass.components.persistent_notification.async_create(
+				message=f"Failed to automatically create energy sensors: {str(e)}. You may need to manually reload the integration.",
+				title="Energy Sensor Generator - Error",
+				notification_id="energy_sensor_generator_error"
 		)
