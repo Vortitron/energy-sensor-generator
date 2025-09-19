@@ -18,7 +18,9 @@ from .const import (
 	DOMAIN, 
 	CONF_DEBUG_LOGGING, 
 	CONF_USE_STATISTICAL, 
-	CONF_CREATE_SYNTHETIC_GRID_TOTAL
+	CONF_CREATE_SYNTHETIC_GRID_TOTAL,
+	CONF_FORCE_STATISTICAL_ONLY,
+	CONF_STAT_LOOKBACK_MINUTES
 )
 from .__init__ import detect_power_sensors  # Import the detect function
 
@@ -66,6 +68,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		debug_logging = defaults.get(CONF_DEBUG_LOGGING, False)
 		use_statistical = defaults.get(CONF_USE_STATISTICAL, True)
 		synthetic_grid_total = defaults.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
+		force_statistical_only = defaults.get(CONF_FORCE_STATISTICAL_ONLY, False)
+		stat_lookback = defaults.get(CONF_STAT_LOOKBACK_MINUTES, 60)
 		
 		# Merge auto-detected and previously selected sensors for the selection list
 		all_power_sensors = {}
@@ -174,6 +178,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			debug_logging = user_input.get(CONF_DEBUG_LOGGING, False)
 			use_statistical = user_input.get(CONF_USE_STATISTICAL, True)
 			synthetic_grid_total = user_input.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
+			force_statistical_only = user_input.get(CONF_FORCE_STATISTICAL_ONLY, False)
+			stat_lookback = user_input.get(CONF_STAT_LOOKBACK_MINUTES, 60)
 			
 			if not self._errors:
 				# Create the configuration entry first
@@ -188,7 +194,9 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 						"sample_interval": sample_interval,
 						CONF_DEBUG_LOGGING: debug_logging,
 						CONF_USE_STATISTICAL: use_statistical,
-						CONF_CREATE_SYNTHETIC_GRID_TOTAL: synthetic_grid_total
+						CONF_CREATE_SYNTHETIC_GRID_TOTAL: synthetic_grid_total,
+						CONF_FORCE_STATISTICAL_ONLY: force_statistical_only,
+						CONF_STAT_LOOKBACK_MINUTES: stat_lookback
 					}
 				)
 
@@ -269,6 +277,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		debug_logging = defaults.get(CONF_DEBUG_LOGGING, False)
 		use_statistical = defaults.get(CONF_USE_STATISTICAL, True)
 		synthetic_grid_total = defaults.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
+		force_statistical_only = defaults.get(CONF_FORCE_STATISTICAL_ONLY, False)
+		stat_lookback = defaults.get(CONF_STAT_LOOKBACK_MINUTES, 60)
 		
 		if user_input is not None:
 			# Update defaults with advanced settings
@@ -297,6 +307,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			sample_interval = user_input.get("sample_interval", 60)
 			debug_logging = user_input.get(CONF_DEBUG_LOGGING, False)
 			use_statistical = user_input.get(CONF_USE_STATISTICAL, True)
+			force_statistical_only = user_input.get(CONF_FORCE_STATISTICAL_ONLY, False)
+			stat_lookback = user_input.get(CONF_STAT_LOOKBACK_MINUTES, 60)
 			
 			# Create the configuration entry
 			result = self.async_create_entry(
@@ -310,7 +322,9 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 					"sample_interval": sample_interval,
 					CONF_DEBUG_LOGGING: debug_logging,
 					CONF_USE_STATISTICAL: use_statistical,
-					CONF_CREATE_SYNTHETIC_GRID_TOTAL: synthetic_grid_total
+					CONF_CREATE_SYNTHETIC_GRID_TOTAL: synthetic_grid_total,
+					CONF_FORCE_STATISTICAL_ONLY: force_statistical_only,
+					CONF_STAT_LOOKBACK_MINUTES: stat_lookback
 				}
 			)
 			
@@ -332,7 +346,17 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		)
 		schema[vol.Optional(CONF_DEBUG_LOGGING, default=debug_logging)] = BooleanSelector()
 		schema[vol.Optional(CONF_USE_STATISTICAL, default=use_statistical)] = BooleanSelector()
-				# Option to create synthetic grid total
+		schema[vol.Optional(CONF_FORCE_STATISTICAL_ONLY, default=force_statistical_only)] = BooleanSelector()
+		schema[vol.Optional(CONF_STAT_LOOKBACK_MINUTES, default=stat_lookback)] = NumberSelector(
+			NumberSelectorConfig(
+				min=5,
+				max=120,
+				step=5,
+				unit_of_measurement="minutes",
+				mode=NumberSelectorMode.SLIDER
+			)
+		)
+		# Option to create synthetic grid total
 		schema[vol.Optional(CONF_CREATE_SYNTHETIC_GRID_TOTAL, default=synthetic_grid_total)] = BooleanSelector()
 		
 		return self.async_show_form(
@@ -364,19 +388,29 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			
 			_LOGGER.info("Energy sensors generated successfully after configuration update")
 			
-			# Send a persistent notification to the user
-			self.hass.components.persistent_notification.async_create(
-				message="Energy sensors have been created automatically based on your new configuration. Check the Entities page to see your new sensors.",
-				title="Energy Sensor Generator",
-				notification_id="energy_sensor_generator_created"
+			# Send a persistent notification to the user (use services API; components attribute is no longer available)
+			await self.hass.services.async_call(
+				"persistent_notification",
+				"create",
+				{
+					"message": "Energy sensors have been created automatically based on your new configuration. Check the Entities page to see your new sensors.",
+					"title": "Energy Sensor Generator",
+					"notification_id": "energy_sensor_generator_created"
+				},
+				blocking=False
 			)
 			
 		except Exception as e:
 			_LOGGER.error(f"Failed to auto-generate sensors after configuration: {e}")
 			
 			# Send error notification to user
-			self.hass.components.persistent_notification.async_create(
-				message=f"Failed to automatically create energy sensors: {str(e)}. You may need to manually reload the integration.",
-				title="Energy Sensor Generator - Error",
-				notification_id="energy_sensor_generator_error"
-		)
+			await self.hass.services.async_call(
+				"persistent_notification",
+				"create",
+				{
+					"message": f"Failed to automatically create energy sensors: {str(e)}. You may need to manually reload the integration.",
+					"title": "Energy Sensor Generator - Error",
+					"notification_id": "energy_sensor_generator_error"
+				},
+				blocking=False
+			)

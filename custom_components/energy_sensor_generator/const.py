@@ -8,3 +8,5 @@ CONF_DEBUG_LOGGING = "debug_logging"
 CONF_USE_STATISTICAL = "use_statistical_calculation"
 # Removed redundant point sampling options - simplified to just use statistical calculation toggle 
 CONF_CREATE_SYNTHETIC_GRID_TOTAL = "create_synthetic_grid_total"
+CONF_FORCE_STATISTICAL_ONLY = "force_statistical_only"
+CONF_STAT_LOOKBACK_MINUTES = "stat_initial_lookback_minutes"

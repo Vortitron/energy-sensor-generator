@@ -29,7 +29,9 @@ from .utils import StorageManager
 from .const import (
 	DOMAIN, 
 	CONF_DEBUG_LOGGING, 
-	CONF_USE_STATISTICAL
+	CONF_USE_STATISTICAL,
+	CONF_FORCE_STATISTICAL_ONLY,
+	CONF_STAT_LOOKBACK_MINUTES
 )
 import time
 
@@ -79,6 +81,8 @@ def _get_config_options(hass: HomeAssistant) -> dict:
 	"""Get configuration options from the integration."""
 	default_options = {
 		CONF_USE_STATISTICAL: True,  # Use statistical calculation by default
+		CONF_FORCE_STATISTICAL_ONLY: False,
+		CONF_STAT_LOOKBACK_MINUTES: 60,
 	}
 	
 	# Check all hass.data domain entries safely (some keys are floats used for throttling)
@@ -856,18 +860,20 @@ class EnergySensor(SensorEntity, RestoreEntity):
             statistical_data = None
             if use_statistical and STATISTICS_AVAILABLE:
                 try:
-                    # For statistical calculation, always use a fixed lookback window for consistency and reliability
-                    # This approach avoids double counting by tracking the last time we performed statistical calculation
+                    # For statistical calculation, use a configurable initial lookback window.
+                    # Then, when we have a last statistical timestamp, switch to incremental windows.
+                    config_options = _get_config_options(self.hass)
+                    initial_minutes = max(5, int(config_options.get(CONF_STAT_LOOKBACK_MINUTES, 15)))
                     if hasattr(self, '_last_statistical_calculation') and self._last_statistical_calculation:
                         # Calculate energy only since the last statistical calculation
                         stat_start_time = self._last_statistical_calculation
                         stat_end_time = now
                         _debug_log(self.hass, f"Using incremental statistical time range: {stat_start_time} to {stat_end_time}")
                     else:
-                        # First time or no previous statistical calculation - use 15 minute window
-                        stat_start_time = now - timedelta(minutes=15)
+                        # First time or no previous statistical calculation - use configured window
+                        stat_start_time = now - timedelta(minutes=initial_minutes)
                         stat_end_time = now
-                        _debug_log(self.hass, f"Initial statistical calculation - using 15 minute window: {stat_start_time} to {stat_end_time}")
+                        _debug_log(self.hass, f"Initial statistical calculation - using {initial_minutes} minute window: {stat_start_time} to {stat_end_time}")
                     # Get statistical data using LEFT Riemann sum (like HA's integration sensor)
                     statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
                     # If successful, update the last statistical calculation time
@@ -906,7 +912,7 @@ class EnergySensor(SensorEntity, RestoreEntity):
                     _LOGGER.warning(f"CONFIGURATION ERROR: {self._attr_name} is monitoring an ENERGY sensor ({self._source_sensor}) instead of a POWER sensor! This will not work correctly. Please reconfigure to monitor a power sensor with unit 'W' or 'kW'.")
                     return
             
-            # Use statistical data if available, otherwise fall back to trapezoidal rule
+            # Use statistical data if available, otherwise optionally fall back to point sampling
             if statistical_data is not None and isinstance(statistical_data, (int, float)) and statistical_data > 0:
                 old_state = self._state
                 self._state += statistical_data
@@ -919,6 +925,15 @@ class EnergySensor(SensorEntity, RestoreEntity):
                     self._first_calculation_logged = True
                 _debug_log(self.hass, f"Statistical energy calculation: {self._attr_name} | Energy added: {statistical_data:.8f}kWh | Total: {self._state:.4f}kWh | Current power: {power:.2f}{unit_display}")
             else:
+                # Determine if fallback is permitted
+                if _get_config_options(self.hass).get(CONF_FORCE_STATISTICAL_ONLY, False):
+                    _debug_log(self.hass, f"Statistical-only mode enabled - skipping point sampling for {self._attr_name}")
+                    # Update tracking variables and save, but don't add energy
+                    self._last_power = power
+                    self._last_update = now
+                    await self._save_state()
+                    self.safe_write_ha_state()
+                    return
                 # Point sampling fallback using trapezoidal rule
                 if self._last_power is not None and self._last_update is not None:
                     time_delta = (now - self._last_update).total_seconds()
