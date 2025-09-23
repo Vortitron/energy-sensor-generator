@@ -69,7 +69,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		use_statistical = defaults.get(CONF_USE_STATISTICAL, True)
 		synthetic_grid_total = defaults.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
 		force_statistical_only = defaults.get(CONF_FORCE_STATISTICAL_ONLY, False)
-		stat_lookback = defaults.get(CONF_STAT_LOOKBACK_MINUTES, 60)
+		stat_lookback = defaults.get(CONF_STAT_LOOKBACK_MINUTES, 30)
 		
 		# Merge auto-detected and previously selected sensors for the selection list
 		all_power_sensors = {}
@@ -278,7 +278,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		use_statistical = defaults.get(CONF_USE_STATISTICAL, True)
 		synthetic_grid_total = defaults.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
 		force_statistical_only = defaults.get(CONF_FORCE_STATISTICAL_ONLY, False)
-		stat_lookback = defaults.get(CONF_STAT_LOOKBACK_MINUTES, 60)
+		stat_lookback = defaults.get(CONF_STAT_LOOKBACK_MINUTES, 30)
 		
 		if user_input is not None:
 			# Update defaults with advanced settings
