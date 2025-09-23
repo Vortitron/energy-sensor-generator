@@ -488,10 +488,10 @@ class EnergySensor(SensorEntity, RestoreEntity):
                 _debug_log(self.hass, f"Recorder not available for {self._attr_name}")
                 return None
                 
-            # Ensure we have a reasonable time range (at least 10 seconds for frequent sensors)
+            # Ensure we have a reasonable time range (at least 30 seconds for reliable calculation)
             time_delta = (end_time - start_time).total_seconds()
-            if time_delta < 10:  # Reduced from 60 to 10 seconds for frequent sensors
-                _debug_log(self.hass, f"Time range too short for statistical calculation ({time_delta:.1f}s) for {self._attr_name} - need at least 10 seconds")
+            if time_delta < 30:  # Reduced from 60 to 30 seconds for better frequent sensor support
+                _debug_log(self.hass, f"Time range too short for statistical calculation ({time_delta:.1f}s) for {self._attr_name} - need at least 30 seconds")
                 return None
             
             # Import required modules for history access
@@ -870,31 +870,57 @@ class EnergySensor(SensorEntity, RestoreEntity):
             statistical_data = None
             if use_statistical and STATISTICS_AVAILABLE:
                 try:
-                    # Use a sliding window approach for more reliable statistical calculation
-                    # For frequent sensors, use a longer lookback to ensure enough data points
                     config_options = _get_config_options(self.hass)
-                    lookback_minutes = max(10, int(config_options.get(CONF_STAT_LOOKBACK_MINUTES, 60)))
+                    lookback_minutes = max(10, int(config_options.get(CONF_STAT_LOOKBACK_MINUTES, 30)))
 
-                    # Try statistical calculation with current lookback
-                    stat_start_time = now - timedelta(minutes=lookback_minutes)
-                    stat_end_time = now
-                    _debug_log(self.hass, f"Attempting statistical calculation with {lookback_minutes}min lookback: {stat_start_time} to {stat_end_time}")
-
-                    statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
-
-                    # If first attempt failed due to insufficient data, try with extended lookback
-                    if statistical_data is None and hasattr(self, '_last_statistical_calculation') and self._last_statistical_calculation:
-                        extended_lookback = lookback_minutes * 2  # Double the lookback
-                        stat_start_time = now - timedelta(minutes=extended_lookback)
+                    # Determine the correct time window for statistical calculation
+                    if hasattr(self, '_last_statistical_calculation') and self._last_statistical_calculation:
+                        # Incremental calculation: only calculate since last successful calculation
+                        # But add a small buffer to ensure we don't miss any data
+                        stat_start_time = self._last_statistical_calculation - timedelta(minutes=1)  # 1 minute buffer
                         stat_end_time = now
-                        _debug_log(self.hass, f"Retrying statistical calculation with extended {extended_lookback}min lookback: {stat_start_time} to {stat_end_time}")
+                        window_description = f"incremental since {self._last_statistical_calculation}"
+                        _debug_log(self.hass, f"Using incremental statistical calculation: {stat_start_time} to {stat_end_time}")
 
+                        # Safety check: if the time since last calculation is very short (<10 seconds),
+                        # it might indicate rapid successive calls - skip to avoid double counting
+                        time_since_last = (now - self._last_statistical_calculation).total_seconds()
+                        if time_since_last < 10:
+                            _debug_log(self.hass, f"Skipping statistical calculation - too soon since last calculation ({time_since_last:.1f}s ago)")
+                            statistical_data = 0  # Treat as successful but no new energy
+                        else:
+                            statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
+                    else:
+                        # First calculation or no previous: use lookback window
+                        stat_start_time = now - timedelta(minutes=lookback_minutes)
+                        stat_end_time = now
+                        window_description = f"{lookback_minutes}min lookback"
+                        _debug_log(self.hass, f"Initial statistical calculation using {lookback_minutes}min lookback: {stat_start_time} to {stat_end_time}")
                         statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
+
+                    # If calculation failed and we have a previous successful calculation, try with extended lookback
+                    if (statistical_data is None and
+                        hasattr(self, '_last_statistical_calculation') and
+                        self._last_statistical_calculation and
+                        (now - self._last_statistical_calculation).total_seconds() < 300):  # Only if last calc was recent (<5min)
+
+                        # Try with slightly longer lookback to catch any missed data
+                        extended_start = self._last_statistical_calculation - timedelta(minutes=5)  # 5 minute buffer
+                        stat_end_time = now
+                        _debug_log(self.hass, f"Retrying with extended buffer: {extended_start} to {stat_end_time}")
+
+                        # Safety check: ensure we're not overlapping too much
+                        time_since_last = (now - self._last_statistical_calculation).total_seconds()
+                        if time_since_last < 10:
+                            _debug_log(self.hass, f"Skipping retry - too soon since last calculation ({time_since_last:.1f}s ago)")
+                            statistical_data = 0
+                        else:
+                            statistical_data = await self._get_statistical_power_data(extended_start, stat_end_time)
 
                     # If successful, update the last statistical calculation time
                     if statistical_data is not None and isinstance(statistical_data, (int, float)) and statistical_data > 0:
                         self._last_statistical_calculation = now
-                        _debug_log(self.hass, f"Statistical calculation successful for {self._attr_name}: {statistical_data:.8f}kWh")
+                        _debug_log(self.hass, f"Statistical calculation successful for {self._attr_name}: {statistical_data:.8f}kWh ({window_description})")
                     else:
                         _debug_log(self.hass, f"Statistical calculation failed for {self._attr_name} - will fall back to point sampling")
                 except Exception as e:
@@ -974,15 +1000,15 @@ class EnergySensor(SensorEntity, RestoreEntity):
                         _debug_log(self.hass, f"No energy added (too small): avg power: {avg_power:.4f}{unit_display}, calculated energy: {energy_kwh:.8f}kWh")
                 else:
                     _debug_log(self.hass, f"Interval update: Point sampling enabled but no previous data available for {self._attr_name} - will start tracking on next update")
-                
+
                 # Update values (always update regardless of calculation method used)
                 self._last_power = power
                 self._last_update = now
-                
+
                 # Log when we first start tracking
                 if self._calculation_count == 0:
                     _debug_log(self.hass, f"Starting to track power for {self._attr_name}: {power}W from {self._source_sensor}")
-                
+
                 await self._save_state()
                 self.safe_write_ha_state()
                 
