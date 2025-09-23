@@ -82,7 +82,7 @@ def _get_config_options(hass: HomeAssistant) -> dict:
 	default_options = {
 		CONF_USE_STATISTICAL: True,  # Use statistical calculation by default
 		CONF_FORCE_STATISTICAL_ONLY: False,
-		CONF_STAT_LOOKBACK_MINUTES: 60,
+        CONF_STAT_LOOKBACK_MINUTES: 30,
 	}
 	
 	# Check all hass.data domain entries safely (some keys are floats used for throttling)
@@ -488,10 +488,10 @@ class EnergySensor(SensorEntity, RestoreEntity):
                 _debug_log(self.hass, f"Recorder not available for {self._attr_name}")
                 return None
                 
-            # Ensure we have a reasonable time range (at least 1 minute)
+            # Ensure we have a reasonable time range (at least 10 seconds for frequent sensors)
             time_delta = (end_time - start_time).total_seconds()
-            if time_delta < 60:  # 1 minute minimum
-                _debug_log(self.hass, f"Time range too short for statistical calculation ({time_delta:.1f}s) for {self._attr_name} - need at least 1 minute")
+            if time_delta < 10:  # Reduced from 60 to 10 seconds for frequent sensors
+                _debug_log(self.hass, f"Time range too short for statistical calculation ({time_delta:.1f}s) for {self._attr_name} - need at least 10 seconds")
                 return None
             
             # Import required modules for history access
@@ -608,22 +608,32 @@ class EnergySensor(SensorEntity, RestoreEntity):
                 
                 # For the common "not enough states" error, provide more context and reduce spam
                 if "Not enough" in error_msg:
-                    # Only log this error occasionally to avoid spam
+                    # Only log this error occasionally to avoid spam (every 30 minutes for frequent sensors)
                     current_time = time.time()
                     last_logged_key = f"_insufficient_data_last_log_{self._attr_name}"
                     if DOMAIN not in self.hass.data:
                         return None
-                        
+
                     if last_logged_key not in self.hass.data[DOMAIN]:
                         self.hass.data[DOMAIN][last_logged_key] = 0
-                    
-                    # Only log this error every 10 minutes to avoid spam
-                    if current_time - self.hass.data[DOMAIN][last_logged_key] > 600:
-                        _debug_log(self.hass, f"Statistical calculation for {self._attr_name}: {error_msg} - This is normal for new sensors or sensors with infrequent updates")
+
+                    # Only log this error every 30 minutes to avoid spam for frequent sensors
+                    if current_time - self.hass.data[DOMAIN][last_logged_key] > 1800:
+                        _debug_log(self.hass, f"Statistical calculation for {self._attr_name}: {error_msg} - This is normal for new sensors or when data is sparse")
                         self.hass.data[DOMAIN][last_logged_key] = current_time
                 else:
-                    # For other errors, log normally
-                    _debug_log(self.hass, f"Error in statistical calculation for {self._attr_name}: {error_msg}")
+                    # For other errors, log normally but with less frequency
+                    current_time = time.time()
+                    error_logged_key = f"_stat_error_last_log_{self._attr_name}"
+                    if DOMAIN not in self.hass.data:
+                        return None
+
+                    if error_logged_key not in self.hass.data[DOMAIN]:
+                        self.hass.data[DOMAIN][error_logged_key] = 0
+
+                    if current_time - self.hass.data[DOMAIN][error_logged_key] > 300:  # Every 5 minutes
+                        _debug_log(self.hass, f"Error in statistical calculation for {self._attr_name}: {error_msg}")
+                        self.hass.data[DOMAIN][error_logged_key] = current_time
                 
                 return None
             
@@ -860,25 +870,33 @@ class EnergySensor(SensorEntity, RestoreEntity):
             statistical_data = None
             if use_statistical and STATISTICS_AVAILABLE:
                 try:
-                    # For statistical calculation, use a configurable initial lookback window.
-                    # Then, when we have a last statistical timestamp, switch to incremental windows.
+                    # Use a sliding window approach for more reliable statistical calculation
+                    # For frequent sensors, use a longer lookback to ensure enough data points
                     config_options = _get_config_options(self.hass)
-                    initial_minutes = max(5, int(config_options.get(CONF_STAT_LOOKBACK_MINUTES, 15)))
-                    if hasattr(self, '_last_statistical_calculation') and self._last_statistical_calculation:
-                        # Calculate energy only since the last statistical calculation
-                        stat_start_time = self._last_statistical_calculation
-                        stat_end_time = now
-                        _debug_log(self.hass, f"Using incremental statistical time range: {stat_start_time} to {stat_end_time}")
-                    else:
-                        # First time or no previous statistical calculation - use configured window
-                        stat_start_time = now - timedelta(minutes=initial_minutes)
-                        stat_end_time = now
-                        _debug_log(self.hass, f"Initial statistical calculation - using {initial_minutes} minute window: {stat_start_time} to {stat_end_time}")
-                    # Get statistical data using LEFT Riemann sum (like HA's integration sensor)
+                    lookback_minutes = max(10, int(config_options.get(CONF_STAT_LOOKBACK_MINUTES, 60)))
+
+                    # Try statistical calculation with current lookback
+                    stat_start_time = now - timedelta(minutes=lookback_minutes)
+                    stat_end_time = now
+                    _debug_log(self.hass, f"Attempting statistical calculation with {lookback_minutes}min lookback: {stat_start_time} to {stat_end_time}")
+
                     statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
+
+                    # If first attempt failed due to insufficient data, try with extended lookback
+                    if statistical_data is None and hasattr(self, '_last_statistical_calculation') and self._last_statistical_calculation:
+                        extended_lookback = lookback_minutes * 2  # Double the lookback
+                        stat_start_time = now - timedelta(minutes=extended_lookback)
+                        stat_end_time = now
+                        _debug_log(self.hass, f"Retrying statistical calculation with extended {extended_lookback}min lookback: {stat_start_time} to {stat_end_time}")
+
+                        statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
+
                     # If successful, update the last statistical calculation time
                     if statistical_data is not None and isinstance(statistical_data, (int, float)) and statistical_data > 0:
                         self._last_statistical_calculation = now
+                        _debug_log(self.hass, f"Statistical calculation successful for {self._attr_name}: {statistical_data:.8f}kWh")
+                    else:
+                        _debug_log(self.hass, f"Statistical calculation failed for {self._attr_name} - will fall back to point sampling")
                 except Exception as e:
                     _debug_log(self.hass, f"Exception during statistical calculation: {str(e)}")
                     statistical_data = None
