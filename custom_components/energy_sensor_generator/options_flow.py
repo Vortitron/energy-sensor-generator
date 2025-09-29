@@ -115,10 +115,10 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				# Fallback to friendly name or entity ID
 				display_name = friendly_name
 			
-			# Add entity ID suffix for disambiguation if needed (useful for debugging)
-			# Only show if display name doesn't clearly identify the sensor
-			if not any(part in display_name.lower() for part in ['power', 'energy', 'watt']) and entity_id != display_name:
-				display_name = f"{display_name} ({entity_id.split('.')[-1]})"
+			# Always add entity ID suffix for clear identification
+			# This helps distinguish between similar devices (e.g., multiple smart plugs)
+			entity_id_short = entity_id.replace("sensor.", "")
+			display_name = f"{display_name} — {entity_id_short}"
 			
 			all_power_sensors[sensor] = display_name
 			
@@ -150,10 +150,10 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 					# Fallback to friendly name or entity ID
 					display_name = friendly_name
 				
-				# Add entity ID suffix for disambiguation if needed (useful for debugging)
-				# Only show if display name doesn't clearly identify the sensor
-				if not any(part in display_name.lower() for part in ['power', 'energy', 'watt']) and sensor != display_name:
-					display_name = f"{display_name} ({sensor.split('.')[-1]})"
+				# Always add entity ID suffix for clear identification
+				# This helps distinguish between similar devices (e.g., multiple smart plugs)
+				sensor_id_short = sensor.replace("sensor.", "")
+				display_name = f"{display_name} — {sensor_id_short}"
 				
 				all_power_sensors[sensor] = display_name
 		

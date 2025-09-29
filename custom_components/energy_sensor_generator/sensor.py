@@ -403,8 +403,12 @@ class EnergySensor(SensorEntity, RestoreEntity):
         # another "_energy" suffix to the unique_id/entity_id base.
         if base_name.endswith("_energy") or "_energy_" in base_name:
             self._attr_unique_id = base_name
+            # Suggest entity_id to match the disambiguated pattern
+            self.entity_id = f"sensor.{base_name}"
         else:
             self._attr_unique_id = f"{base_name}_energy"
+            # Suggest entity_id to match the pattern
+            self.entity_id = f"sensor.{base_name}_energy"
         self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
