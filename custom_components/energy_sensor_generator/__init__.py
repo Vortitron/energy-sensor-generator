@@ -498,22 +498,28 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
                 _LOGGER.debug(f"Removed annual entity {annual_entity}")
             
             # If we're missing daily/monthly but should have them, create them
+            # Determine the main energy sensor entity_id
+            if base_name.endswith("_energy") or "_energy_" in base_name:
+                main_energy_entity = f"sensor.{base_name}"
+            else:
+                main_energy_entity = f"sensor.{base_name}_energy"
+
             if create_daily and not daily_entity:
                 device_identifiers = get_source_device_info(hass, sensor)
-                daily_sensor = DailyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
+                daily_sensor = DailyEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers)
                 entities.append(daily_sensor)
                 
             if create_monthly and not monthly_entity:
                 device_identifiers = get_source_device_info(hass, sensor)
-                monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
+                monthly_sensor = MonthlyEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers)
                 entities.append(monthly_sensor)
             if create_weekly and not weekly_entity:
                 device_identifiers = get_source_device_info(hass, sensor)
-                weekly_sensor = WeeklyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
+                weekly_sensor = WeeklyEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers)
                 entities.append(weekly_sensor)
             if create_annual and not annual_entity:
                 device_identifiers = get_source_device_info(hass, sensor)
-                annual_sensor = AnnualEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
+                annual_sensor = AnnualEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers)
                 entities.append(annual_sensor)
                 
             # Note: For existing entities, they should be handled by async_setup_entry
@@ -554,19 +560,26 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
         energy_sensor = EnergySensor(hass, base_name, sensor, storage_manager, device_identifiers)
         entities.append(energy_sensor)
 
+        # Determine the main energy sensor entity_id for period sensors to reference
+        # If base_name already contains "_energy" (e.g., "smart_plug_energy_2"), use it directly
+        if base_name.endswith("_energy") or "_energy_" in base_name:
+            main_energy_entity = f"sensor.{base_name}"
+        else:
+            main_energy_entity = f"sensor.{base_name}_energy"
+
         # Create Daily and Monthly Sensors if enabled
         if create_daily:
-            daily_sensor = DailyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
+            daily_sensor = DailyEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers)
             entities.append(daily_sensor)
             
         if create_monthly:
-            monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
+            monthly_sensor = MonthlyEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers)
             entities.append(monthly_sensor)
         if create_weekly:
-            weekly_sensor = WeeklyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
+            weekly_sensor = WeeklyEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers)
             entities.append(weekly_sensor)
         if create_annual:
-            annual_sensor = AnnualEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
+            annual_sensor = AnnualEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers)
             entities.append(annual_sensor)
 
     # Remove entities that are no longer needed
