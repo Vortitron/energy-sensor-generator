@@ -387,12 +387,24 @@ class EnergySensor(SensorEntity, RestoreEntity):
             unit = source_state.attributes.get("unit_of_measurement", "")
             device_class = source_state.attributes.get("device_class", "")
             if unit in ["kWh", "kwh"] or device_class == "energy":
-                _LOGGER.error(f"CONFIGURATION ERROR: Cannot create energy sensor '{base_name.replace('_', ' ').title()} Energy' from energy source '{source_sensor}' (unit: {unit}, device_class: {device_class}). Energy sensors must be created from POWER sensors with unit 'W' or 'kW'. Please reconfigure this integration to monitor power sensors instead.")
+                _LOGGER.error(f"CONFIGURATION ERROR: Cannot create energy sensor from energy source '{source_sensor}' (unit: {unit}, device_class: {device_class}). Energy sensors must be created from POWER sensors with unit 'W' or 'kW'. Please reconfigure this integration to monitor power sensors instead.")
                 # Don't raise an exception to avoid breaking startup, but log the error clearly
         
+        # Get friendly name from the source sensor
+        friendly_name = get_friendly_name(hass, source_sensor)
+        
+        # Generate unique entity name to avoid conflicts
+        proposed_name = f"{friendly_name} Energy"
+        unique_name = get_unique_entity_name(hass, proposed_name)
+
         # Sensor attributes
-        self._attr_name = f"{base_name.replace('_', ' ').title()} Energy"
-        self._attr_unique_id = f"{base_name}_energy"
+        self._attr_name = unique_name
+        # Support disambiguated bases like "smart_plug_energy_2" by not appending
+        # another "_energy" suffix to the unique_id/entity_id base.
+        if base_name.endswith("_energy") or "_energy_" in base_name:
+            self._attr_unique_id = base_name
+        else:
+            self._attr_unique_id = f"{base_name}_energy"
         self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING

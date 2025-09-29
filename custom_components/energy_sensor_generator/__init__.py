@@ -174,6 +174,9 @@ def find_generated_sensors(hass: HomeAssistant) -> dict:
                 else:
                     base_name = unique_id.replace("_energy", "")
                 
+                # Normalize to lowercase for consistency with sensor generation
+                base_name = base_name.lower()
+                
                 if base_name not in result:
                     result[base_name] = []
                 result[base_name].append(entity_id)
@@ -374,6 +377,8 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
 
     # Use selected power sensors from options if present
     selected_sensors = options.get("selected_power_sensors") if options else None
+    _LOGGER.info(f"Configuration options: {options}")
+    _LOGGER.info(f"Selected sensors from config: {selected_sensors}")
     if selected_sensors:
         # During startup, assume selected sensors will become available
         # Don't filter them out immediately if they're not yet available
@@ -427,15 +432,35 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
     # Load storage via central manager
     storage = await storage_manager.async_load()
 
+    _LOGGER.info(f"About to process {len(power_sensors)} power sensors: {power_sensors}")
+
     for sensor in power_sensors:
-        # Normalise base name to avoid case-collision caused suffixes
-        base_name = sensor.replace("sensor.", "").replace("_power", "")
-        base_name = base_name.lower()
+        # Derive a canonical base name. We intentionally disambiguate sensors like
+        #   sensor.smart_plug_power_2  vs  sensor.smart_plug_2_power
+        # by mapping them to different base names to avoid collisions.
+        raw_id = sensor.replace("sensor.", "")
+        candidate_base = raw_id.replace("_power", "")
+
+        # If the pattern is <root>_power_<n>, prefer <root>_energy_<n>
+        # so it does not collide with <root>_<n>_power (which becomes <root>_<n>).
+        if "_power_" in raw_id:
+            parts = raw_id.rsplit("_power_", 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                alt_base = f"{parts[0]}_energy_{parts[1]}"
+                _LOGGER.info(
+                    f"Disambiguated base name for {sensor}: '{candidate_base}' -> '{alt_base}'"
+                )
+                candidate_base = alt_base
+
+        base_name = candidate_base.lower()
         base_names_to_keep.add(base_name)
+
+        _LOGGER.info(f"Processing power sensor: {sensor} -> base_name: '{base_name}'")
         
         # Check if we already have this base_name handled
         if base_name in existing_generated:
             existing_entities = existing_generated[base_name]
+            _LOGGER.info(f"Found existing entities for {base_name}: {existing_entities}")
             
             # Find main, daily, monthly, weekly, and annual entities
             main_entity = next((e for e in existing_entities if e.lower().endswith(f"{base_name}_energy")), None)
@@ -501,16 +526,31 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
         # But only if the sensor currently exists - during startup we should proceed anyway
         entity = entity_registry.async_get(sensor)
         device_id = entity.device_id if entity else None
-        
+
         # Get device identifiers for proper device grouping
         device_identifiers = get_source_device_info(hass, sensor)
-        
-        # Only skip if device has energy sensors AND the source sensor is currently available
+
+        # Only skip if device has energy sensors from OTHER integrations (not this one) AND the source sensor is currently available
         if device_id and device_id in device_energy_sensors and hass.states.get(sensor) is not None:
-            _LOGGER.info(f"Device for {sensor} already has energy sensors: {device_energy_sensors[device_id]}")
-            continue
+            existing_sensors = device_energy_sensors[device_id]
+            # Check if any existing energy sensors are from OTHER integrations (not this one)
+            has_other_integration_sensors = any(
+                entity_id.startswith("sensor.") and
+                (entry := entity_registry.async_get(entity_id)) and
+                entry.platform != DOMAIN
+                for entity_id in existing_sensors
+            )
+
+            if has_other_integration_sensors:
+                _LOGGER.info(f"Device for {sensor} already has energy sensors from other integrations: {existing_sensors} - SKIPPING")
+                continue
+            else:
+                _LOGGER.info(f"Device for {sensor} has energy sensors from THIS integration: {existing_sensors} - will recreate/update")
+        else:
+            _LOGGER.info(f"Device for {sensor} - no existing energy sensors or sensor not available - will create new")
         
         # Create Energy Sensor (kWh) - always create it, even if source sensor isn't available yet
+        _LOGGER.info(f"Creating new energy sensors for {sensor} (base_name: {base_name}) - this is the NEW sensor creation path")
         energy_sensor = EnergySensor(hass, base_name, sensor, storage_manager, device_identifiers)
         entities.append(energy_sensor)
 
