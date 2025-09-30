@@ -1,101 +1,48 @@
 generate_sensors:
   name: Generate Energy Sensors
-  description: Generate energy sensors from detected power sensors.
-  
+  description: Manually trigger energy sensor generation from configured power sensors
+
 reset_energy_sensors:
   name: Reset Energy Sensors
-  description: Reset energy sensor values (useful for correcting doubled values).
+  description: Reset energy sensor values (useful for correcting doubled values or starting fresh)
   fields:
-    reset_factor:
-      name: Reset Factor
-      description: Factor to multiply existing values by (default 0.5 to halve doubled values).
-      required: false
-      default: 0.5
-      selector:
-        number:
-          min: 0.0
-          max: 1.0
-          step: 0.1
-    reset_to_zero:
-      name: Reset to Zero
-      description: Reset all values to zero instead of using the factor.
-      required: false
-      default: false
-      selector:
-        boolean:
-    sensors:
-      name: Sensors
-      description: Specific sensor base names to reset (leave empty for all).
-      required: false
+    selected_sensors:
+      name: Selected Sensors
+      description: List of sensor base names to reset (leave empty to reset all)
+      example: "smart_plug,smart_plug_4"
       selector:
         text:
-          multiple: true 
+    reset_factor:
+      name: Reset Factor
+      description: Factor to multiply current values by (0.5 = halve, 0 = reset to zero)
+      default: 0
+      example: 0.5
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.1
 
 debug_sensor_detection:
   name: Debug Sensor Detection
-  description: Debug service to display detected power sensors and their attributes.
+  description: Show debug information about detected power sensors and generated energy sensors
 
 diagnose_sensor:
-  name: Diagnose Energy Sensor
-  description: Provide detailed diagnostics for a specific energy sensor.
+  name: Diagnose Sensor
+  description: Get detailed diagnostic information about a specific energy sensor
   fields:
     sensor_name:
       name: Sensor Name
-      description: Name or entity_id of the energy sensor to diagnose (e.g., "p1ib" or "sensor.p1ib_energy").
+      description: Name or entity ID of the energy sensor to diagnose
       required: true
+      example: "smart_plug_energy"
       selector:
         text:
+
+migrate_entity_ids:
+  name: Migrate Entity IDs
+  description: Fix mismatched entity IDs to match the expected pattern based on unique_id (e.g., sensor.bio_office_heaters_energy → sensor.smart_plug_energy_2)
 
 list_sensors:
-  name: List Energy Sensors
-  description: List all energy sensors created by this integration with their current status.
-
-test_service:
-  name: Test Service Registration
-  description: Simple test to verify that services are properly registered and working. 
-
-export_energy_data:
-  name: Export Energy Data
-  description: Export the integration's stored energy data to a JSON file for backup/migration.
-  fields:
-    target_path:
-      name: Target Path
-      description: Relative path under Home Assistant config to write the backup file (e.g. backups/energy_backup.json). If omitted, a timestamped file will be created in the config folder.
-      required: false
-      selector:
-        text:
-
-import_energy_data:
-  name: Import Energy Data
-  description: Import energy data from a JSON file. Supports merge/replace and optional reassignment of device base names.
-  fields:
-    source_path:
-      name: Source Path
-      description: Relative path under Home Assistant config to the JSON file to import.
-      required: true
-      selector:
-        text:
-    mode:
-      name: Mode
-      description: 'Import mode: "merge" (default) merges with existing data, "replace" overwrites all existing data.'
-      required: false
-      default: merge
-      selector:
-        select:
-          options:
-            - merge
-            - replace
-    reassign_from:
-      name: Reassign From (base names)
-      description: Optional list of base names to reassign from (e.g. old device base names, like plug_1).
-      required: false
-      selector:
-        text:
-          multiple: true
-    reassign_to:
-      name: Reassign To (base names)
-      description: Optional list of base names to reassign to (must match length of Reassign From).
-      required: false
-      selector:
-        text:
-          multiple: true
+  name: List Sensors
+  description: List all energy sensors created by this integration

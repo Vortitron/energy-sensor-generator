@@ -105,20 +105,20 @@ def get_friendly_name(hass: HomeAssistant, entity_id: str) -> str:
 	entity_registry = er.async_get(hass)
 	entity_entry = entity_registry.async_get(entity_id)
 	
-	# Try to get custom name from entity registry first
-	if entity_entry and entity_entry.name:
-		# Remove "_power" suffix if present to get clean base name
-		name = entity_entry.name
+	# Try to get friendly_name from entity state first (this is what users see in the UI)
+	state = hass.states.get(entity_id)
+	if state and state.attributes.get("friendly_name"):
+		name = state.attributes["friendly_name"]
 		if name.lower().endswith(" power"):
 			name = name[:-6]  # Remove " power"
 		elif name.lower().endswith("_power"):
 			name = name[:-6]  # Remove "_power"
 		return name
 	
-	# Try to get friendly_name from entity state
-	state = hass.states.get(entity_id)
-	if state and state.attributes.get("friendly_name"):
-		name = state.attributes["friendly_name"]
+	# Try to get custom name from entity registry
+	if entity_entry and entity_entry.name:
+		# Remove "_power" suffix if present to get clean base name
+		name = entity_entry.name
 		if name.lower().endswith(" power"):
 			name = name[:-6]  # Remove " power"
 		elif name.lower().endswith("_power"):
@@ -142,20 +142,31 @@ def get_friendly_name(hass: HomeAssistant, entity_id: str) -> str:
 
 def get_friendly_name_from_base(hass: HomeAssistant, base_name: str) -> str:
 	"""Get friendly name by trying different possible power sensor patterns."""
-	# Try the most common pattern first
-	possible_sensors = [
+	# Handle disambiguated base names (e.g., "smart_plug_energy_2" from "sensor.smart_plug_power_2")
+	# Need to reverse the transformation to find the original power sensor
+	possible_sensors = []
+	
+	if "_energy_" in base_name:
+		# Disambiguated pattern: "smart_plug_energy_2" -> "sensor.smart_plug_power_2"
+		parts = base_name.split("_energy_")
+		if len(parts) == 2:
+			original_power_sensor = f"sensor.{parts[0]}_power_{parts[1]}"
+			possible_sensors.append(original_power_sensor)
+	
+	# Standard patterns
+	possible_sensors.extend([
 		f"sensor.{base_name}_power",
 		f"sensor.{base_name}",
 		f"{base_name}_power",
 		f"{base_name}"
-	]
+	])
 	
 	for sensor_id in possible_sensors:
 		if hass.states.get(sensor_id):
 			return get_friendly_name(hass, sensor_id)
 	
 	# If no sensor found, just clean up the base_name
-	return base_name.replace("_", " ").title()
+	return base_name.replace("_", " ").replace("_energy_", " ").title()
 
 def get_unique_entity_name(hass: HomeAssistant, proposed_name: str, domain: str = "sensor") -> str:
 	"""Generate a unique entity name by checking for conflicts and adding suffixes if needed."""
@@ -403,12 +414,8 @@ class EnergySensor(SensorEntity, RestoreEntity):
         # another "_energy" suffix to the unique_id/entity_id base.
         if base_name.endswith("_energy") or "_energy_" in base_name:
             self._attr_unique_id = base_name
-            # Suggest entity_id to match the disambiguated pattern
-            self.entity_id = f"sensor.{base_name}"
         else:
             self._attr_unique_id = f"{base_name}_energy"
-            # Suggest entity_id to match the pattern
-            self.entity_id = f"sensor.{base_name}_energy"
         self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_device_class = SensorDeviceClass.ENERGY
         self._attr_state_class = SensorStateClass.TOTAL_INCREASING
