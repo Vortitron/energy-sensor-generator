@@ -273,6 +273,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         diagnose_sensor_wrapper
     )
     
+    # Register migration service for fixing mismatched entity IDs
+    hass.services.async_register(
+        DOMAIN,
+        "migrate_entity_ids",
+        lambda call: migrate_entity_ids_service(hass, call, entry)
+    )
+    
     # Register list sensors service
     async def list_sensors_wrapper(call):
         _LOGGER.warning("LIST SENSORS SERVICE CALLED!")  # Make sure this appears in logs
@@ -777,6 +784,79 @@ async def debug_sensor_detection_service(hass: HomeAssistant, call, entry: Confi
 		_LOGGER.info(f"  {base_name}: {entities}")
 	
 	_LOGGER.info("=== END DEBUG ===")
+
+async def migrate_entity_ids_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:
+	"""Service to migrate entity IDs to match unique_id patterns."""
+	if entry is None:
+		entries = hass.config_entries.async_entries(DOMAIN)
+		if not entries:
+			_LOGGER.error("No config entry found for energy_sensor_generator.")
+			return
+		entry = entries[0]
+	
+	entity_registry = er.async_get(hass)
+	migrated_count = 0
+	skipped_count = 0
+	error_count = 0
+	
+	_LOGGER.info("=== STARTING ENTITY ID MIGRATION ===")
+	
+	# Look for entities with this integration's platform
+	for entity_id, entity_entry in entity_registry.entities.items():
+		if entity_entry.platform == DOMAIN and entity_entry.config_entry_id == entry.entry_id:
+			unique_id = entity_entry.unique_id
+			
+			# Determine expected entity_id from unique_id
+			if unique_id.endswith("_daily_energy"):
+				expected_entity_id = f"sensor.{unique_id}"
+			elif unique_id.endswith("_monthly_energy"):
+				expected_entity_id = f"sensor.{unique_id}"
+			elif unique_id.endswith("_weekly_energy"):
+				expected_entity_id = f"sensor.{unique_id}"
+			elif unique_id.endswith("_annual_energy"):
+				expected_entity_id = f"sensor.{unique_id}"
+			elif unique_id.endswith("_energy") or "_energy_" in unique_id:
+				expected_entity_id = f"sensor.{unique_id}"
+			else:
+				# Skip non-energy sensors or unexpected patterns
+				continue
+			
+			# Check if entity_id needs migration
+			if entity_id != expected_entity_id:
+				# Check if target entity_id is already taken
+				if expected_entity_id in entity_registry.entities:
+					_LOGGER.warning(
+						f"Cannot migrate {entity_id} to {expected_entity_id} - target already exists"
+					)
+					skipped_count += 1
+				else:
+					# Migrate the entity_id
+					try:
+						entity_registry.async_update_entity(
+							entity_id,
+							new_entity_id=expected_entity_id
+						)
+						_LOGGER.info(f"✓ Migrated: {entity_id} → {expected_entity_id}")
+						migrated_count += 1
+					except Exception as e:
+						_LOGGER.error(f"✗ Failed to migrate {entity_id}: {e}")
+						error_count += 1
+	
+	_LOGGER.info(f"=== MIGRATION COMPLETE ===")
+	_LOGGER.info(f"  Migrated: {migrated_count}")
+	_LOGGER.info(f"  Skipped: {skipped_count}")
+	_LOGGER.info(f"  Errors: {error_count}")
+	
+	# Create a persistent notification with the results
+	await hass.services.async_call(
+		"persistent_notification",
+		"create",
+		{
+			"title": "Entity ID Migration Complete",
+			"message": f"Migrated {migrated_count} entities\nSkipped {skipped_count} (conflicts)\nErrors: {error_count}",
+			"notification_id": "energy_sensor_migration"
+		}
+	)
 
 async def diagnose_sensor_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:
 	"""Service to diagnose a specific energy sensor."""
