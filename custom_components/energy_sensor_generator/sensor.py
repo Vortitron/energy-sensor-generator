@@ -31,7 +31,8 @@ from .const import (
 	CONF_DEBUG_LOGGING, 
 	CONF_USE_STATISTICAL,
 	CONF_FORCE_STATISTICAL_ONLY,
-	CONF_STAT_LOOKBACK_MINUTES
+	CONF_STAT_LOOKBACK_MINUTES,
+	CONF_MAX_ENERGY_PER_HOUR
 )
 import time
 
@@ -83,6 +84,7 @@ def _get_config_options(hass: HomeAssistant) -> dict:
 		CONF_USE_STATISTICAL: True,  # Use statistical calculation by default
 		CONF_FORCE_STATISTICAL_ONLY: False,
         CONF_STAT_LOOKBACK_MINUTES: 30,
+		CONF_MAX_ENERGY_PER_HOUR: 0,  # 0 = disabled (no limit)
 	}
 	
 	# Check all hass.data domain entries safely (some keys are floats used for throttling)
@@ -899,8 +901,8 @@ class EnergySensor(SensorEntity, RestoreEntity):
                     # Determine the correct time window for statistical calculation
                     if hasattr(self, '_last_statistical_calculation') and self._last_statistical_calculation:
                         # Incremental calculation: only calculate since last successful calculation
-                        # But add a small buffer to ensure we don't miss any data
-                        stat_start_time = self._last_statistical_calculation - timedelta(minutes=1)  # 1 minute buffer
+                        # NO buffer to prevent double-counting! Start exactly where we left off.
+                        stat_start_time = self._last_statistical_calculation
                         stat_end_time = now
                         window_description = f"incremental since {self._last_statistical_calculation}"
                         _debug_log(self.hass, f"Using incremental statistical calculation: {stat_start_time} to {stat_end_time}")
@@ -921,16 +923,17 @@ class EnergySensor(SensorEntity, RestoreEntity):
                         _debug_log(self.hass, f"Initial statistical calculation using {lookback_minutes}min lookback: {stat_start_time} to {stat_end_time}")
                         statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
 
-                    # If calculation failed and we have a previous successful calculation, try with extended lookback
+                    # If calculation failed and we have a previous successful calculation, try with a very small lookback
+                    # to handle cases where recorder data isn't immediately available
                     if (statistical_data is None and
                         hasattr(self, '_last_statistical_calculation') and
                         self._last_statistical_calculation and
                         (now - self._last_statistical_calculation).total_seconds() < 300):  # Only if last calc was recent (<5min)
 
-                        # Try with slightly longer lookback to catch any missed data
-                        extended_start = self._last_statistical_calculation - timedelta(minutes=5)  # 5 minute buffer
+                        # Try starting 30 seconds before last calculation (minimal overlap to catch late-arriving data)
+                        extended_start = self._last_statistical_calculation - timedelta(seconds=30)
                         stat_end_time = now
-                        _debug_log(self.hass, f"Retrying with extended buffer: {extended_start} to {stat_end_time}")
+                        _debug_log(self.hass, f"Retrying with minimal buffer: {extended_start} to {stat_end_time}")
 
                         # Safety check: ensure we're not overlapping too much
                         time_since_last = (now - self._last_statistical_calculation).total_seconds()
@@ -981,6 +984,28 @@ class EnergySensor(SensorEntity, RestoreEntity):
             
             # Use statistical data if available, otherwise optionally fall back to point sampling
             if statistical_data is not None and isinstance(statistical_data, (int, float)) and statistical_data > 0:
+                # Spike protection: Check if the energy added is unrealistic (only if enabled)
+                max_energy_per_hour = config_options.get(CONF_MAX_ENERGY_PER_HOUR, 0)  # 0 = disabled
+                
+                # Calculate expected max for this time interval (only if spike protection is enabled)
+                if max_energy_per_hour > 0 and self._last_update:
+                    time_delta_hours = (now - self._last_update).total_seconds() / 3600
+                    max_allowed = max_energy_per_hour * time_delta_hours
+                    
+                    if statistical_data > max_allowed:
+                        _LOGGER.warning(
+                            f"SPIKE DETECTED in {self._attr_name}: Attempted to add {statistical_data:.4f} kWh "
+                            f"over {time_delta_hours:.2f} hours (max allowed: {max_allowed:.4f} kWh). "
+                            f"This reading has been REJECTED to prevent overreading. "
+                            f"Adjust 'max_energy_per_hour' in advanced settings (currently {max_energy_per_hour} kWh/h)."
+                        )
+                        # Skip this reading but update tracking variables
+                        self._last_power = power
+                        self._last_update = now
+                        await self._save_state()
+                        self.safe_write_ha_state()
+                        return
+                
                 old_state = self._state
                 self._state += statistical_data
                 _debug_log(self.hass, f"PRECISE DEBUG: {self._attr_name} | Before: {old_state:.10f}kWh | Adding: {statistical_data:.10f}kWh | After: {self._state:.10f}kWh")
@@ -1010,6 +1035,26 @@ class EnergySensor(SensorEntity, RestoreEntity):
                     energy_kwh = (avg_power * delta_hours) / self._power_to_kw_factor
                     _debug_log(self.hass, f"Calculated energy: {energy_kwh:.8f}kWh | Avg power: {avg_power:.4f} | Delta hours: {delta_hours:.6f} | Conversion factor: {self._power_to_kw_factor}")
                     if energy_kwh > 0:
+                        # Spike protection for point sampling too (only if enabled)
+                        max_energy_per_hour = config_options.get(CONF_MAX_ENERGY_PER_HOUR, 0)  # 0 = disabled
+                        
+                        if max_energy_per_hour > 0:
+                            max_allowed = max_energy_per_hour * delta_hours
+                            
+                            if energy_kwh > max_allowed:
+                                _LOGGER.warning(
+                                    f"SPIKE DETECTED in {self._attr_name}: Attempted to add {energy_kwh:.4f} kWh "
+                                    f"over {delta_hours:.2f} hours (max allowed: {max_allowed:.4f} kWh). "
+                                    f"This reading has been REJECTED to prevent overreading. "
+                                    f"Adjust 'max_energy_per_hour' in advanced settings (currently {max_energy_per_hour} kWh/h)."
+                                )
+                                # Skip this reading but update tracking variables
+                                self._last_power = power
+                                self._last_update = now
+                                await self._save_state()
+                                self.safe_write_ha_state()
+                                return
+                        
                         self._state += energy_kwh
                         self._using_statistical = False
                         unit_display = "kW" if self._power_to_kw_factor == 1 else "W"

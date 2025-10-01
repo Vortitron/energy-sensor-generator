@@ -46,3 +46,60 @@ migrate_entity_ids:
 list_sensors:
   name: List Sensors
   description: List all energy sensors created by this integration
+
+adjust_energy:
+  name: Adjust Energy Value
+  description: Adjust or correct an energy sensor value (useful for fixing spikes or errors)
+  fields:
+    entity_id:
+      name: Entity ID
+      description: The energy sensor to adjust
+      required: true
+      example: "sensor.smart_plug_energy"
+      selector:
+        entity:
+          domain: sensor
+          integration: energy_sensor_generator
+    adjustment_kwh:
+      name: Adjustment (kWh)
+      description: Amount to add/subtract (use negative to reduce). Use this OR set_to_value OR copy_from_entity
+      example: -1.5
+      selector:
+        number:
+          min: -1000
+          max: 1000
+          step: 0.1
+          unit_of_measurement: "kWh"
+    set_to_value:
+      name: Set to Value (kWh)
+      description: Set the sensor to this exact value. Use this OR adjustment_kwh OR copy_from_entity
+      example: 10.5
+      selector:
+        number:
+          min: 0
+          max: 100000
+          step: 0.1
+          unit_of_measurement: "kWh"
+    copy_from_entity:
+      name: Copy from Entity
+      description: Copy the value from another sensor. Use this OR adjustment_kwh OR set_to_value
+      example: "sensor.other_energy"
+      selector:
+        entity:
+          domain: sensor
+
+copy_from_previous_hour:
+  name: Copy All Sensors from Previous Hour
+  description: Set all energy sensors to their values from a specific datetime (useful for fixing hourly spikes across all sensors)
+  fields:
+    target_datetime:
+      name: Target DateTime
+      description: The date and time to copy values from (format YYYY-MM-DD HH:00:00)
+      required: true
+      example: "2025-09-30 15:00:00"
+      selector:
+        text:
+
+reset_statistical_tracking:
+  name: Reset Statistical Tracking
+  description: Clear the statistical calculation timestamps to force fresh calculations (use if you suspect double-counting)

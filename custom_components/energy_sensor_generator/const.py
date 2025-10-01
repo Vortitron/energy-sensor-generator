@@ -10,3 +10,4 @@ CONF_USE_STATISTICAL = "use_statistical_calculation"
 CONF_CREATE_SYNTHETIC_GRID_TOTAL = "create_synthetic_grid_total"
 CONF_FORCE_STATISTICAL_ONLY = "force_statistical_only"
 CONF_STAT_LOOKBACK_MINUTES = "stat_initial_lookback_minutes"
+CONF_MAX_ENERGY_PER_HOUR = "max_energy_per_hour"  # Maximum kWh per hour to prevent spikes

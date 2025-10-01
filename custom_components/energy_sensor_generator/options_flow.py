@@ -20,7 +20,8 @@ from .const import (
 	CONF_USE_STATISTICAL, 
 	CONF_CREATE_SYNTHETIC_GRID_TOTAL,
 	CONF_FORCE_STATISTICAL_ONLY,
-	CONF_STAT_LOOKBACK_MINUTES
+	CONF_STAT_LOOKBACK_MINUTES,
+	CONF_MAX_ENERGY_PER_HOUR
 )
 from .__init__ import detect_power_sensors  # Import the detect function
 
@@ -279,6 +280,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		synthetic_grid_total = defaults.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
 		force_statistical_only = defaults.get(CONF_FORCE_STATISTICAL_ONLY, False)
 		stat_lookback = defaults.get(CONF_STAT_LOOKBACK_MINUTES, 30)
+		max_energy_per_hour = defaults.get(CONF_MAX_ENERGY_PER_HOUR, 0)  # 0 = disabled by default
 		
 		if user_input is not None:
 			# Update defaults with advanced settings
@@ -309,6 +311,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			use_statistical = user_input.get(CONF_USE_STATISTICAL, True)
 			force_statistical_only = user_input.get(CONF_FORCE_STATISTICAL_ONLY, False)
 			stat_lookback = user_input.get(CONF_STAT_LOOKBACK_MINUTES, 60)
+			max_energy_per_hour = user_input.get(CONF_MAX_ENERGY_PER_HOUR, 0)  # 0 = disabled by default
 			
 			# Create the configuration entry
 			result = self.async_create_entry(
@@ -324,7 +327,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 					CONF_USE_STATISTICAL: use_statistical,
 					CONF_CREATE_SYNTHETIC_GRID_TOTAL: synthetic_grid_total,
 					CONF_FORCE_STATISTICAL_ONLY: force_statistical_only,
-					CONF_STAT_LOOKBACK_MINUTES: stat_lookback
+					CONF_STAT_LOOKBACK_MINUTES: stat_lookback,
+					CONF_MAX_ENERGY_PER_HOUR: max_energy_per_hour
 				}
 			)
 			
@@ -354,6 +358,15 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				step=5,
 				unit_of_measurement="minutes",
 				mode=NumberSelectorMode.SLIDER
+			)
+		)
+		schema[vol.Optional(CONF_MAX_ENERGY_PER_HOUR, default=max_energy_per_hour)] = NumberSelector(
+			NumberSelectorConfig(
+				min=0,
+				max=100.0,
+				step=0.5,
+				unit_of_measurement="kWh/hour (0=disabled)",
+				mode=NumberSelectorMode.BOX
 			)
 		)
 		# Option to create synthetic grid total
