@@ -33,6 +33,9 @@
           "sample_interval": "Sampling interval",
           "debug_logging": "Enable debug logging",
           "use_statistical_calculation": "Use statistical calculation",
+          "force_statistical_only": "Force statistical calculation only (skip point sampling)",
+          "stat_initial_lookback_minutes": "Initial statistical lookback period",
+          "max_energy_per_hour": "Maximum energy per hour (spike protection)",
           "create_synthetic_grid_total": "Create synthetic 'Grid total' energy sensor (requires reload)"
         }
       }
@@ -43,7 +46,10 @@
       "show_advanced": "Configure advanced settings (after submit) →",
       "sample_interval": "Sampling interval",
       "debug_logging": "Enable debug logging",
-      "use_statistical_calculation": "Use statistical calculation"
+      "use_statistical_calculation": "Use statistical calculation",
+      "force_statistical_only": "Force statistical calculation only (skip point sampling)",
+      "stat_initial_lookback_minutes": "Initial statistical lookback period",
+      "max_energy_per_hour": "Maximum energy per hour (spike protection)"
     },
     "error": {
       "invalid_entity_format": "Invalid entity format. All entities must start with 'sensor.'"

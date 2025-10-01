@@ -228,7 +228,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         name="Energy Sensor Generator",
         manufacturer="Energy Sensor Generator",
         model="Integration",
-        sw_version="0.0.68",
+        sw_version="0.0.77",
     )
     
     # Store references in hass.data
@@ -311,6 +311,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         "import_energy_data",
         lambda call: import_energy_data_service(hass, call, entry)
+    )
+    
+    # Register adjust energy service for fixing spikes/errors
+    hass.services.async_register(
+        DOMAIN,
+        "adjust_energy",
+        lambda call: adjust_energy_service(hass, call, entry)
+    )
+    
+    # Register service to copy hourly data from previous hour
+    hass.services.async_register(
+        DOMAIN,
+        "copy_from_previous_hour",
+        lambda call: copy_from_previous_hour_service(hass, call, entry)
+    )
+    
+    # Register service to clear statistical calculation tracking (force fresh calculation)
+    hass.services.async_register(
+        DOMAIN,
+        "reset_statistical_tracking",
+        lambda call: reset_statistical_tracking_service(hass, call, entry)
     )
     
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
@@ -1105,3 +1126,298 @@ async def import_energy_data_service(hass: HomeAssistant, call, entry: ConfigEnt
 					pass
 	except Exception as e:
 		_LOGGER.error(f"Import service failed: {e}")
+
+
+async def copy_from_previous_hour_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:
+	"""Copy all sensor values from a previous hour - useful for fixing hourly spikes."""
+	if entry is None:
+		entries = hass.config_entries.async_entries(DOMAIN)
+		if not entries:
+			_LOGGER.error("No config entry found for copy_from_previous_hour.")
+			return
+		entry = entries[0]
+	
+	storage_manager = hass.data[DOMAIN][entry.entry_id]["storage_manager"]
+	
+	# Get the target datetime from the service call
+	target_datetime_str = call.data.get("target_datetime")
+	hours_back = call.data.get("hours_back", 1)  # Default to 1 hour back
+	
+	if not target_datetime_str:
+		_LOGGER.error("target_datetime is required (format: 'YYYY-MM-DD HH:00:00')")
+		return
+	
+	try:
+		from datetime import datetime
+		import homeassistant.util.dt as dt_util
+		
+		# Parse the target datetime
+		target_dt = datetime.fromisoformat(target_datetime_str)
+		if target_dt.tzinfo is None:
+			target_dt = dt_util.as_local(target_dt)
+		
+		_LOGGER.info(f"Looking for sensor values at {target_dt} (to copy to current values)")
+		
+	except Exception as e:
+		_LOGGER.error(f"Invalid datetime format: {target_datetime_str}. Use format: 'YYYY-MM-DD HH:00:00'. Error: {e}")
+		return
+	
+	# Find all energy sensors from this integration
+	entity_registry = er.async_get(hass)
+	energy_sensors = []
+	
+	for entity_id, entity_entry in entity_registry.entities.items():
+		if entity_entry.platform == DOMAIN and entity_id.startswith("sensor."):
+			# Skip daily/monthly/weekly/annual sensors - only work with main energy sensors
+			if not any(period in entity_id for period in ["_daily_", "_monthly_", "_weekly_", "_annual_"]):
+				energy_sensors.append(entity_id)
+	
+	if not energy_sensors:
+		_LOGGER.error("No energy sensors found to copy")
+		return
+	
+	_LOGGER.info(f"Found {len(energy_sensors)} energy sensors to process")
+	
+	# Try to get historical states using recorder
+	try:
+		from homeassistant.components import recorder
+		from homeassistant.components.recorder import history
+		
+		# Calculate the time range to look for the value
+		# We want the state AT the target time
+		start_time = target_dt - timedelta(minutes=5)  # Small buffer
+		end_time = target_dt + timedelta(minutes=5)
+		
+		sensors_updated = 0
+		errors = []
+		
+		for entity_id in energy_sensors:
+			try:
+				# Get historical states for this sensor
+				states = await hass.async_add_executor_job(
+					history.state_changes_during_period,
+					hass,
+					start_time,
+					end_time,
+					entity_id
+				)
+				
+				if entity_id in states and states[entity_id]:
+					# Find the state closest to target_dt
+					closest_state = None
+					min_diff = None
+					
+					for state in states[entity_id]:
+						if state.state not in ("unknown", "unavailable"):
+							state_time = state.last_updated
+							time_diff = abs((state_time - target_dt).total_seconds())
+							if min_diff is None or time_diff < min_diff:
+								min_diff = time_diff
+								closest_state = state
+					
+					if closest_state:
+						try:
+							historical_value = float(closest_state.state)
+							
+							# Get storage key from entity's unique_id
+							entity_entry = entity_registry.async_get(entity_id)
+							if entity_entry:
+								storage_key = entity_entry.unique_id
+								
+								# Load and update storage
+								storage = await storage_manager.async_load()
+								
+								if storage_key in storage:
+									if isinstance(storage[storage_key], dict):
+										old_value = storage[storage_key].get("value", 0.0)
+										storage[storage_key]["value"] = historical_value
+									else:
+										old_value = storage[storage_key]
+										storage[storage_key] = historical_value
+									
+									await storage_manager.async_save(storage)
+									
+									# Force entity update
+									try:
+										await hass.helpers.entity_component.async_update_entity(entity_id)
+									except Exception:
+										pass
+									
+									_LOGGER.info(f"✓ {entity_id}: {old_value:.4f} → {historical_value:.4f} kWh (from {closest_state.last_updated})")
+									sensors_updated += 1
+								else:
+									errors.append(f"{entity_id}: No storage key found")
+						except (ValueError, TypeError) as e:
+							errors.append(f"{entity_id}: Invalid value {closest_state.state}")
+					else:
+						errors.append(f"{entity_id}: No valid state found near {target_dt}")
+				else:
+					errors.append(f"{entity_id}: No historical data found")
+			
+			except Exception as e:
+				errors.append(f"{entity_id}: {str(e)}")
+		
+		# Log summary
+		_LOGGER.info(f"Copy complete: {sensors_updated} sensors updated, {len(errors)} errors")
+		
+		if errors:
+			_LOGGER.warning(f"Errors during copy: {', '.join(errors[:5])}" + (f" and {len(errors)-5} more..." if len(errors) > 5 else ""))
+		
+		# Create notification
+		await hass.services.async_call(
+			"persistent_notification",
+			"create",
+			{
+				"title": "Hourly Data Copy Complete",
+				"message": f"Copied values from {target_dt.strftime('%Y-%m-%d %H:%M')}\n\n✓ Updated: {sensors_updated} sensors\n✗ Errors: {len(errors)} sensors\n\nCheck logs for details.",
+				"notification_id": "energy_hourly_copy"
+			}
+		)
+		
+	except ImportError:
+		_LOGGER.error("Recorder component not available - cannot retrieve historical data")
+	except Exception as e:
+		_LOGGER.error(f"Failed to copy hourly data: {e}", exc_info=True)
+
+
+async def reset_statistical_tracking_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:
+	"""Reset the last_statistical_calculation timestamp to force a fresh calculation."""
+	if entry is None:
+		entries = hass.config_entries.async_entries(DOMAIN)
+		if not entries:
+			_LOGGER.error("No config entry found for reset_statistical_tracking.")
+			return
+		entry = entries[0]
+	
+	storage_manager = hass.data[DOMAIN][entry.entry_id]["storage_manager"]
+	
+	# Find all energy sensors from this integration
+	entity_registry = er.async_get(hass)
+	sensors_reset = 0
+	
+	storage = await storage_manager.async_load()
+	
+	for entity_id, entity_entry in entity_registry.entities.items():
+		if entity_entry.platform == DOMAIN and entity_id.startswith("sensor."):
+			# Skip daily/monthly/weekly/annual sensors - only work with main energy sensors
+			if not any(period in entity_id for period in ["_daily_", "_monthly_", "_weekly_", "_annual_"]):
+				storage_key = entity_entry.unique_id
+				
+				if storage_key in storage and isinstance(storage[storage_key], dict):
+					# Remove the last_statistical_calculation timestamp
+					if "last_statistical_calculation" in storage[storage_key]:
+						del storage[storage_key]["last_statistical_calculation"]
+						sensors_reset += 1
+						_LOGGER.info(f"Reset statistical tracking for {entity_id}")
+	
+	await storage_manager.async_save(storage)
+	
+	_LOGGER.info(f"Reset statistical tracking for {sensors_reset} sensors - next calculation will use lookback window")
+	
+	# Create notification
+	await hass.services.async_call(
+		"persistent_notification",
+		"create",
+		{
+			"title": "Statistical Tracking Reset",
+			"message": f"Reset {sensors_reset} sensors.\n\nNext calculation will use the lookback window instead of incremental calculation.\n\nThis can help if you suspect double-counting occurred.",
+			"notification_id": "energy_stat_reset"
+		}
+	)
+
+
+async def adjust_energy_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:
+	"""Adjust energy sensor value - useful for correcting spikes or errors."""
+	if entry is None:
+		entries = hass.config_entries.async_entries(DOMAIN)
+		if not entries:
+			_LOGGER.error("No config entry found for adjust_energy.")
+			return
+		entry = entries[0]
+	
+	storage_manager = hass.data[DOMAIN][entry.entry_id]["storage_manager"]
+	entity_id = call.data.get("entity_id", "")
+	adjustment_kwh = call.data.get("adjustment_kwh")
+	set_to_value = call.data.get("set_to_value")
+	copy_from_entity = call.data.get("copy_from_entity")
+	
+	if not entity_id:
+		_LOGGER.error("entity_id is required for adjust_energy")
+		return
+	
+	# Ensure only one adjustment method is specified
+	methods_specified = sum([adjustment_kwh is not None, set_to_value is not None, copy_from_entity is not None])
+	if methods_specified != 1:
+		_LOGGER.error("Specify exactly ONE of: adjustment_kwh, set_to_value, or copy_from_entity")
+		return
+	
+	# Find the entity and get its storage key
+	entity_registry = er.async_get(hass)
+	entity_entry = entity_registry.async_get(entity_id)
+	
+	if not entity_entry or entity_entry.platform != DOMAIN:
+		_LOGGER.error(f"Entity {entity_id} not found or not from this integration")
+		return
+	
+	# Determine storage key from unique_id
+	unique_id = entity_entry.unique_id
+	storage_key = unique_id
+	
+	# Load storage
+	storage = await storage_manager.async_load()
+	
+	if storage_key not in storage:
+		_LOGGER.error(f"No storage data found for {entity_id} (key: {storage_key})")
+		return
+	
+	# Get current value
+	if isinstance(storage[storage_key], dict):
+		old_value = storage[storage_key].get("value", 0.0)
+	else:
+		old_value = storage[storage_key]
+	
+	# Calculate new value
+	if adjustment_kwh is not None:
+		new_value = old_value + adjustment_kwh
+		action = f"adjusted by {adjustment_kwh:+.4f} kWh"
+	elif set_to_value is not None:
+		new_value = set_to_value
+		action = f"set to {set_to_value:.4f} kWh"
+	else:  # copy_from_entity
+		copy_state = hass.states.get(copy_from_entity)
+		if not copy_state or copy_state.state in ("unknown", "unavailable"):
+			_LOGGER.error(f"Source entity {copy_from_entity} not available")
+			return
+		try:
+			new_value = float(copy_state.state)
+			action = f"copied from {copy_from_entity} ({new_value:.4f} kWh)"
+		except (ValueError, TypeError):
+			_LOGGER.error(f"Invalid value from {copy_from_entity}: {copy_state.state}")
+			return
+	
+	# Update storage
+	if isinstance(storage[storage_key], dict):
+		storage[storage_key]["value"] = new_value
+	else:
+		storage[storage_key] = new_value
+	
+	await storage_manager.async_save(storage)
+	
+	# Force entity update
+	try:
+		await hass.helpers.entity_component.async_update_entity(entity_id)
+	except Exception as e:
+		_LOGGER.warning(f"Could not force update entity: {e}")
+	
+	_LOGGER.info(f"Energy adjusted for {entity_id}: {old_value:.4f} kWh -> {new_value:.4f} kWh ({action})")
+	
+	# Create persistent notification
+	await hass.services.async_call(
+		"persistent_notification",
+		"create",
+		{
+			"title": "Energy Value Adjusted",
+			"message": f"**{entity_id}**\n\nOld: {old_value:.4f} kWh\nNew: {new_value:.4f} kWh\n\n{action}",
+			"notification_id": f"energy_adjust_{entity_id.replace('.', '_')}"
+		}
+	)
