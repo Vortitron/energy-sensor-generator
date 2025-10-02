@@ -228,7 +228,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         name="Energy Sensor Generator",
         manufacturer="Energy Sensor Generator",
         model="Integration",
-        sw_version="0.0.77",
+        sw_version="0.0.78",
     )
     
     # Store references in hass.data

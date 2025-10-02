@@ -915,32 +915,53 @@ class EnergySensor(SensorEntity, RestoreEntity):
                             statistical_data = 0  # Treat as successful but no new energy
                         else:
                             statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
+                    elif hasattr(self, '_last_update') and self._last_update:
+                        # We have a last_update time but no last_statistical_calculation
+                        # This happens after restart - use last_update to avoid recounting old data
+                        stat_start_time = self._last_update
+                        stat_end_time = now
+                        window_description = f"from last_update {self._last_update}"
+                        _debug_log(self.hass, f"Post-restart calculation using last_update: {stat_start_time} to {stat_end_time}")
+                        _LOGGER.warning(f"Using last_update for {self._attr_name} to prevent double-counting on restart (last update: {self._last_update})")
+                        statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
                     else:
-                        # First calculation or no previous: use lookback window
+                        # True first calculation: no previous tracking at all
+                        # Use lookback window but LOG A WARNING since this adds historical data
                         stat_start_time = now - timedelta(minutes=lookback_minutes)
                         stat_end_time = now
-                        window_description = f"{lookback_minutes}min lookback"
+                        window_description = f"{lookback_minutes}min lookback (FIRST CALCULATION)"
+                        _LOGGER.warning(f"FIRST CALCULATION for {self._attr_name} using {lookback_minutes}min lookback - this will add historical energy!")
                         _debug_log(self.hass, f"Initial statistical calculation using {lookback_minutes}min lookback: {stat_start_time} to {stat_end_time}")
                         statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
 
-                    # If calculation failed and we have a previous successful calculation, try with a very small lookback
-                    # to handle cases where recorder data isn't immediately available
-                    if (statistical_data is None and
-                        hasattr(self, '_last_statistical_calculation') and
-                        self._last_statistical_calculation and
-                        (now - self._last_statistical_calculation).total_seconds() < 300):  # Only if last calc was recent (<5min)
+                    # If calculation failed, try fallback strategies
+                    if statistical_data is None:
+                        # Strategy 1: If we have last_statistical_calculation, try with tiny buffer
+                        if (hasattr(self, '_last_statistical_calculation') and
+                            self._last_statistical_calculation and
+                            (now - self._last_statistical_calculation).total_seconds() < 300):  # Only if last calc was recent (<5min)
 
-                        # Try starting 30 seconds before last calculation (minimal overlap to catch late-arriving data)
-                        extended_start = self._last_statistical_calculation - timedelta(seconds=30)
-                        stat_end_time = now
-                        _debug_log(self.hass, f"Retrying with minimal buffer: {extended_start} to {stat_end_time}")
+                            # Try starting 30 seconds before last calculation (minimal overlap to catch late-arriving data)
+                            extended_start = self._last_statistical_calculation - timedelta(seconds=30)
+                            stat_end_time = now
+                            _debug_log(self.hass, f"Retrying with minimal buffer from last_statistical: {extended_start} to {stat_end_time}")
 
-                        # Safety check: ensure we're not overlapping too much
-                        time_since_last = (now - self._last_statistical_calculation).total_seconds()
-                        if time_since_last < 10:
-                            _debug_log(self.hass, f"Skipping retry - too soon since last calculation ({time_since_last:.1f}s ago)")
-                            statistical_data = 0
-                        else:
+                            # Safety check: ensure we're not overlapping too much
+                            time_since_last = (now - self._last_statistical_calculation).total_seconds()
+                            if time_since_last < 10:
+                                _debug_log(self.hass, f"Skipping retry - too soon since last calculation ({time_since_last:.1f}s ago)")
+                                statistical_data = 0
+                            else:
+                                statistical_data = await self._get_statistical_power_data(extended_start, stat_end_time)
+                        
+                        # Strategy 2: If we have last_update but no statistical calc (post-restart), try with tiny buffer
+                        elif (hasattr(self, '_last_update') and
+                              self._last_update and
+                              (now - self._last_update).total_seconds() < 300):
+                            
+                            extended_start = self._last_update - timedelta(seconds=30)
+                            stat_end_time = now
+                            _debug_log(self.hass, f"Retrying with minimal buffer from last_update: {extended_start} to {stat_end_time}")
                             statistical_data = await self._get_statistical_power_data(extended_start, stat_end_time)
 
                     # If successful, update the last statistical calculation time
