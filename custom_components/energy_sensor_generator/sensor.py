@@ -1003,6 +1003,9 @@ class EnergySensor(SensorEntity, RestoreEntity):
                     _LOGGER.warning(f"CONFIGURATION ERROR: {self._attr_name} is monitoring an ENERGY sensor ({self._source_sensor}) instead of a POWER sensor! This will not work correctly. Please reconfigure to monitor a power sensor with unit 'W' or 'kW'.")
                     return
             
+            # Check if we're in force_statistical_only mode
+            force_statistical_only = config_options.get(CONF_FORCE_STATISTICAL_ONLY, False)
+            
             # Use statistical data if available, otherwise optionally fall back to point sampling
             if statistical_data is not None and isinstance(statistical_data, (int, float)) and statistical_data > 0:
                 # Spike protection: Check if the energy added is unrealistic (only if enabled)
@@ -1038,17 +1041,25 @@ class EnergySensor(SensorEntity, RestoreEntity):
                     self._first_calculation_logged = True
                 _debug_log(self.hass, f"Statistical energy calculation: {self._attr_name} | Energy added: {statistical_data:.8f}kWh | Total: {self._state:.4f}kWh | Current power: {power:.2f}{unit_display}")
             else:
-                # Determine if fallback is permitted
-                if _get_config_options(self.hass).get(CONF_FORCE_STATISTICAL_ONLY, False):
-                    _debug_log(self.hass, f"Statistical-only mode enabled - skipping point sampling for {self._attr_name}")
-                    # Update tracking variables and save, but don't add energy
+                # Statistical calculation failed or returned no data
+                # Check if we should fall back to point sampling or skip
+                
+                if force_statistical_only:
+                    # In force_statistical_only mode: NEVER use point sampling
+                    _debug_log(self.hass, f"Statistical-only mode: No statistical data available for {self._attr_name}, skipping calculation (will retry next interval)")
+                    # Update tracking but don't add any energy
                     self._last_power = power
                     self._last_update = now
                     await self._save_state()
                     self.safe_write_ha_state()
                     return
-                # Point sampling fallback using trapezoidal rule
-                if self._last_power is not None and self._last_update is not None:
+                    
+                # Point sampling fallback (only if force_statistical_only is False)
+                # Also check if we've EVER used statistical - if so, don't go back to point sampling
+                if (not force_statistical_only and 
+                    self._last_power is not None and 
+                    self._last_update is not None and
+                    not self._using_statistical):  # Never switch back from statistical to point sampling
                     time_delta = (now - self._last_update).total_seconds()
                     delta_hours = time_delta / 3600
                     _debug_log(self.hass, f"Point sampling calculation for {self._attr_name} | Last power: {self._last_power} | Current power: {power} | Time delta: {time_delta:.0f}s")
@@ -1087,6 +1098,12 @@ class EnergySensor(SensorEntity, RestoreEntity):
                     else:
                         unit_display = "kW" if self._power_to_kw_factor == 1 else "W"
                         _debug_log(self.hass, f"No energy added (too small): avg power: {avg_power:.4f}{unit_display}, calculated energy: {energy_kwh:.8f}kWh")
+                elif force_statistical_only:
+                    # In force_statistical_only mode, we're waiting for statistical data
+                    _debug_log(self.hass, f"Statistical-only mode: Waiting for statistical data for {self._attr_name} (will not use point sampling)")
+                elif self._using_statistical:
+                    # We've used statistical before - don't fall back to point sampling!
+                    _debug_log(self.hass, f"Previously used statistical for {self._attr_name} - not falling back to point sampling")
                 else:
                     _debug_log(self.hass, f"Interval update: Point sampling enabled but no previous data available for {self._attr_name} - will start tracking on next update")
 
