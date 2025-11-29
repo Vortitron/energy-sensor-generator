@@ -18,17 +18,18 @@
     "step": {
       "init": {
         "title": "Select Power Sensors",
-        "description": "Select which power sensors (in Watts/kW) should have energy sensors (kWh) generated. Energy sensors will be created automatically when you submit. Found {count} power sensors in your system.",
+        "description": "Select which power sensors (in Watts/kW) should have energy sensors (kWh) generated. Energy sensors will be created automatically when you submit. Found {count} power sensors in your system. Use \"Configure constant power devices\" to pair switches with fixed wattage loads (e.g. {constant_hint}). Current constant devices:\n{constant_summary}",
         "data": {
           "selected_power_sensors": "Select power sensors to monitor",
           "custom_power_sensor": "Add any sensor (for if it isn't marked as a power sensor)",
+          "configure_constant_devices": "Configure constant power devices →",
           "period_sensors": "Create sensors for periods",
           "show_advanced": "Configure advanced settings (after submit) →"
         }
       },
       "advanced": {
         "title": "Advanced Settings",
-        "description": "Configure advanced settings for energy sensor generation. Sensors will be created automatically when you submit.",
+        "description": "Configure advanced settings for energy sensor generation. Sensors will be created automatically when you submit. Constant power devices: {constant_summary}",
         "data": {
           "sample_interval": "Sampling interval",
           "debug_logging": "Enable debug logging",
@@ -36,12 +37,30 @@
           "force_statistical_only": "Force statistical calculation only (skip point sampling)",
           "stat_initial_lookback_minutes": "Initial statistical lookback period",
           "max_energy_per_hour": "Maximum energy per hour (spike protection)",
-          "create_synthetic_grid_total": "Create synthetic 'Grid total' energy sensor (requires reload)"
+          "create_synthetic_grid_total": "Create synthetic 'Grid total' energy sensor (requires reload)",
+          "configure_constant_devices": "Configure constant power devices →"
+        }
+      },
+      "constant_devices": {
+        "title": "Constant Power Devices",
+        "description": "Add or remove switch entities that represent a fixed-power load. Existing entries:\n{constant_summary}\n{constant_status}",
+        "data": {
+          "constant_device_action": "Action",
+          "constant_device_switch": "Switch/helper entity",
+          "constant_device_power": "Rated power (Watts)",
+          "constant_device_name": "Friendly name override (optional)",
+          "constant_device_remove": "Device to remove"
         }
       }
     },
     "fields": {
       "period_sensors": "Create sensors for periods",
+      "configure_constant_devices": "Configure constant power devices →",
+      "constant_device_action": "Action",
+      "constant_device_switch": "Switch/helper entity",
+      "constant_device_power": "Rated power (Watts)",
+      "constant_device_name": "Friendly name override (optional)",
+      "constant_device_remove": "Device to remove",
       "create_synthetic_grid_total": "Create synthetic 'Grid total' energy sensor (requires reload)",
       "show_advanced": "Configure advanced settings (after submit) →",
       "sample_interval": "Sampling interval",
@@ -52,7 +71,11 @@
       "max_energy_per_hour": "Maximum energy per hour (spike protection)"
     },
     "error": {
-      "invalid_entity_format": "Invalid entity format. All entities must start with 'sensor.'"
+      "invalid_entity_format": "Invalid entity format. All entities must start with 'sensor.'",
+      "constant_device_missing_fields": "Select a switch and watt value before adding a constant device.",
+      "constant_device_invalid_power": "Enter a positive watt value.",
+      "no_constant_devices": "No constant power devices available to modify.",
+      "constant_device_unknown_action": "Unknown constant device action."
     }
   }
 }

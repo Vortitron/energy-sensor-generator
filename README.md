@@ -11,6 +11,7 @@ A Home Assistant custom integration that automatically generates kWh energy sens
 - **Daily, Weekly, Monthly, Annual Tracking**: Tracks energy usage with automatic resets (midnight, Monday, 1st of month, 1 Jan), replacing the `utility_meter` helper.
 - **Synthetic Grid Total (optional)**: Enable an optional aggregate energy entity that sums all generated energy sensors so you can bring up the Energy dashboard on a dev system without a real grid entity.
 - **Flexible Generation**: Supports automatic sensor creation on startup or manual triggering via a UI button.
+- **Constant Power Devices**: Track fixed-load appliances (e.g., resistive heaters) by pairing a switch entity with its rated power, no inline meter required.
 - **Energy Dashboard Compatibility**: Generates sensors with `device_class: energy` and `state_class: total_increasing` for seamless integration.
 - **Minute-Aligned Scheduling**: When the update interval is a multiple of 60 seconds, updates are aligned to wall-clock minutes to ensure Energy dashboard buckets match upstream devices.
 - **Persistent Storage**: Saves energy data to a JSON file to survive Home Assistant restarts.
@@ -113,6 +114,20 @@ Follow these steps to install the `energy_sensor_generator` integration:
   - If you swap a device between power sockets, use the `Reassign Energy Data` service to transfer energy data to the new device association.
   - Call the service `energy_sensor_generator.reassign_energy_data` with parameters `from_device` and `to_device` (e.g., `plug_1` to `plug_2`).
   - This updates the stored data to associate energy with the new device name.
+
+### Constant Power Devices
+Some appliances (such as hard-wired hot water cylinders or three-phase heaters) only expose an `on/off` switch yet draw a predictable amount of power. You can now model these without an inline power meter:
+
+1. Go to **Settings → Devices & Services → Energy Sensor Generator → Configure**.
+2. Press **Configure constant power devices** to open the dedicated editor:
+   - Pick the controlling switch (or input boolean) from the dropdown.
+   - Enter the rated wattage in the numeric field (kW can be entered as `3000` W).
+   - Optionally provide a friendly name override, then choose **Add / update device**.
+   - Repeat for every fixed-load circuit, then choose **Done** to return to the main form.
+3. Submit the options. The integration will create energy + period sensors that watch the switch state and apply the constant wattage whenever the switch reports `on`/`open`.
+4. Include the new energy sensors (e.g., `sensor.boiler_constant_energy`) in the Energy dashboard just like sensors derived from real power meters.
+
+This method is ideal for fixed loads that are either fully on or off; the integration automatically ignores unavailable states and debounces rapid toggles.
 - **Monitoring**:
   - View sensor states in **Developer Tools > States** (e.g., `sensor.plug_1_energy`, `sensor.plug_1_daily_energy`).
   - Check energy usage in the **Energy** dashboard.
@@ -122,6 +137,11 @@ Follow these steps to install the `energy_sensor_generator` integration:
     2025-05-11 10:00:00 INFO Generating energy sensors
     2025-05-11 10:00:01 INFO Reset daily energy for plug_1
     ```
+
+### Where the Generated Devices Appear
+- Home Assistant only shows a single "Energy Sensor Generator" device with no entities; this acts as the integration's settings anchor.
+- Every generated energy sensor is instead attached to the *source* device (e.g., your P1IB meters), so open those devices or the global Entities list to see the new sensors.
+- This mirrors Home Assistant helper behaviour and keeps all readings grouped with the hardware they describe.
 
 ## Example Output
 For a power sensor `sensor.plug_1_power`, the integration creates:
@@ -183,6 +203,12 @@ Energy Values Incorrect:
 Verify that power sensors update frequently (e.g., every 5-30 seconds). LocalTuya typically provides faster updates.
 Adjust the update_interval in the integration settings to match your device's update frequency.
 Check logs for warnings about invalid power values.
+
+### Device Already Exposes Energy Sensors
+- Auto-detection still skips devices that already have energy sensors from *other* integrations to avoid clutter.
+- If you explicitly tick a power sensor in the options flow the integration now honours that request and creates the kWh entities even when other energy sensors exist (handy for multi P1IB setups that ship their own cumulative counters).
+- You'll see a warning in the logs noting that the safety check was overridden.
+
 Storage Errors:
 Ensure the .storage directory is writable: chmod -R 755 /config/.storage.
 Monitor disk space to prevent write failures.
