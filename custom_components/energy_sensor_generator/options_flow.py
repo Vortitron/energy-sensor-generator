@@ -63,7 +63,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			requested_show_advanced = user_input.get("show_advanced", False)
 			# Navigate to advanced step if requested
 			if requested_show_advanced:
-				self._user_defaults = dict(user_input)
+				self._user_defaults.update(user_input)
 				return await self.async_step_advanced()
 		else:
 			requested_show_advanced = False
@@ -183,7 +183,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				selected_sensors.append(custom_sensor)
 			
 			if user_input.get("configure_constant_devices"):
-				self._user_defaults = dict(user_input)
+				self._user_defaults.update(user_input)
 				self._user_defaults.pop("configure_constant_devices", None)
 				self._constant_devices_return_step = "init"
 				return await self.async_step_constant_devices()
@@ -219,7 +219,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 						CONF_CREATE_SYNTHETIC_GRID_TOTAL: synthetic_grid_total,
 						CONF_FORCE_STATISTICAL_ONLY: force_statistical_only,
 						CONF_STAT_LOOKBACK_MINUTES: stat_lookback,
-						CONF_CONSTANT_POWER_DEVICES: defaults.get(CONF_CONSTANT_POWER_DEVICES, existing_constant_devices)
+						CONF_CONSTANT_POWER_DEVICES: self._get_constant_devices()
 					}
 				)
 
@@ -362,7 +362,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 					CONF_FORCE_STATISTICAL_ONLY: force_statistical_only,
 					CONF_STAT_LOOKBACK_MINUTES: stat_lookback,
 					CONF_MAX_ENERGY_PER_HOUR: max_energy_per_hour,
-					CONF_CONSTANT_POWER_DEVICES: defaults.get(CONF_CONSTANT_POWER_DEVICES, [])
+					CONF_CONSTANT_POWER_DEVICES: self._get_constant_devices()
 				}
 			)
 			
