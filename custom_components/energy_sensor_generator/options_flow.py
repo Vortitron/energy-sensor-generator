@@ -2,7 +2,6 @@ from homeassistant import config_entries
 import voluptuous as vol
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import (
 	EntitySelector, 
 	EntitySelectorConfig,
@@ -12,7 +11,9 @@ from homeassistant.helpers.selector import (
 	BooleanSelector,
 	NumberSelector,
 	NumberSelectorConfig,
-	NumberSelectorMode
+	NumberSelectorMode,
+	TextSelector,
+	TextSelectorConfig
 )
 from .const import (
 	DOMAIN, 
@@ -21,9 +22,11 @@ from .const import (
 	CONF_CREATE_SYNTHETIC_GRID_TOTAL,
 	CONF_FORCE_STATISTICAL_ONLY,
 	CONF_STAT_LOOKBACK_MINUTES,
-	CONF_MAX_ENERGY_PER_HOUR
+	CONF_MAX_ENERGY_PER_HOUR,
+	CONF_CONSTANT_POWER_DEVICES
 )
 from .__init__ import detect_power_sensors  # Import the detect function
+from .utils import format_constant_power_devices_text
 
 class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 	def __init__(self, config_entry):
@@ -32,6 +35,16 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		self._errors = {}
 		self._user_defaults = {}
 		self._show_advanced = False
+		self._constant_devices_return_step = "init"
+
+	def _get_constant_devices(self) -> list:
+		"""Return a copy of the currently edited constant device list."""
+		defaults = {**self.config_entry.options, **self._user_defaults}
+		return [dict(device) for device in defaults.get(CONF_CONSTANT_POWER_DEVICES, []) or []]
+
+	def _set_constant_devices(self, devices: list) -> None:
+		"""Persist the working constant device list."""
+		self._user_defaults[CONF_CONSTANT_POWER_DEVICES] = [dict(device) for device in devices]
 
 	async def async_step_init(self, user_input=None):
 		"""Manage the options for the integration."""
@@ -63,6 +76,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		create_monthly = defaults.get("create_monthly_sensors", True)
 		create_weekly = defaults.get("create_weekly_sensors", True)
 		create_annual = defaults.get("create_annual_sensors", True)
+		existing_constant_devices = defaults.get(CONF_CONSTANT_POWER_DEVICES, [])
+		constant_devices_summary = format_constant_power_devices_text(existing_constant_devices) or "— None configured —"
 		
 		# Advanced settings (hidden by default)
 		sample_interval = defaults.get("sample_interval", 60)
@@ -167,6 +182,12 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			if custom_sensor and custom_sensor not in selected_sensors:
 				selected_sensors.append(custom_sensor)
 			
+			if user_input.get("configure_constant_devices"):
+				self._user_defaults = dict(user_input)
+				self._user_defaults.pop("configure_constant_devices", None)
+				self._constant_devices_return_step = "init"
+				return await self.async_step_constant_devices()
+			
 			# Get period sensor options - parse from multi-select
 			period_sensors = user_input.get("period_sensors", ["daily", "monthly", "weekly", "annual"])
 			create_daily = "daily" in period_sensors
@@ -197,7 +218,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 						CONF_USE_STATISTICAL: use_statistical,
 						CONF_CREATE_SYNTHETIC_GRID_TOTAL: synthetic_grid_total,
 						CONF_FORCE_STATISTICAL_ONLY: force_statistical_only,
-						CONF_STAT_LOOKBACK_MINUTES: stat_lookback
+						CONF_STAT_LOOKBACK_MINUTES: stat_lookback,
+						CONF_CONSTANT_POWER_DEVICES: defaults.get(CONF_CONSTANT_POWER_DEVICES, existing_constant_devices)
 					}
 				)
 
@@ -230,6 +252,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		schema[vol.Optional("custom_power_sensor")] = EntitySelector(
 			EntitySelectorConfig(domain="sensor", multiple=False)
 		)
+		
+		schema[vol.Optional("configure_constant_devices", default=False)] = BooleanSelector()
 		
 		# Create period sensors multi-select
 		default_periods = []
@@ -266,7 +290,9 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			data_schema=vol.Schema(schema),
 			errors=self._errors,
 			description_placeholders={
-				"count": len(all_power_sensors)
+				"count": len(all_power_sensors),
+				"constant_hint": "switch.boiler_element = 3 kW | Hot Water Boost",
+				"constant_summary": constant_devices_summary
 			}
 		) 
 
@@ -281,10 +307,18 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		force_statistical_only = defaults.get(CONF_FORCE_STATISTICAL_ONLY, False)
 		stat_lookback = defaults.get(CONF_STAT_LOOKBACK_MINUTES, 30)
 		max_energy_per_hour = defaults.get(CONF_MAX_ENERGY_PER_HOUR, 0)  # 0 = disabled by default
+		constant_devices_summary = format_constant_power_devices_text(
+			defaults.get(CONF_CONSTANT_POWER_DEVICES, [])
+		) or "— None configured —"
 		
 		if user_input is not None:
 			# Update defaults with advanced settings
 			self._user_defaults.update(user_input)
+			
+			if user_input.get("configure_constant_devices"):
+				self._user_defaults.pop("configure_constant_devices", None)
+				self._constant_devices_return_step = "advanced"
+				return await self.async_step_constant_devices()
 			
 			# Process all the data and save
 			all_data = {**self._user_defaults}
@@ -312,7 +346,6 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			force_statistical_only = user_input.get(CONF_FORCE_STATISTICAL_ONLY, False)
 			stat_lookback = user_input.get(CONF_STAT_LOOKBACK_MINUTES, 60)
 			max_energy_per_hour = user_input.get(CONF_MAX_ENERGY_PER_HOUR, 0)  # 0 = disabled by default
-			
 			# Create the configuration entry
 			result = self.async_create_entry(
 				title="Power Sensors",
@@ -328,7 +361,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 					CONF_CREATE_SYNTHETIC_GRID_TOTAL: synthetic_grid_total,
 					CONF_FORCE_STATISTICAL_ONLY: force_statistical_only,
 					CONF_STAT_LOOKBACK_MINUTES: stat_lookback,
-					CONF_MAX_ENERGY_PER_HOUR: max_energy_per_hour
+					CONF_MAX_ENERGY_PER_HOUR: max_energy_per_hour,
+					CONF_CONSTANT_POWER_DEVICES: defaults.get(CONF_CONSTANT_POWER_DEVICES, [])
 				}
 			)
 			
@@ -371,13 +405,149 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		)
 		# Option to create synthetic grid total
 		schema[vol.Optional(CONF_CREATE_SYNTHETIC_GRID_TOTAL, default=synthetic_grid_total)] = BooleanSelector()
+		schema[vol.Optional("configure_constant_devices", default=False)] = BooleanSelector()
 		
 		return self.async_show_form(
 			step_id="advanced",
 			data_schema=vol.Schema(schema),
 			errors=self._errors,
 			description_placeholders={
-				"description": "Configure advanced settings for energy sensor generation."
+				"constant_summary": constant_devices_summary
+			}
+		)
+
+	async def async_step_constant_devices(self, user_input=None):
+		"""Manage constant power device definitions."""
+		self._errors = {}
+		devices = self._get_constant_devices()
+		status_message = self._user_defaults.pop("_constant_devices_status", None)
+		constant_summary = format_constant_power_devices_text(devices) or "— None configured —"
+		
+		remove_options = []
+		for device in devices:
+			switch_id = device.get("switch_entity_id")
+			if not switch_id:
+				continue
+			power_w = device.get("power_w")
+			try:
+				power_display = f"{float(power_w):g}"
+			except (TypeError, ValueError):
+				power_display = str(power_w)
+			remove_options.append(
+				{
+					"value": switch_id,
+					"label": f"{device.get('name') or switch_id} — {power_display} W"
+				}
+			)
+		
+		if user_input is not None:
+			action = user_input.get("constant_device_action", "finish")
+			
+			if action == "finish":
+				self._constant_devices_return_step = self._constant_devices_return_step or "init"
+				next_step = self._constant_devices_return_step
+				self._constant_devices_return_step = "init"
+				if next_step == "advanced":
+					return await self.async_step_advanced()
+				return await self.async_step_init()
+			
+			if action == "add":
+				switch_entity = user_input.get("constant_device_switch")
+				power_value = user_input.get("constant_device_power")
+				friendly_name = user_input.get("constant_device_name")
+				
+				if not switch_entity or power_value is None:
+					self._errors["base"] = "constant_device_missing_fields"
+				else:
+					try:
+						power_w = float(power_value)
+					except (TypeError, ValueError):
+						self._errors["base"] = "constant_device_invalid_power"
+					else:
+						if power_w <= 0:
+							self._errors["base"] = "constant_device_invalid_power"
+						else:
+							devices = [d for d in devices if d.get("switch_entity_id") != switch_entity]
+							entry = {
+								"switch_entity_id": switch_entity,
+								"power_w": power_w
+							}
+							if friendly_name:
+								entry["name"] = friendly_name
+							devices.append(entry)
+							self._set_constant_devices(devices)
+							self._user_defaults["_constant_devices_status"] = f"Added {switch_entity}"
+							return await self.async_step_constant_devices()
+			
+			elif action == "remove":
+				target_switch = user_input.get("constant_device_remove")
+				if not devices:
+					self._errors["base"] = "no_constant_devices"
+				elif not target_switch:
+					self._errors["constant_device_remove"] = "constant_device_missing_fields"
+				else:
+					devices = [d for d in devices if d.get("switch_entity_id") != target_switch]
+					self._set_constant_devices(devices)
+					self._user_defaults["_constant_devices_status"] = f"Removed {target_switch}"
+					return await self.async_step_constant_devices()
+			
+			elif action == "clear":
+				if devices:
+					devices = []
+					self._set_constant_devices(devices)
+					self._user_defaults["_constant_devices_status"] = "Cleared all entries"
+					return await self.async_step_constant_devices()
+				self._errors["base"] = "no_constant_devices"
+			else:
+				self._errors["base"] = "constant_device_unknown_action"
+		
+		schema = {}
+		schema[vol.Optional("constant_device_action", default="add")] = SelectSelector(
+			SelectSelectorConfig(
+				options=[
+					{"value": "add", "label": "Add / update device"},
+					{"value": "remove", "label": "Remove device"},
+					{"value": "clear", "label": "Remove all"},
+					{"value": "finish", "label": "Done"}
+				],
+				multiple=False,
+				mode=SelectSelectorMode.DROPDOWN
+			)
+		)
+		schema[vol.Optional("constant_device_switch")] = EntitySelector(
+			EntitySelectorConfig(
+				domain=["switch", "input_boolean"],
+				multiple=False
+			)
+		)
+		schema[vol.Optional("constant_device_power", default=3000)] = NumberSelector(
+			NumberSelectorConfig(
+				min=1,
+				max=20000,
+				step=10,
+				unit_of_measurement="Watts",
+				mode=NumberSelectorMode.BOX
+			)
+		)
+		schema[vol.Optional("constant_device_name")] = TextSelector(
+			TextSelectorConfig(multiline=False)
+		)
+		if remove_options:
+			schema[vol.Optional("constant_device_remove")] = SelectSelector(
+				SelectSelectorConfig(
+					options=remove_options,
+					multiple=False,
+					mode=SelectSelectorMode.DROPDOWN
+				)
+			)
+		
+		return self.async_show_form(
+			step_id="constant_devices",
+			data_schema=vol.Schema(schema),
+			errors=self._errors,
+			description_placeholders={
+				"constant_summary": constant_summary,
+				"constant_status": status_message or ""
 			}
 		)
 	

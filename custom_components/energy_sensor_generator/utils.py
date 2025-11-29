@@ -2,11 +2,12 @@ import logging
 import asyncio
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple, List
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import storage as ha_storage
 from homeassistant.util import json as ha_json
+from homeassistant.util import slugify as ha_slugify
 
 from .const import DOMAIN, STORAGE_FILE
 
@@ -120,3 +121,97 @@ class StorageManager:
                 await task
             except Exception:
                 pass
+
+
+def _slugify_fragment(value: str) -> str:
+	"""Slugify strings consistently using underscores."""
+	slug = ha_slugify(value or "")
+	if not slug:
+		return ""
+	return slug.replace("-", "_").strip("_")
+
+
+def derive_constant_base_name(device_conf: dict) -> str:
+	"""Determine deterministic base name for a constant power device."""
+	switch_entity = (device_conf or {}).get("switch_entity_id", "")
+	entity_core = switch_entity.split(".", 1)[1] if "." in switch_entity else switch_entity
+	slug_core = _slugify_fragment(entity_core)
+	if not slug_core:
+		# Fallback to friendly name if provided
+		name = (device_conf or {}).get("name") or "constant_load"
+		slug_core = _slugify_fragment(name)
+	if not slug_core:
+		slug_core = "constant_load"
+	return f"{slug_core}_constant"
+
+
+def format_constant_power_devices_text(devices: List[dict]) -> str:
+	"""Render stored constant devices as editable text."""
+	lines: List[str] = []
+	for device in devices or []:
+		switch_entity = device.get("switch_entity_id")
+		power_w = device.get("power_w")
+		if not switch_entity or power_w is None:
+			continue
+		name = device.get("name", "").strip()
+		value = f"{power_w:.3f}".rstrip("0").rstrip(".")
+		line = f"{switch_entity} = {value} W"
+		if name:
+			line = f"{line} | {name}"
+		lines.append(line)
+	return "\n".join(lines)
+
+
+def parse_constant_power_devices_text(raw_value: str) -> Tuple[List[dict], List[str]]:
+	"""Parse multiline text input into constant device definitions.
+
+	Each line format: switch.entity = 3000 W | Optional Friendly Name
+	Units default to Watts; suffix 'kW' (case-insensitive) is also accepted.
+	"""
+	if not raw_value:
+		return [], []
+	devices: List[dict] = []
+	errors: List[str] = []
+	for idx, line in enumerate(raw_value.splitlines(), start=1):
+		original_line = line
+		line = line.strip()
+		if not line or line.startswith("#"):
+			continue
+		name_part = None
+		if "|" in line:
+			line, name_part = [part.strip() for part in line.split("|", 1)]
+		if "=" not in line:
+			errors.append(f"Line {idx}: Missing '=' in '{original_line}'")
+			continue
+		entity_id, power_str = [part.strip() for part in line.split("=", 1)]
+		if not entity_id:
+			errors.append(f"Line {idx}: Missing switch entity ID in '{original_line}'")
+			continue
+		if not entity_id.startswith("switch."):
+			errors.append(f"Line {idx}: '{entity_id}' must start with 'switch.'")
+			continue
+		power_clean = power_str.lower().replace(" ", "")
+		multiplier = 1.0
+		if power_clean.endswith("kw"):
+			multiplier = 1000.0
+			power_clean = power_clean[:-2]
+		elif power_clean.endswith("w"):
+			power_clean = power_clean[:-1]
+		if not power_clean:
+			errors.append(f"Line {idx}: Missing numeric value in '{original_line}'")
+			continue
+		try:
+			numeric_value = float(power_clean)
+		except ValueError:
+			errors.append(f"Line {idx}: '{power_str}' is not a valid number")
+			continue
+		power_w = numeric_value * multiplier
+		if power_w <= 0:
+			errors.append(f"Line {idx}: Power must be positive in '{original_line}'")
+			continue
+		devices.append({
+			"switch_entity_id": entity_id,
+			"power_w": power_w,
+			"name": name_part or None
+		})
+	return devices, errors
