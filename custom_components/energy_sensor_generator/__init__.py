@@ -8,10 +8,11 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 from datetime import timedelta
-from .sensor import EnergySensor, DailyEnergySensor, MonthlyEnergySensor, WeeklyEnergySensor, AnnualEnergySensor, SyntheticGridTotalEnergySensor
+from .sensor import EnergySensor, DailyEnergySensor, MonthlyEnergySensor, WeeklyEnergySensor, AnnualEnergySensor, SyntheticGridTotalEnergySensor, PriceAdjustedSensor
 from .utils import StorageManager, derive_constant_base_name
 from .device_helpers import has_external_energy_sensors
-from .const import DOMAIN, STORAGE_FILE, CONF_DEBUG_LOGGING, CONF_CREATE_SYNTHETIC_GRID_TOTAL, CONF_CONSTANT_POWER_DEVICES
+from .const import DOMAIN, STORAGE_FILE, CONF_DEBUG_LOGGING, CONF_CREATE_SYNTHETIC_GRID_TOTAL, CONF_CONSTANT_POWER_DEVICES, CONF_PRICE_ADJUST_SENSORS
+from .hourly_copy_service import copy_from_previous_hour_service
 import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
@@ -397,6 +398,7 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
     options = entry.options
     storage_manager = hass.data[DOMAIN][entry.entry_id]["storage_manager"]
     constant_devices = options.get(CONF_CONSTANT_POWER_DEVICES, []) if options else []
+    price_adjustments = options.get(CONF_PRICE_ADJUST_SENSORS, []) if options else []
     
     # Ensure the platform is loaded; we will add via async_forward_entry_setups and recreate entities
 
@@ -433,11 +435,11 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
         power_sensors = all_power_sensors
         _LOGGER.info(f"Using all detected power sensors: {power_sensors}")
 
-    if not power_sensors and not constant_devices:
-        _LOGGER.warning("No power sensors or constant power devices found for energy sensor generation.")
+    if not power_sensors and not constant_devices and not price_adjustments:
+        _LOGGER.warning("No power sensors, constant power devices, or price adjustment sensors configured.")
         return
-    if not power_sensors and constant_devices:
-        _LOGGER.info("No power sensors available; continuing with constant power devices only.")
+    if not power_sensors and (constant_devices or price_adjustments):
+        _LOGGER.info("No power sensors available; continuing with non-power-sensor entities only.")
 
     # Check if we should create period sensors
     create_daily = options.get("create_daily_sensors", True)
@@ -767,6 +769,61 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
 
     # Persist any changes
     await storage_manager.async_save(storage)
+
+    # Handle price adjustment sensors (create/remove/update)
+    try:
+        entity_registry = er.async_get(hass)
+        existing_price = {}
+        for entity_id, entry_reg in entity_registry.entities.items():
+            if entry_reg.platform != DOMAIN:
+                continue
+            uid = entry_reg.unique_id or ""
+            if uid.startswith("price_adjust_"):
+                existing_price[uid] = entity_id
+
+        desired_uids = set()
+        for item in price_adjustments or []:
+            cfg_id = str((item or {}).get("id") or "").strip()
+            if cfg_id:
+                desired_uids.add(f"price_adjust_{cfg_id}")
+
+        # Remove stale sensors
+        for uid, entity_id in list(existing_price.items()):
+            if uid not in desired_uids:
+                try:
+                    entity_registry.async_remove(entity_id)
+                    _LOGGER.info(f"Removed price adjustment sensor {entity_id}")
+                except Exception as e:
+                    _LOGGER.warning(f"Failed to remove price adjustment sensor {entity_id}: {e}")
+
+        # Add missing sensors
+        new_price_entities = []
+        for item in price_adjustments or []:
+            cfg_id = str((item or {}).get("id") or "").strip()
+            if not cfg_id:
+                continue
+            uid = f"price_adjust_{cfg_id}"
+            if uid in existing_price:
+                # Force update to pick up changed add_amount immediately
+                try:
+                    await hass.helpers.entity_component.async_update_entity(existing_price[uid])
+                except Exception:
+                    pass
+                continue
+            try:
+                new_price_entities.append(PriceAdjustedSensor(hass, entry.entry_id, dict(item)))
+            except Exception as e:
+                _LOGGER.error(f"Failed to build price adjustment entity from {item}: {e}")
+
+        if new_price_entities:
+            add_cb = hass.data[DOMAIN][entry.entry_id].get("async_add_entities")
+            if add_cb:
+                add_cb(new_price_entities, True)
+                _LOGGER.info(f"Successfully added {len(new_price_entities)} price adjustment sensors")
+            else:
+                _LOGGER.debug("async_add_entities not available; price sensors will appear after reload")
+    except Exception as e:
+        _LOGGER.error(f"Failed to handle price adjustment sensors: {e}")
 
 async def reset_energy_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:
 	"""Service to reset energy sensor values (useful for correcting doubled values)."""
@@ -1204,158 +1261,6 @@ async def import_energy_data_service(hass: HomeAssistant, call, entry: ConfigEnt
 					pass
 	except Exception as e:
 		_LOGGER.error(f"Import service failed: {e}")
-
-
-async def copy_from_previous_hour_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:
-	"""Copy all sensor values from a previous hour - useful for fixing hourly spikes."""
-	if entry is None:
-		entries = hass.config_entries.async_entries(DOMAIN)
-		if not entries:
-			_LOGGER.error("No config entry found for copy_from_previous_hour.")
-			return
-		entry = entries[0]
-	
-	storage_manager = hass.data[DOMAIN][entry.entry_id]["storage_manager"]
-	
-	# Get the target datetime from the service call
-	target_datetime_str = call.data.get("target_datetime")
-	hours_back = call.data.get("hours_back", 1)  # Default to 1 hour back
-	
-	if not target_datetime_str:
-		_LOGGER.error("target_datetime is required (format: 'YYYY-MM-DD HH:00:00')")
-		return
-	
-	try:
-		from datetime import datetime
-		import homeassistant.util.dt as dt_util
-		
-		# Parse the target datetime
-		target_dt = datetime.fromisoformat(target_datetime_str)
-		if target_dt.tzinfo is None:
-			target_dt = dt_util.as_local(target_dt)
-		
-		_LOGGER.info(f"Looking for sensor values at {target_dt} (to copy to current values)")
-		
-	except Exception as e:
-		_LOGGER.error(f"Invalid datetime format: {target_datetime_str}. Use format: 'YYYY-MM-DD HH:00:00'. Error: {e}")
-		return
-	
-	# Find all energy sensors from this integration
-	entity_registry = er.async_get(hass)
-	energy_sensors = []
-	
-	for entity_id, entity_entry in entity_registry.entities.items():
-		if entity_entry.platform == DOMAIN and entity_id.startswith("sensor."):
-			# Skip daily/monthly/weekly/annual sensors - only work with main energy sensors
-			if not any(period in entity_id for period in ["_daily_", "_monthly_", "_weekly_", "_annual_"]):
-				energy_sensors.append(entity_id)
-	
-	if not energy_sensors:
-		_LOGGER.error("No energy sensors found to copy")
-		return
-	
-	_LOGGER.info(f"Found {len(energy_sensors)} energy sensors to process")
-	
-	# Try to get historical states using recorder
-	try:
-		from homeassistant.components import recorder
-		from homeassistant.components.recorder import history
-		
-		# Calculate the time range to look for the value
-		# We want the state AT the target time
-		start_time = target_dt - timedelta(minutes=5)  # Small buffer
-		end_time = target_dt + timedelta(minutes=5)
-		
-		sensors_updated = 0
-		errors = []
-		
-		for entity_id in energy_sensors:
-			try:
-				# Get historical states for this sensor
-				states = await hass.async_add_executor_job(
-					history.state_changes_during_period,
-					hass,
-					start_time,
-					end_time,
-					entity_id
-				)
-				
-				if entity_id in states and states[entity_id]:
-					# Find the state closest to target_dt
-					closest_state = None
-					min_diff = None
-					
-					for state in states[entity_id]:
-						if state.state not in ("unknown", "unavailable"):
-							state_time = state.last_updated
-							time_diff = abs((state_time - target_dt).total_seconds())
-							if min_diff is None or time_diff < min_diff:
-								min_diff = time_diff
-								closest_state = state
-					
-					if closest_state:
-						try:
-							historical_value = float(closest_state.state)
-							
-							# Get storage key from entity's unique_id
-							entity_entry = entity_registry.async_get(entity_id)
-							if entity_entry:
-								storage_key = entity_entry.unique_id
-								
-								# Load and update storage
-								storage = await storage_manager.async_load()
-								
-								if storage_key in storage:
-									if isinstance(storage[storage_key], dict):
-										old_value = storage[storage_key].get("value", 0.0)
-										storage[storage_key]["value"] = historical_value
-									else:
-										old_value = storage[storage_key]
-										storage[storage_key] = historical_value
-									
-									await storage_manager.async_save(storage)
-									
-									# Force entity update
-									try:
-										await hass.helpers.entity_component.async_update_entity(entity_id)
-									except Exception:
-										pass
-									
-									_LOGGER.info(f"✓ {entity_id}: {old_value:.4f} → {historical_value:.4f} kWh (from {closest_state.last_updated})")
-									sensors_updated += 1
-								else:
-									errors.append(f"{entity_id}: No storage key found")
-						except (ValueError, TypeError) as e:
-							errors.append(f"{entity_id}: Invalid value {closest_state.state}")
-					else:
-						errors.append(f"{entity_id}: No valid state found near {target_dt}")
-				else:
-					errors.append(f"{entity_id}: No historical data found")
-			
-			except Exception as e:
-				errors.append(f"{entity_id}: {str(e)}")
-		
-		# Log summary
-		_LOGGER.info(f"Copy complete: {sensors_updated} sensors updated, {len(errors)} errors")
-		
-		if errors:
-			_LOGGER.warning(f"Errors during copy: {', '.join(errors[:5])}" + (f" and {len(errors)-5} more..." if len(errors) > 5 else ""))
-		
-		# Create notification
-		await hass.services.async_call(
-			"persistent_notification",
-			"create",
-			{
-				"title": "Hourly Data Copy Complete",
-				"message": f"Copied values from {target_dt.strftime('%Y-%m-%d %H:%M')}\n\n✓ Updated: {sensors_updated} sensors\n✗ Errors: {len(errors)} sensors\n\nCheck logs for details.",
-				"notification_id": "energy_hourly_copy"
-			}
-		)
-		
-	except ImportError:
-		_LOGGER.error("Recorder component not available - cannot retrieve historical data")
-	except Exception as e:
-		_LOGGER.error(f"Failed to copy hourly data: {e}", exc_info=True)
 
 
 async def reset_statistical_tracking_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:

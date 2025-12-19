@@ -33,9 +33,12 @@ from .const import (
 	CONF_FORCE_STATISTICAL_ONLY,
 	CONF_STAT_LOOKBACK_MINUTES,
 	CONF_MAX_ENERGY_PER_HOUR,
-	CONF_CONSTANT_POWER_DEVICES
+	CONF_CONSTANT_POWER_DEVICES,
+	CONF_PRICE_ADJUST_SENSORS,
+	POINT_SAMPLING_MAX_GAP_SECONDS,
 )
 import time
+from .price_adjustment import compute_adjusted_value, is_price_attribute_key, adjust_attribute_value
 
 def _is_debug_enabled(hass: HomeAssistant) -> bool:
 	"""Check if debug logging is enabled for this integration."""
@@ -233,10 +236,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 	# Only proceed if we have selected sensors configured
 	selected_sensors = options.get("selected_power_sensors", []) or []
 	constant_devices = options.get(CONF_CONSTANT_POWER_DEVICES, []) or []
+	price_adjustments = options.get(CONF_PRICE_ADJUST_SENSORS, []) or []
 	_LOGGER.info(f"Setting up energy sensors for selected power sensors: {selected_sensors}")
 	_LOGGER.info(f"Setting up constant power devices: {constant_devices}")
-	if not selected_sensors and not constant_devices:
-		_LOGGER.warning("No power sensors or constant devices configured, skipping sensor setup")
+	_LOGGER.info(f"Setting up price adjustment sensors: {len(price_adjustments)} configured")
+	if not selected_sensors and not constant_devices and not price_adjustments:
+		_LOGGER.warning("No power sensors, constant devices, or price adjustments configured, skipping sensor setup")
 		return
 	constant_device_map = {}
 	for device in constant_devices:
@@ -394,7 +399,181 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 			async_add_entities(entities_to_add, True)  # True = update_before_add
 			_LOGGER.info(f"Successfully recreated {len(entities_to_add)} energy sensors during setup")
 	
+	# Always create price adjustment sensors from options (they're stateless / derived)
+	price_entities = []
+	if price_adjustments:
+		for item in price_adjustments:
+			try:
+				price_entities.append(PriceAdjustedSensor(hass, entry.entry_id, dict(item)))
+			except Exception as err:
+				_LOGGER.error(f"Failed to create price adjustment sensor from {item}: {err}")
+		if price_entities:
+			async_add_entities(price_entities, True)
 	return
+
+
+def _get_device_identifiers_for_entity(hass: HomeAssistant, entity_id: str):
+	"""Return device identifiers for a given entity, if it belongs to a device."""
+	try:
+		entity_registry = er.async_get(hass)
+		entry = entity_registry.async_get(entity_id)
+		if not entry or not entry.device_id:
+			return None
+		device_registry = dr.async_get(hass)
+		device = device_registry.async_get(entry.device_id)
+		if not device:
+			return None
+		return device.identifiers
+	except Exception:
+		return None
+
+
+def _get_config_entry_for_id(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
+	"""Find a config entry by entry_id for this domain."""
+	try:
+		for cfg in hass.config_entries.async_entries(DOMAIN):
+			if cfg.entry_id == entry_id:
+				return cfg
+	except Exception:
+		return None
+	return None
+
+
+class PriceAdjustedSensor(SensorEntity):
+	"""Sensor that mirrors another sensor and adds a fixed amount."""
+
+	def __init__(self, hass: HomeAssistant, entry_id: str, config: dict):
+		self._hass = hass
+		self._entry_id = entry_id
+
+		self._config_id = str(config.get("id") or "").strip()
+		self._source_entity_id = str(config.get("source_entity_id") or "").strip()
+		self._name_override = (config.get("name") or "").strip()
+
+		try:
+			self._default_add_amount = float(config.get("add_amount", 0))
+		except (TypeError, ValueError):
+			self._default_add_amount = 0.0
+
+		if not self._config_id:
+			raise ValueError("Missing price adjustment config id")
+		if not self._source_entity_id:
+			raise ValueError("Missing source_entity_id")
+
+		self._attr_unique_id = f"price_adjust_{self._config_id}"
+
+		source_name = get_friendly_name(hass, self._source_entity_id)
+		proposed_name = self._name_override or f"{source_name} (Adjusted)"
+		self._attr_name = get_unique_entity_name(hass, proposed_name)
+
+		self._attr_state_class = SensorStateClass.MEASUREMENT
+		self._attr_icon = "mdi:cash-plus"
+		self._attr_entity_registry_enabled_default = True
+
+		device_identifiers = _get_device_identifiers_for_entity(hass, self._source_entity_id)
+		if device_identifiers:
+			self._attr_device_info = DeviceInfo(identifiers=device_identifiers)
+		else:
+			self._attr_device_info = DeviceInfo(
+				identifiers={(DOMAIN, "price_adjustments")},
+				name="Price Adjustments",
+				manufacturer="Energy Sensor Generator",
+				model="Adjusted price sensor",
+			)
+
+		self._native_value = None
+		self._unit = None
+		self._available = True
+		self._copied_attributes = {}
+		self._unsub_state_change = None
+
+	def _get_current_add_amount(self) -> float:
+		"""Read current add_amount from the latest config entry options."""
+		entry = _get_config_entry_for_id(self._hass, self._entry_id)
+		if not entry:
+			return self._default_add_amount
+		items = entry.options.get(CONF_PRICE_ADJUST_SENSORS, []) or []
+		for item in items:
+			if str(item.get("id") or "") == self._config_id:
+				try:
+					return float(item.get("add_amount", self._default_add_amount))
+				except (TypeError, ValueError):
+					return self._default_add_amount
+		return self._default_add_amount
+
+	def _recalculate_from_source(self):
+		state = self._hass.states.get(self._source_entity_id)
+		if not state or state.state in ("unknown", "unavailable"):
+			self._native_value = None
+			self._available = False
+			self._copied_attributes = {}
+			return
+		self._available = True
+		self._unit = state.attributes.get("unit_of_measurement")
+		add_amount = self._get_current_add_amount()
+		self._native_value = compute_adjusted_value(state.state, add_amount)
+		
+		# Copy all attributes, adjusting only price-like ones (except raw*)
+		copied = dict(state.attributes or {})
+		adjusted_attrs = {}
+		for key, value in copied.items():
+			key_norm = str(key)
+			if "raw" in key_norm.lower():
+				adjusted_attrs[key] = value
+				continue
+			if is_price_attribute_key(key_norm):
+				adjusted_attrs[key] = adjust_attribute_value(value, add_amount)
+				continue
+			# Non-price attributes are copied verbatim
+			adjusted_attrs[key] = value
+		
+		# Always expose metadata for debugging / template usage
+		adjusted_attrs["source_entity_id"] = self._source_entity_id
+		adjusted_attrs["add_amount"] = add_amount
+		self._copied_attributes = adjusted_attrs
+
+	async def async_added_to_hass(self):
+		self._recalculate_from_source()
+		self._unsub_state_change = async_track_state_change_event(
+			self._hass, [self._source_entity_id], self._handle_source_change
+		)
+		self.async_write_ha_state()
+
+	async def async_will_remove_from_hass(self):
+		if self._unsub_state_change:
+			try:
+				self._unsub_state_change()
+			except Exception:
+				pass
+			self._unsub_state_change = None
+
+	async def _handle_source_change(self, event):
+		self._recalculate_from_source()
+		self.async_write_ha_state()
+
+	@property
+	def available(self):
+		return self._available
+
+	@property
+	def native_value(self):
+		return self._native_value
+
+	@property
+	def native_unit_of_measurement(self):
+		return self._unit
+
+	@property
+	def unit_of_measurement(self):
+		return self._unit
+
+	async def async_update(self):
+		"""Force a refresh (e.g. after options change)."""
+		self._recalculate_from_source()
+
+	@property
+	def extra_state_attributes(self):
+		return dict(self._copied_attributes or {})
 
 class EnergySensor(SensorEntity, RestoreEntity):
 	"""Custom sensor to calculate kWh from power (Watts)."""
@@ -1117,6 +1296,19 @@ class EnergySensor(SensorEntity, RestoreEntity):
 					self._last_update is not None and
 					not self._using_statistical):  # Never switch back from statistical to point sampling
 					time_delta = (now - self._last_update).total_seconds()
+					sample_interval = int(config_options.get("sample_interval", 60) or 60)
+					max_gap_seconds = max(POINT_SAMPLING_MAX_GAP_SECONDS, sample_interval * 3)
+					if time_delta > max_gap_seconds:
+						_LOGGER.info(
+							f"Skipping point sampling for {self._attr_name}: "
+							f"{time_delta:.0f}s gap since last update (likely restart/offline). "
+							f"Waiting for fresh data to avoid overreading."
+						)
+						self._last_power = power
+						self._last_update = now
+						await self._save_state()
+						self.safe_write_ha_state()
+						return
 					delta_hours = time_delta / 3600
 					_debug_log(self.hass, f"Point sampling calculation for {self._attr_name} | Last power: {self._last_power} | Current power: {power} | Time delta: {time_delta:.0f}s")
 					avg_power = (self._last_power + power) / 2

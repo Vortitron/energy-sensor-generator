@@ -128,6 +128,19 @@ Some appliances (such as hard-wired hot water cylinders or three-phase heaters) 
 4. Include the new energy sensors (e.g., `sensor.boiler_constant_energy`) in the Energy dashboard just like sensors derived from real power meters.
 
 This method is ideal for fixed loads that are either fully on or off; the integration automatically ignores unavailable states and debounces rapid toggles.
+
+### Electricity Price Add-ons (Nordpool + transmission/tax)
+If your electricity price sensor (e.g. Nordpool) only reports the spot price, you can create an **adjusted price sensor** that mirrors another sensor and adds a fixed amount per kWh (for transmission, tax, fixed adders, etc.):
+
+1. Go to **Settings → Devices & Services → Energy Sensor Generator → Configure**.
+2. Press **Configure electricity price add-ons**.
+3. Choose:
+   - **Source price sensor** (e.g. `sensor.nordpool_kwh_se4_sek_3_10_025`)
+   - **Fixed add-on amount** (numeric; same unit as the source sensor)
+   - Optional **Friendly name override**
+4. Submit the options. A new sensor will appear with the adjusted value.
+
+The adjusted sensor tracks the source sensor’s unit of measurement and becomes unavailable if the source sensor is unavailable.
 - **Monitoring**:
   - View sensor states in **Developer Tools > States** (e.g., `sensor.plug_1_energy`, `sensor.plug_1_daily_energy`).
   - Check energy usage in the **Energy** dashboard.
@@ -172,6 +185,11 @@ Storage entry (`.storage/energy_sensor_generator`):
 - **To enable**: Go to **Settings > Devices & Services > Energy Sensor Generator > Configure** and toggle "Debug Logging"
 - Debug messages appear in **Settings > System > Logs** with the "DEBUG:" prefix
 - **Note**: Disable debug logging once issues are resolved to prevent log spam
+
+### Hourly Copy Service (v0.0.82)
+- Use `hour_to_fix` when you know which hour needs fixing; the integration copies data from `hours_back` hours earlier (default 1).
+- Legacy `target_datetime` still works if you prefer to point at the known-good hour directly.
+- After long restarts (10+ minutes) the integration now skips point sampling rather than guessing the missing energy. If a restart still causes a bump, run the copy service right away to snap all sensors back to the previous hour.
 
 ### Database Access Issues (RESOLVED ✅)
 - **Fixed in v0.0.47**: All database access now uses the proper `recorder.get_instance(hass).async_add_executor_job()` method

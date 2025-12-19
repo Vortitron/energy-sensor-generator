@@ -65,7 +65,10 @@ Use the hourly copy service to set all sensors back to values before the restart
 ```yaml
 service: energy_sensor_generator.copy_from_previous_hour
 data:
-  target_datetime: "2025-10-01 15:45:00"  # 15 minutes before restart
+  hour_to_fix: "2025-10-01 16:00:00"      # Hour that spiked
+  hours_back: 1                            # Copy from the previous hour automatically
+  # Legacy mode:
+  # target_datetime: "2025-10-01 15:45:00"
 ```
 
 **Or** if you know the exact correct values, adjust manually:
@@ -158,6 +161,12 @@ v0.0.78 includes ALL previous fixes:
 2. ✅ **v0.0.78**: Use `_last_update` on restart (fixed restart overreads)
 
 Together these fix BOTH major overread bugs!
+
+### Additional Protection (v0.0.82)
+
+Occasionally Home Assistant restarts leave a long gap (10+ minutes) between the last stored update and the first post-restart calculation. Older versions bridged that gap with point sampling, which could add a noticeable chunk of phantom energy even though no measurements existed for the downtime.
+
+From v0.0.82 onwards, point sampling is **skipped** whenever the gap exceeds `max(sample_interval × 3, 10 minutes)`. The integration now just refreshes its tracking timestamps and waits for fresh power readings (or a statistical calculation) before adding any new energy. If an actual overread still slips through, use the hourly copy service with `hour_to_fix` to revert the hour cleanly.
 
 ## Version History
 - **v0.0.78** - Fixed restart overread by using `_last_update` instead of lookback
