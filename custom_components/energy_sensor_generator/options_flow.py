@@ -23,10 +23,12 @@ from .const import (
 	CONF_FORCE_STATISTICAL_ONLY,
 	CONF_STAT_LOOKBACK_MINUTES,
 	CONF_MAX_ENERGY_PER_HOUR,
-	CONF_CONSTANT_POWER_DEVICES
+	CONF_CONSTANT_POWER_DEVICES,
+	CONF_PRICE_ADJUST_SENSORS
 )
 from .__init__ import detect_power_sensors  # Import the detect function
 from .utils import format_constant_power_devices_text
+import uuid
 
 class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 	def __init__(self, config_entry):
@@ -36,6 +38,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		self._user_defaults = {}
 		self._show_advanced = False
 		self._constant_devices_return_step = "init"
+		self._price_adjust_return_step = "init"
 
 	def _get_constant_devices(self) -> list:
 		"""Return a copy of the currently edited constant device list."""
@@ -45,6 +48,15 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 	def _set_constant_devices(self, devices: list) -> None:
 		"""Persist the working constant device list."""
 		self._user_defaults[CONF_CONSTANT_POWER_DEVICES] = [dict(device) for device in devices]
+	
+	def _get_price_adjustments(self) -> list:
+		"""Return a copy of the currently edited price adjustment list."""
+		defaults = {**self.config_entry.options, **self._user_defaults}
+		return [dict(item) for item in defaults.get(CONF_PRICE_ADJUST_SENSORS, []) or []]
+	
+	def _set_price_adjustments(self, items: list) -> None:
+		"""Persist the working price adjustment list."""
+		self._user_defaults[CONF_PRICE_ADJUST_SENSORS] = [dict(item) for item in items]
 
 	async def async_step_init(self, user_input=None):
 		"""Manage the options for the integration."""
@@ -78,6 +90,16 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		create_annual = defaults.get("create_annual_sensors", True)
 		existing_constant_devices = defaults.get(CONF_CONSTANT_POWER_DEVICES, [])
 		constant_devices_summary = format_constant_power_devices_text(existing_constant_devices) or "— None configured —"
+		price_adjust_summary = "— None configured —"
+		try:
+			if defaults.get(CONF_PRICE_ADJUST_SENSORS, []):
+				price_adjust_summary = "\n".join([
+					f"{item.get('name') or item.get('source_entity_id')} (+{item.get('add_amount')})"
+					for item in defaults.get(CONF_PRICE_ADJUST_SENSORS, []) or []
+					if item.get("source_entity_id")
+				]) or "— None configured —"
+		except Exception:
+			price_adjust_summary = "— None configured —"
 		
 		# Advanced settings (hidden by default)
 		sample_interval = defaults.get("sample_interval", 60)
@@ -188,6 +210,12 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				self._constant_devices_return_step = "init"
 				return await self.async_step_constant_devices()
 			
+			if user_input.get("configure_price_adjustments"):
+				self._user_defaults.update(user_input)
+				self._user_defaults.pop("configure_price_adjustments", None)
+				self._price_adjust_return_step = "init"
+				return await self.async_step_price_adjustments()
+			
 			# Get period sensor options - parse from multi-select
 			period_sensors = user_input.get("period_sensors", ["daily", "monthly", "weekly", "annual"])
 			create_daily = "daily" in period_sensors
@@ -219,7 +247,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 						CONF_CREATE_SYNTHETIC_GRID_TOTAL: synthetic_grid_total,
 						CONF_FORCE_STATISTICAL_ONLY: force_statistical_only,
 						CONF_STAT_LOOKBACK_MINUTES: stat_lookback,
-						CONF_CONSTANT_POWER_DEVICES: self._get_constant_devices()
+						CONF_CONSTANT_POWER_DEVICES: self._get_constant_devices(),
+						CONF_PRICE_ADJUST_SENSORS: self._get_price_adjustments()
 					}
 				)
 
@@ -254,6 +283,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		)
 		
 		schema[vol.Optional("configure_constant_devices", default=False)] = BooleanSelector()
+		schema[vol.Optional("configure_price_adjustments", default=False)] = BooleanSelector()
 		
 		# Create period sensors multi-select
 		default_periods = []
@@ -292,7 +322,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			description_placeholders={
 				"count": len(all_power_sensors),
 				"constant_hint": "switch.boiler_element = 3 kW | Hot Water Boost",
-				"constant_summary": constant_devices_summary
+				"constant_summary": constant_devices_summary,
+				"price_adjust_summary": price_adjust_summary
 			}
 		) 
 
@@ -310,6 +341,16 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		constant_devices_summary = format_constant_power_devices_text(
 			defaults.get(CONF_CONSTANT_POWER_DEVICES, [])
 		) or "— None configured —"
+		price_adjust_summary = "— None configured —"
+		try:
+			if defaults.get(CONF_PRICE_ADJUST_SENSORS, []):
+				price_adjust_summary = "\n".join([
+					f"{item.get('name') or item.get('source_entity_id')} (+{item.get('add_amount')})"
+					for item in defaults.get(CONF_PRICE_ADJUST_SENSORS, []) or []
+					if item.get("source_entity_id")
+				]) or "— None configured —"
+		except Exception:
+			price_adjust_summary = "— None configured —"
 		
 		if user_input is not None:
 			# Update defaults with advanced settings
@@ -319,6 +360,11 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				self._user_defaults.pop("configure_constant_devices", None)
 				self._constant_devices_return_step = "advanced"
 				return await self.async_step_constant_devices()
+			
+			if user_input.get("configure_price_adjustments"):
+				self._user_defaults.pop("configure_price_adjustments", None)
+				self._price_adjust_return_step = "advanced"
+				return await self.async_step_price_adjustments()
 			
 			# Process all the data and save
 			all_data = {**self._user_defaults}
@@ -362,7 +408,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 					CONF_FORCE_STATISTICAL_ONLY: force_statistical_only,
 					CONF_STAT_LOOKBACK_MINUTES: stat_lookback,
 					CONF_MAX_ENERGY_PER_HOUR: max_energy_per_hour,
-					CONF_CONSTANT_POWER_DEVICES: self._get_constant_devices()
+					CONF_CONSTANT_POWER_DEVICES: self._get_constant_devices(),
+					CONF_PRICE_ADJUST_SENSORS: self._get_price_adjustments()
 				}
 			)
 			
@@ -406,14 +453,145 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		# Option to create synthetic grid total
 		schema[vol.Optional(CONF_CREATE_SYNTHETIC_GRID_TOTAL, default=synthetic_grid_total)] = BooleanSelector()
 		schema[vol.Optional("configure_constant_devices", default=False)] = BooleanSelector()
+		schema[vol.Optional("configure_price_adjustments", default=False)] = BooleanSelector()
 		
 		return self.async_show_form(
 			step_id="advanced",
 			data_schema=vol.Schema(schema),
 			errors=self._errors,
 			description_placeholders={
-				"constant_summary": constant_devices_summary
+				"constant_summary": constant_devices_summary,
+				"price_adjust_summary": price_adjust_summary
 			}
+		)
+
+	async def async_step_price_adjustments(self, user_input=None):
+		"""Manage electricity price add-ons (source sensor + fixed add amount)."""
+		self._errors = {}
+		items = self._get_price_adjustments()
+		status_message = self._user_defaults.pop("_price_adjust_status", None)
+		
+		summary_lines = []
+		for item in items:
+			source = item.get("source_entity_id")
+			if not source:
+				continue
+			name = (item.get("name") or source).strip()
+			add_amount = item.get("add_amount", 0)
+			summary_lines.append(f"{name} — {source} — add {add_amount}")
+		price_adjust_summary = "\n".join(summary_lines) or "— None configured —"
+		
+		remove_options = []
+		for item in items:
+			item_id = item.get("id")
+			source = item.get("source_entity_id")
+			if not item_id or not source:
+				continue
+			label = (item.get("name") or source).strip()
+			remove_options.append({"value": str(item_id), "label": f"{label} — {source}"})
+		
+		if user_input is not None:
+			action = user_input.get("price_adjust_action", "finish")
+			
+			if action == "finish":
+				next_step = self._price_adjust_return_step or "init"
+				self._price_adjust_return_step = "init"
+				if next_step == "advanced":
+					return await self.async_step_advanced()
+				return await self.async_step_init()
+			
+			if action == "add":
+				source_entity = user_input.get("price_adjust_source")
+				add_amount = user_input.get("price_adjust_add_amount")
+				friendly_name = user_input.get("price_adjust_name")
+				
+				if not source_entity or add_amount is None:
+					self._errors["base"] = "price_adjust_missing_fields"
+				else:
+					try:
+						add_amount_float = float(add_amount)
+					except (TypeError, ValueError):
+						self._errors["base"] = "price_adjust_invalid_amount"
+					else:
+						# Update existing entry for this source if present (keep stable id)
+						existing = next((x for x in items if x.get("source_entity_id") == source_entity), None)
+						if existing and existing.get("id"):
+							config_id = str(existing["id"])
+						else:
+							config_id = uuid.uuid4().hex
+						
+						items = [x for x in items if x.get("id") != config_id and x.get("source_entity_id") != source_entity]
+						entry = {
+							"id": config_id,
+							"source_entity_id": source_entity,
+							"add_amount": add_amount_float,
+						}
+						if friendly_name:
+							entry["name"] = friendly_name
+						items.append(entry)
+						self._set_price_adjustments(items)
+						self._user_defaults["_price_adjust_status"] = f"Added {source_entity}"
+						return await self.async_step_price_adjustments()
+			
+			if action == "remove":
+				target_id = user_input.get("price_adjust_remove")
+				if not items:
+					self._errors["base"] = "no_price_adjustments"
+				elif not target_id:
+					self._errors["price_adjust_remove"] = "price_adjust_missing_fields"
+				else:
+					items = [x for x in items if str(x.get("id")) != str(target_id)]
+					self._set_price_adjustments(items)
+					self._user_defaults["_price_adjust_status"] = "Removed entry"
+					return await self.async_step_price_adjustments()
+			
+			if action == "clear":
+				if items:
+					items = []
+					self._set_price_adjustments(items)
+					self._user_defaults["_price_adjust_status"] = "Cleared all entries"
+					return await self.async_step_price_adjustments()
+				self._errors["base"] = "no_price_adjustments"
+		
+		schema = {}
+		schema[vol.Optional("price_adjust_action", default="add")] = SelectSelector(
+			SelectSelectorConfig(
+				options=[
+					{"value": "add", "label": "Add / update adjustment"},
+					{"value": "remove", "label": "Remove adjustment"},
+					{"value": "clear", "label": "Remove all"},
+					{"value": "finish", "label": "Done"},
+				],
+				multiple=False,
+				mode=SelectSelectorMode.DROPDOWN,
+			)
+		)
+		schema[vol.Optional("price_adjust_source")] = EntitySelector(
+			EntitySelectorConfig(domain="sensor", multiple=False)
+		)
+		schema[vol.Optional("price_adjust_add_amount", default=0.0)] = NumberSelector(
+			NumberSelectorConfig(
+				min=-10.0,
+				max=10.0,
+				step=0.001,
+				unit_of_measurement="(same as source)",
+				mode=NumberSelectorMode.BOX,
+			)
+		)
+		schema[vol.Optional("price_adjust_name")] = TextSelector(TextSelectorConfig(multiline=False))
+		if remove_options:
+			schema[vol.Optional("price_adjust_remove")] = SelectSelector(
+				SelectSelectorConfig(options=remove_options, multiple=False, mode=SelectSelectorMode.DROPDOWN)
+			)
+		
+		return self.async_show_form(
+			step_id="price_adjustments",
+			data_schema=vol.Schema(schema),
+			errors=self._errors,
+			description_placeholders={
+				"price_adjust_summary": price_adjust_summary,
+				"price_adjust_status": status_message or "",
+			},
 		)
 
 	async def async_step_constant_devices(self, user_input=None):

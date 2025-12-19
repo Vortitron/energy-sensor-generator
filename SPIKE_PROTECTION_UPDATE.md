@@ -28,7 +28,10 @@ Set ALL energy sensors to their values from a specific date/hour - perfect for f
 ```yaml
 service: energy_sensor_generator.copy_from_previous_hour
 data:
-  target_datetime: "2025-09-30 15:00:00"  # Hour BEFORE the spike
+  hour_to_fix: "2025-09-30 16:00:00"      # Hour WITH the spike
+  hours_back: 1                            # Copy from the previous hour automatically
+  # Legacy mode:
+  # target_datetime: "2025-09-30 15:00:00"
 ```
 
 **What it does:**
@@ -119,7 +122,8 @@ To fix that 1,832 kWh spike at 16:00-17:00:
 ```yaml
 service: energy_sensor_generator.copy_from_previous_hour
 data:
-  target_datetime: "2025-09-30 15:00:00"  # Hour BEFORE the spike at 16:00
+  hour_to_fix: "2025-09-30 16:00:00"
+  hours_back: 1
 ```
 
 This will:

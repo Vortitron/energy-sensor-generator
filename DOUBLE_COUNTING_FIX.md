@@ -69,6 +69,9 @@ If you know a time when the values were correct (e.g., this morning before the i
 service: energy_sensor_generator.copy_from_previous_hour
 data:
   target_datetime: "2025-10-01 08:00:00"  # Replace with a good timestamp
+  # Alternatively specify the bad hour:
+  # hour_to_fix: "2025-10-01 09:00:00"
+  # hours_back: 1
 ```
 
 **Option B: Manually adjust each sensor**
