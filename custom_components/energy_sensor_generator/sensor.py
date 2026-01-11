@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timedelta
 import homeassistant.util.dt as dt_util
+import asyncio
 from homeassistant.components.sensor import (
 	SensorEntity, 
 	SensorDeviceClass,
@@ -36,6 +37,9 @@ from .const import (
 	CONF_CONSTANT_POWER_DEVICES,
 	CONF_PRICE_ADJUST_SENSORS,
 	POINT_SAMPLING_MAX_GAP_SECONDS,
+	RESTART_AUDIT_DELAY_SECONDS,
+	RESTART_AUDIT_MULTIPLIER,
+	RESTART_AUDIT_MIN_DELTA_KWH,
 )
 import time
 from .price_adjustment import compute_adjusted_value, is_price_attribute_key, adjust_attribute_value
@@ -663,6 +667,10 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		self._using_statistical = False  # Track which calculation method was last used
 		self._last_statistical_calculation = None  # Track when we last performed statistical calculation
 		self._last_save_ts = 0
+		# Post-restart audit safety net (detect and roll back obvious overreads shortly after startup)
+		self._restart_baseline_kwh: float | None = None
+		self._restart_baseline_time = None
+		self._restart_audit_task: asyncio.Task | None = None
 		# State will be loaded in async_added_to_hass
 
 	def _get_power_conversion_factor(self, hass, source_sensor):
@@ -1097,6 +1105,112 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		)
 		self.safe_write_ha_state()
 
+		# Schedule a one-shot post-restart audit. This is intentionally conservative:
+		# it only rolls back when the increase is clearly impossible for the elapsed time.
+		try:
+			self._restart_baseline_kwh = float(self._state)
+			self._restart_baseline_time = dt_util.utcnow()
+			if self._restart_audit_task is None or self._restart_audit_task.done():
+				self._restart_audit_task = asyncio.create_task(self._restart_overread_audit())
+		except Exception:
+			pass
+
+	async def _restart_overread_audit(self):
+		"""Audit shortly after startup and roll back obvious overreads.
+
+		This is a safety net for restart edge-cases (power sensor gaps, recorder quirks, etc).
+		"""
+		try:
+			await asyncio.sleep(RESTART_AUDIT_DELAY_SECONDS)
+		except asyncio.CancelledError:
+			return
+		except Exception:
+			return
+
+		try:
+			if self._restart_baseline_kwh is None or self._restart_baseline_time is None:
+				return
+
+			now = dt_util.utcnow()
+			elapsed_s = (now - self._restart_baseline_time).total_seconds()
+			if elapsed_s <= 0:
+				return
+			elapsed_h = elapsed_s / 3600.0
+
+			current_kwh = float(self._state)
+			delta_kwh = current_kwh - float(self._restart_baseline_kwh)
+			if delta_kwh <= 0:
+				return
+			if delta_kwh < RESTART_AUDIT_MIN_DELTA_KWH:
+				return
+
+			# Compute a conservative upper bound for what could have happened since restart.
+			# We use a multiplier to avoid false positives for peaky loads.
+			self._ensure_conversion_factor()
+			if not self._power_to_kw_factor or self._power_to_kw_factor <= 0:
+				return
+
+			state = self._hass.states.get(self._source_sensor)
+			current_power = self._state_to_power(state) if state else None
+			if current_power is None:
+				return
+			last_power = self._last_power if self._last_power is not None else current_power
+			avg_power = (float(last_power) + float(current_power)) / 2.0
+			max_possible_kwh = (abs(avg_power) * elapsed_h) / float(self._power_to_kw_factor)
+			threshold_kwh = max_possible_kwh * RESTART_AUDIT_MULTIPLIER
+
+			# If spike protection is configured, also respect it.
+			config_options = _get_config_options(self._hass)
+			max_energy_per_hour = float(config_options.get(CONF_MAX_ENERGY_PER_HOUR, 0) or 0)
+			if max_energy_per_hour > 0:
+				threshold_kwh = min(threshold_kwh, max_energy_per_hour * elapsed_h)
+
+			# If threshold is tiny (e.g. device is off), set a small floor so we only
+			# revert meaningful jumps.
+			threshold_kwh = max(threshold_kwh, RESTART_AUDIT_MIN_DELTA_KWH)
+
+			if delta_kwh <= threshold_kwh:
+				return
+
+			_LOGGER.warning(
+				"RESTART AUDIT: %s jumped by %.4f kWh within %.0fs after restart (threshold %.4f). "
+				"Rolling back to %.4f kWh to avoid phantom overread.",
+				self._attr_name,
+				delta_kwh,
+				elapsed_s,
+				threshold_kwh,
+				self._restart_baseline_kwh,
+			)
+
+			# Roll back to baseline and persist
+			self._state = float(self._restart_baseline_kwh)
+			await self._save_state()
+			self.safe_write_ha_state()
+
+			# Single notification per HA runtime to avoid spam
+			try:
+				if DOMAIN in self._hass.data:
+					key = "_restart_audit_notified"
+					if not self._hass.data[DOMAIN].get(key):
+						self._hass.data[DOMAIN][key] = True
+						await self._hass.services.async_call(
+							"persistent_notification",
+							"create",
+							{
+								"title": "Restart Overread Auto-Fix",
+								"message": (
+									"Detected an unrealistic post-restart energy jump and rolled it back.\n\n"
+									"If the Energy dashboard still shows the spike, refresh or wait for the next statistics update."
+								),
+								"notification_id": "energy_restart_audit_fix",
+							},
+						)
+			except Exception:
+				pass
+
+		except Exception as err:
+			_LOGGER.debug("Restart audit failed for %s: %s", getattr(self, "_attr_name", "?"), err)
+
 	async def _handle_interval_update(self, now):
 		"""Update energy calculation at regular intervals using statistical data when possible."""
 		# Only log interval updates when they result in actual calculations to reduce spam
@@ -1156,7 +1270,21 @@ class EnergySensor(SensorEntity, RestoreEntity):
 						window_description = f"from last_update {self._last_update}"
 						_debug_log(self.hass, f"Post-restart calculation using last_update: {stat_start_time} to {stat_end_time}")
 						_LOGGER.warning(f"Using last_update for {self._attr_name} to prevent double-counting on restart (last update: {self._last_update})")
-						statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
+						# If the time gap is very large, avoid backfilling via stats immediately after restart;
+						# wait for fresh power readings instead to avoid phantom energy.
+						gap_seconds = (now - self._last_update).total_seconds()
+						sample_interval = int(config_options.get("sample_interval", 60) or 60)
+						max_gap_seconds = max(POINT_SAMPLING_MAX_GAP_SECONDS, sample_interval * 3)
+						if gap_seconds > max_gap_seconds:
+							_LOGGER.info(
+								"Skipping post-restart statistical calculation for %s due to %.0fs gap since last_update; "
+								"waiting for fresh data to avoid overreading.",
+								self._attr_name,
+								gap_seconds,
+							)
+							statistical_data = None
+						else:
+							statistical_data = await self._get_statistical_power_data(stat_start_time, stat_end_time)
 					else:
 						# True first calculation: no previous tracking at all
 						# Use lookback window but LOG A WARNING since this adds historical data
@@ -1411,6 +1539,12 @@ class EnergySensor(SensorEntity, RestoreEntity):
 
 	async def async_will_remove_from_hass(self):
 		"""Clean up resources when entity is removed."""
+		# Cancel restart audit if pending
+		try:
+			if self._restart_audit_task and not self._restart_audit_task.done():
+				self._restart_audit_task.cancel()
+		except Exception:
+			pass
 		try:
 			if hasattr(self, "_unsub_state") and self._unsub_state:
 				self._unsub_state()
