@@ -16,3 +16,8 @@ CONF_PRICE_ADJUST_SENSORS = "price_adjust_sensors"
 
 # Internal safeguards
 POINT_SAMPLING_MAX_GAP_SECONDS = 600  # Skip point sampling if the gap exceeds this
+
+# Post-restart safety net: audit shortly after startup and roll back obvious overreads
+RESTART_AUDIT_DELAY_SECONDS = 600
+RESTART_AUDIT_MULTIPLIER = 3.0
+RESTART_AUDIT_MIN_DELTA_KWH = 0.05

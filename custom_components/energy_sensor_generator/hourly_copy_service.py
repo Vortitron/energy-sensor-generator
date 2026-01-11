@@ -68,12 +68,31 @@ class CopyRequest:
 
 def _parse_service_datetime(raw_value: str) -> datetime:
 	"""Parse service datetime strings into timezone-aware UTC datetimes."""
+	raw = str(raw_value or "").strip()
+	if not raw:
+		raise ValueError("Datetime must not be empty")
+
+	parsed = None
+	# Primary: Home Assistant parser (treats naive datetimes as local)
 	try:
-		parsed = dt_util.parse_datetime(raw_value, raise_on_error=True)
-	except ValueError as err:
-		raise ValueError(
-			f"Invalid datetime '{raw_value}'. Use 'YYYY-MM-DD HH:MM:SS' (or ISO 8601)."
-		) from err
+		parsed = dt_util.parse_datetime(raw, raise_on_error=False)
+	except Exception:
+		parsed = None
+
+	# Fallback: allow common local-time format with a space separator
+	if parsed is None:
+		try:
+			parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+		except ValueError:
+			try:
+				# Some parsers only accept "T"
+				parsed = datetime.fromisoformat(raw.replace(" ", "T", 1).replace("Z", "+00:00"))
+			except ValueError as err:
+				raise ValueError(
+					f"Invalid datetime '{raw_value}'. Use 'YYYY-MM-DD HH:MM:SS' (local time), "
+					"or ISO 8601 (e.g. 'YYYY-MM-DDTHH:MM:SS+00:00')."
+				) from err
+
 	return dt_util.as_utc(parsed)
 
 

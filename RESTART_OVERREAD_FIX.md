@@ -168,6 +168,15 @@ Occasionally Home Assistant restarts leave a long gap (10+ minutes) between the 
 
 From v0.0.82 onwards, point sampling is **skipped** whenever the gap exceeds `max(sample_interval × 3, 10 minutes)`. The integration now just refreshes its tracking timestamps and waits for fresh power readings (or a statistical calculation) before adding any new energy. If an actual overread still slips through, use the hourly copy service with `hour_to_fix` to revert the hour cleanly.
 
+### Automatic Post-Restart Audit (v0.0.83)
+
+From v0.0.83, each generated energy sensor performs a **one-shot audit ~10 minutes after Home Assistant starts**:
+
+- If the sensor jumps by an amount that is clearly impossible given the elapsed time and power readings, it automatically rolls back to the pre-restart value.
+- A single persistent notification is created the first time this triggers (to avoid spam).
+
+This is intentionally conservative: it only triggers on obvious phantom jumps, not legitimate usage.
+
 ## Version History
 - **v0.0.78** - Fixed restart overread by using `_last_update` instead of lookback
 - **v0.0.77** - Fixed double-counting in statistical calculations (removed 1-minute buffer)
