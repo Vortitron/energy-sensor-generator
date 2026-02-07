@@ -22,6 +22,7 @@ def _load_module(name: str, relative_path: str):
 _hourly = _load_module("energy_sensor_generator_hourly_copy_service", "hourly_copy_service.py")
 _resolve_copy_request = _hourly._resolve_copy_request
 _pick_best_state = _hourly._pick_best_state
+_parse_service_datetime = _hourly._parse_service_datetime
 
 
 def _make_state(value: str, ts: datetime):
@@ -48,6 +49,11 @@ def test_resolve_copy_request_using_hour_to_fix():
 def test_resolve_copy_request_requires_fields():
 	with pytest.raises(ValueError):
 		_resolve_copy_request({})
+
+
+def test_parse_service_datetime_accepts_local_format():
+	parsed = _parse_service_datetime("2026-01-11 18:00:00")
+	assert parsed.tzinfo is not None
 
 
 def test_pick_best_state_prefers_previous_values():

@@ -30,7 +30,7 @@ This is exactly what you asked for! You can now copy all sensor values from a sp
 You now have **two** ways to specify the hour you want to reuse:
 
 1. **Provide the known-good hour** via `target_datetime` (legacy behaviour).
-2. **Provide the hour you want to fix** via `hour_to_fix`; the service copies from `hours_back` hours before that time (default 1).
+2. **Provide the hour you want to fix** via `hour_to_fix`; the service copies from `hours_back` hours before that time (default 1) **and adjusts the Energy dashboard statistics**.
 
 To fix the spike at 16:00-17:00 by copying values from 15:00 (legacy method):
 
@@ -53,7 +53,8 @@ Both versions will:
 1. Look up ALL energy sensor values from the chosen source hour
 2. Set the current values of all sensors to those historical values
 3. Effectively "delete" everything after that hour (the spike)
-4. Show a notification with results
+4. **If `hour_to_fix` is used:** update recorder statistics so the *Energy dashboard* hourly graph also corrects
+5. Show a notification with results
 
 #### What It Does Behind the Scenes
 
@@ -99,7 +100,8 @@ Go to **Developer Tools → Services** and run:
 ```yaml
 service: energy_sensor_generator.copy_from_previous_hour
 data:
-  target_datetime: "2025-09-30 15:00:00"
+  hour_to_fix: "2025-09-30 16:00:00"
+  hours_back: 1
 ```
 
 ### Step 3: Verify

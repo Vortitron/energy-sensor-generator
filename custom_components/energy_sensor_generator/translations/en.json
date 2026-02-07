@@ -16,40 +16,57 @@
   },
   "options": {
     "step": {
-      "init": {
+      "menu": {
+        "title": "Energy Sensor Generator",
+        "description": "Choose what you want to configure.\n\nConstant power devices:\n{constant_summary}\n\nPower sums:\n{power_sum_summary}\n\nElectricity price add-ons:\n{price_adjust_summary}",
+        "menu_options": {
+          "sensors": "Select power sensors",
+          "constant_devices": "Constant power devices",
+          "power_sums": "Power sums",
+          "price_adjustments": "Electricity price add-ons",
+          "advanced": "Advanced settings"
+        }
+      },
+      "sensors": {
         "title": "Select Power Sensors",
-        "description": "Select which power sensors (in Watts/kW) should have energy sensors (kWh) generated. Energy sensors will be created automatically when you submit. Found {count} power sensors in your system. Use \"Configure constant power devices\" to pair switches with fixed wattage loads (e.g. {constant_hint}). Current constant devices:\n{constant_summary}\n\nElectricity price add-ons:\n{price_adjust_summary}",
+        "description": "Select which power sensors (in Watts/kW) should have energy sensors (kWh) generated. Energy sensors will be created automatically when you submit. Found {count} power sensors in your system.",
         "data": {
           "selected_power_sensors": "Select power sensors to monitor",
-          "custom_power_sensor": "Add any sensor (for if it isn't marked as a power sensor)",
-          "configure_constant_devices": "Configure constant power devices →",
-          "configure_price_adjustments": "Configure electricity price add-ons →",
-          "period_sensors": "Create sensors for periods",
-          "show_advanced": "Configure advanced settings (after submit) →"
+          "period_sensors": "Create sensors for periods"
         }
       },
       "advanced": {
         "title": "Advanced Settings",
-        "description": "Configure advanced settings for energy sensor generation. Sensors will be created automatically when you submit. Constant power devices: {constant_summary}\n\nElectricity price add-ons:\n{price_adjust_summary}",
+        "description": "Configure advanced settings for energy sensor generation. Sensors will be created automatically when you submit.",
         "data": {
+          "custom_power_sensor": "Add any sensor (for if it isn't marked as a power sensor)",
           "sample_interval": "Sampling interval",
           "debug_logging": "Enable debug logging",
           "use_statistical_calculation": "Use statistical calculation",
           "force_statistical_only": "Force statistical calculation only (skip point sampling)",
           "stat_initial_lookback_minutes": "Initial statistical lookback period",
           "max_energy_per_hour": "Maximum energy per hour (spike protection)",
-          "create_synthetic_grid_total": "Create synthetic 'Grid total' energy sensor (requires reload)",
-          "configure_constant_devices": "Configure constant power devices →",
-          "configure_price_adjustments": "Configure electricity price add-ons →"
+          "create_synthetic_grid_total": "Create synthetic 'Grid total' energy sensor (requires reload)"
+        }
+      },
+      "power_sums": {
+        "title": "Power Sums",
+        "description": "Create derived power sensors (Watts) that sum multiple source power sensors. These are useful for cases like dual feeds where you want a combined upstream for the Energy dashboard, while keeping each feed visible.\n\nExisting entries:\n{power_sum_summary}\n{power_sum_status}",
+        "data": {
+          "power_sum_action": "Action",
+          "power_sum_name": "Name (e.g. Combined L1)",
+          "power_sum_sources": "Source power sensors to sum (2+)",
+          "power_sum_remove": "Entry to remove"
         }
       },
       "constant_devices": {
         "title": "Constant Power Devices",
-        "description": "Add or remove switch entities that represent a fixed-power load. Existing entries:\n{constant_summary}\n{constant_status}",
+        "description": "Add or remove switch entities that represent a fixed-power load. If you create multiple entities for one switch, the total power is split evenly.\n\nExisting entries:\n{constant_summary}\n{constant_status}",
         "data": {
           "constant_device_action": "Action",
           "constant_device_switch": "Switch/helper entity",
-          "constant_device_power": "Rated power (Watts)",
+          "constant_device_power": "Total rated power (Watts)",
+          "constant_device_instances": "Number of entities to create (split evenly)",
           "constant_device_name": "Friendly name override (optional)",
           "constant_device_remove": "Device to remove"
         }
@@ -68,20 +85,22 @@
     },
     "fields": {
       "period_sensors": "Create sensors for periods",
-      "configure_constant_devices": "Configure constant power devices →",
+      "power_sum_action": "Action",
+      "power_sum_name": "Name (e.g. Combined L1)",
+      "power_sum_sources": "Source power sensors to sum (2+)",
+      "power_sum_remove": "Entry to remove",
       "constant_device_action": "Action",
       "constant_device_switch": "Switch/helper entity",
-      "constant_device_power": "Rated power (Watts)",
+      "constant_device_power": "Total rated power (Watts)",
+      "constant_device_instances": "Number of entities to create (split evenly)",
       "constant_device_name": "Friendly name override (optional)",
       "constant_device_remove": "Device to remove",
-      "configure_price_adjustments": "Configure electricity price add-ons →",
       "price_adjust_action": "Action",
       "price_adjust_source": "Source price sensor",
       "price_adjust_add_amount": "Fixed add-on amount",
       "price_adjust_name": "Friendly name override (optional)",
       "price_adjust_remove": "Entry to remove",
       "create_synthetic_grid_total": "Create synthetic 'Grid total' energy sensor (requires reload)",
-      "show_advanced": "Configure advanced settings (after submit) →",
       "sample_interval": "Sampling interval",
       "debug_logging": "Enable debug logging",
       "use_statistical_calculation": "Use statistical calculation",
@@ -93,11 +112,14 @@
       "invalid_entity_format": "Invalid entity format. All entities must start with 'sensor.'",
       "constant_device_missing_fields": "Select a switch and watt value before adding a constant device.",
       "constant_device_invalid_power": "Enter a positive watt value.",
+      "constant_device_invalid_instances": "Enter a valid number of entities (1-50).",
       "no_constant_devices": "No constant power devices available to modify.",
       "constant_device_unknown_action": "Unknown constant device action.",
       "price_adjust_missing_fields": "Select a source sensor and add-on amount before adding an entry.",
       "price_adjust_invalid_amount": "Enter a valid number for the add-on amount.",
-      "no_price_adjustments": "No electricity price add-ons available to modify."
+      "no_price_adjustments": "No electricity price add-ons available to modify.",
+      "power_sum_missing_fields": "Select at least two source power sensors before adding a power sum.",
+      "no_power_sums": "No power sums available to modify."
     }
   }
 }

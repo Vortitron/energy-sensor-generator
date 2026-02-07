@@ -7,7 +7,7 @@ from homeassistant.components.sensor import (
 	SensorDeviceClass,
 	SensorStateClass
 )
-from homeassistant.const import UnitOfEnergy, STATE_ON, STATE_OFF, STATE_OPEN, STATE_CLOSED
+from homeassistant.const import UnitOfEnergy, UnitOfPower, STATE_ON, STATE_OFF, STATE_OPEN, STATE_CLOSED
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change, async_track_time_interval
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
@@ -16,6 +16,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util import slugify as ha_slugify
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ try:
 except ImportError:
 	STATISTICS_AVAILABLE = False
 	_LOGGER.warning("Statistics module not available, using point sampling only")
-from .utils import StorageManager, derive_constant_base_name
+from .utils import StorageManager, derive_constant_base_name, expand_constant_power_devices
 from .const import (
 	DOMAIN, 
 	CONF_DEBUG_LOGGING, 
@@ -36,6 +37,10 @@ from .const import (
 	CONF_MAX_ENERGY_PER_HOUR,
 	CONF_CONSTANT_POWER_DEVICES,
 	CONF_PRICE_ADJUST_SENSORS,
+	CONF_CONSTANT_DEVICE_SWITCH_ENTITY_ID,
+	CONF_CONSTANT_DEVICE_POWER_W,
+	CONF_CONSTANT_DEVICE_NAME,
+	CONF_CONSTANT_DEVICE_INSTANCES,
 	POINT_SAMPLING_MAX_GAP_SECONDS,
 	RESTART_AUDIT_DELAY_SECONDS,
 	RESTART_AUDIT_MULTIPLIER,
@@ -43,6 +48,32 @@ from .const import (
 )
 import time
 from .price_adjustment import compute_adjusted_value, is_price_attribute_key, adjust_attribute_value
+from .const import CONF_POWER_SUM_SENSORS
+
+
+def _safe_float(value):
+	try:
+		return float(value)
+	except (TypeError, ValueError):
+		return None
+
+
+def _read_power_w_from_state(state) -> tuple[float | None, str | None]:
+	"""Return (power_w, unit) from a sensor state."""
+	if not state or state.state in ("unknown", "unavailable", None):
+		return None, None
+	power = _safe_float(state.state)
+	if power is None:
+		return None, None
+	unit = (state.attributes.get("unit_of_measurement") or "").strip()
+	return power, unit
+
+
+def _to_watts(power: float, unit: str | None) -> float:
+	u = (unit or "").lower()
+	if u in ("kw", "kilowatt", "kilowatts"):
+		return power * 1000.0
+	return power
 
 def _is_debug_enabled(hass: HomeAssistant) -> bool:
 	"""Check if debug logging is enabled for this integration."""
@@ -248,12 +279,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 		_LOGGER.warning("No power sensors, constant devices, or price adjustments configured, skipping sensor setup")
 		return
 	constant_device_map = {}
-	for device in constant_devices:
+	for base_name, cfg in expand_constant_power_devices(constant_devices):
 		try:
-			base_name = derive_constant_base_name(device)
-			constant_device_map[base_name] = device
+			constant_device_map[base_name] = cfg
 		except Exception as err:
-			_LOGGER.error(f"Failed to prepare constant power device {device}: {err}")
+			_LOGGER.error(f"Failed to prepare constant power device {cfg}: {err}")
 	
 	# Find existing generated sensors
 	entity_registry = er.async_get(hass)
@@ -284,21 +314,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 		# Group entities by base name
 		entities_by_base = {}
 		for entity_id, unique_id in existing_entities:
+			if not unique_id:
+				continue
+			# Skip sensors that are recreated elsewhere in this setup function
+			if str(unique_id).startswith("price_adjust_"):
+				continue
+			
 			# Extract base name from unique_id
-			if "_daily_energy" in unique_id:
-				base_name = unique_id.replace("_daily_energy", "")
+			if unique_id.endswith("_power"):
+				base_name = unique_id[: -len("_power")]
+				sensor_type = "power"
+			elif unique_id.endswith("_daily_energy"):
+				base_name = unique_id[: -len("_daily_energy")]
 				sensor_type = "daily"
-			elif "_monthly_energy" in unique_id:
-				base_name = unique_id.replace("_monthly_energy", "")
+			elif unique_id.endswith("_monthly_energy"):
+				base_name = unique_id[: -len("_monthly_energy")]
 				sensor_type = "monthly"
-			elif "_weekly_energy" in unique_id:
-				base_name = unique_id.replace("_weekly_energy", "")
+			elif unique_id.endswith("_weekly_energy"):
+				base_name = unique_id[: -len("_weekly_energy")]
 				sensor_type = "weekly"
-			elif "_annual_energy" in unique_id:
-				base_name = unique_id.replace("_annual_energy", "")
+			elif unique_id.endswith("_annual_energy"):
+				base_name = unique_id[: -len("_annual_energy")]
 				sensor_type = "annual"
+			elif unique_id.endswith("_energy"):
+				base_name = unique_id[: -len("_energy")]
+				sensor_type = "main"
 			else:
-				base_name = unique_id.replace("_energy", "")
+				# Handles disambiguated bases where unique_id == base_name (e.g., *_energy_<n>)
+				base_name = unique_id
 				sensor_type = "main"
 			
 			if base_name not in entities_by_base:
@@ -312,8 +355,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 			# Determine source sensor from base name
 			constant_config = constant_device_map.get(base_name)
 			expected_source_sensor = f"sensor.{base_name}_power"
-			source_sensor = constant_config.get("switch_entity_id") if constant_config else expected_source_sensor
-			custom_name = constant_config.get("name") if constant_config else None
+			source_sensor = constant_config.get(CONF_CONSTANT_DEVICE_SWITCH_ENTITY_ID) if constant_config else expected_source_sensor
+			custom_name = constant_config.get(CONF_CONSTANT_DEVICE_NAME) if constant_config else None
 			
 			# Debug the mapping process
 			_LOGGER.debug(f"Recreating sensors for base_name '{base_name}', expected source: '{expected_source_sensor}'")
@@ -376,25 +419,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 				entities_to_add.append(energy_sensor)
 				_LOGGER.debug(f"Recreated main energy sensor for {base_name} with source {source_sensor}")
 			
+			main_energy_entity = (
+				f"sensor.{base_name}"
+				if base_name.endswith("_energy") or "_energy_" in base_name
+				else f"sensor.{base_name}_energy"
+			)
+			
+			# Recreate constant power sensor if it exists
+			if "power" in sensor_types and constant_config:
+				power_sensor = ConstantPowerSensor(
+					hass,
+					base_name,
+					source_sensor,
+					device_identifiers,
+					custom_name,
+					constant_config
+				)
+				entities_to_add.append(power_sensor)
+				_LOGGER.debug(f"Recreated constant power sensor for {base_name} with source {source_sensor}")
+			
 			# Recreate daily sensor if it exists
 			if "daily" in sensor_types:
-				daily_sensor = DailyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
+				daily_sensor = DailyEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers)
 				entities_to_add.append(daily_sensor)
 				_LOGGER.debug(f"Recreated daily energy sensor for {base_name}")
 			
 			# Recreate monthly sensor if it exists  
 			if "monthly" in sensor_types:
-				monthly_sensor = MonthlyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
+				monthly_sensor = MonthlyEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers)
 				entities_to_add.append(monthly_sensor)
 				_LOGGER.debug(f"Recreated monthly energy sensor for {base_name}")
 			# Recreate weekly sensor if it exists
 			if "weekly" in sensor_types:
-				weekly_sensor = WeeklyEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
+				weekly_sensor = WeeklyEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers)
 				entities_to_add.append(weekly_sensor)
 				_LOGGER.debug(f"Recreated weekly energy sensor for {base_name}")
 			# Recreate annual sensor if it exists
 			if "annual" in sensor_types:
-				annual_sensor = AnnualEnergySensor(hass, base_name, f"sensor.{base_name}_energy", storage_manager, device_identifiers)
+				annual_sensor = AnnualEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers)
 				entities_to_add.append(annual_sensor)
 				_LOGGER.debug(f"Recreated annual energy sensor for {base_name}")
 		
@@ -403,16 +465,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 			async_add_entities(entities_to_add, True)  # True = update_before_add
 			_LOGGER.info(f"Successfully recreated {len(entities_to_add)} energy sensors during setup")
 	
-	# Always create price adjustment sensors from options (they're stateless / derived)
-	price_entities = []
-	if price_adjustments:
-		for item in price_adjustments:
-			try:
-				price_entities.append(PriceAdjustedSensor(hass, entry.entry_id, dict(item)))
-			except Exception as err:
-				_LOGGER.error(f"Failed to create price adjustment sensor from {item}: {err}")
-		if price_entities:
-			async_add_entities(price_entities, True)
 	return
 
 
@@ -441,6 +493,194 @@ def _get_config_entry_for_id(hass: HomeAssistant, entry_id: str) -> ConfigEntry 
 	except Exception:
 		return None
 	return None
+
+
+class ConstantPowerSensor(SensorEntity):
+	"""A sensor that reports a fixed power draw when a switch is ON."""
+
+	def __init__(
+		self,
+		hass: HomeAssistant,
+		base_name: str,
+		switch_entity_id: str,
+		device_identifiers=None,
+		friendly_name_override: str | None = None,
+		constant_config: dict | None = None,
+	):
+		self._hass = hass
+		self._base_name = base_name
+		self._switch_entity_id = switch_entity_id
+		self._unsub_state_change = None
+
+		try:
+			power_value = float((constant_config or {}).get(CONF_CONSTANT_DEVICE_POWER_W, 0))
+		except (TypeError, ValueError):
+			power_value = 0.0
+		self._constant_power_w = power_value if power_value > 0 else 0.0
+
+		friendly_name = friendly_name_override or get_friendly_name(hass, switch_entity_id)
+		self._attr_name = get_unique_entity_name(hass, f"{friendly_name} Power")
+		self._attr_unique_id = f"{base_name}_power"
+		self._attr_unit_of_measurement = UnitOfPower.WATT
+		self._attr_device_class = SensorDeviceClass.POWER
+		self._attr_state_class = SensorStateClass.MEASUREMENT
+		self._attr_icon = "mdi:flash"
+		self._attr_entity_registry_enabled_default = True
+
+		if device_identifiers:
+			self._attr_device_info = DeviceInfo(identifiers=device_identifiers)
+		else:
+			self._attr_device_info = DeviceInfo(
+				identifiers={(DOMAIN, f"{base_name}_power")},
+				name=f"{base_name.replace('_', ' ').title()}",
+				manufacturer="Energy Sensor Generator",
+				model="Constant Power Sensor",
+			)
+
+		self._state = 0.0
+
+	def _state_to_power(self, state) -> float:
+		if not state:
+			return 0.0
+		value = str(state.state).lower()
+		if value in ("", "unknown", "unavailable"):
+			return 0.0
+		if value in (STATE_ON, STATE_OPEN, "true", "1"):
+			return self._constant_power_w
+		if value in (STATE_OFF, STATE_CLOSED, "false", "0"):
+			return 0.0
+		try:
+			numeric = float(state.state)
+			return self._constant_power_w if numeric > 0 else 0.0
+		except (TypeError, ValueError):
+			return 0.0
+
+	def _recalculate(self) -> None:
+		state = self._hass.states.get(self._switch_entity_id)
+		self._state = self._state_to_power(state)
+
+	async def async_added_to_hass(self):
+		self._recalculate()
+		self._unsub_state_change = async_track_state_change_event(
+			self._hass, [self._switch_entity_id], self._handle_source_change
+		)
+		self.async_write_ha_state()
+
+	async def async_will_remove_from_hass(self):
+		if self._unsub_state_change:
+			try:
+				self._unsub_state_change()
+			except Exception:
+				pass
+			self._unsub_state_change = None
+
+	async def _handle_source_change(self, event):
+		self._recalculate()
+		self.async_write_ha_state()
+
+	@property
+	def native_value(self):
+		return self._state
+
+	@property
+	def extra_state_attributes(self):
+		return {
+			"constant_power_w": self._constant_power_w,
+			"constant_switch_entity": self._switch_entity_id,
+			"base_name": self._base_name,
+		}
+
+
+class PowerSumSensor(SensorEntity):
+	"""A sensor that sums multiple power sensors into a single W value."""
+
+	def __init__(self, hass: HomeAssistant, entry_id: str, config: dict):
+		self._hass = hass
+		self._entry_id = entry_id
+		self._config = dict(config or {})
+		self._unsub_state_change = None
+
+		self._config_id = str(self._config.get("id") or "").strip()
+		self._source_entity_ids = list(self._config.get("source_entity_ids") or [])
+		self._name_override = str(self._config.get("name") or "").strip()
+
+		if not self._config_id:
+			raise ValueError("Missing power sum config id")
+		if not self._source_entity_ids or len(self._source_entity_ids) < 2:
+			raise ValueError("Power sum requires at least 2 source sensors")
+
+		base_name = ha_slugify(self._config_id).replace("-", "_").strip("_")
+		if not base_name:
+			base_name = "power_sum"
+		self._base_name = base_name
+
+		self._attr_unique_id = f"power_sum_{base_name}_power"
+		proposed_name = self._name_override or f"{base_name.replace('_', ' ').title()} Power"
+		self._attr_name = get_unique_entity_name(hass, proposed_name)
+		# Ensure entity_id is stable so we can build an EnergySensor from it
+		self.entity_id = f"sensor.{base_name}_power"
+		self._attr_unit_of_measurement = UnitOfPower.WATT
+		self._attr_device_class = SensorDeviceClass.POWER
+		self._attr_state_class = SensorStateClass.MEASUREMENT
+		self._attr_icon = "mdi:flash"
+		self._attr_entity_registry_enabled_default = True
+
+		self._native_value = None
+		self._available = True
+		self._last_sources = {}
+
+	def _recalculate(self):
+		total_w = 0.0
+		available_count = 0
+		sources = {}
+		for entity_id in self._source_entity_ids:
+			state = self._hass.states.get(entity_id)
+			power, unit = _read_power_w_from_state(state)
+			if power is None:
+				sources[entity_id] = None
+				continue
+			available_count += 1
+			watts = _to_watts(power, unit)
+			total_w += watts
+			sources[entity_id] = watts
+
+		self._last_sources = sources
+		self._available = available_count > 0
+		self._native_value = total_w if self._available else None
+
+	async def async_added_to_hass(self):
+		self._recalculate()
+		self._unsub_state_change = async_track_state_change_event(
+			self._hass, self._source_entity_ids, self._handle_source_change
+		)
+		self.async_write_ha_state()
+
+	async def async_will_remove_from_hass(self):
+		if self._unsub_state_change:
+			try:
+				self._unsub_state_change()
+			except Exception:
+				pass
+			self._unsub_state_change = None
+
+	async def _handle_source_change(self, event):
+		self._recalculate()
+		self.async_write_ha_state()
+
+	@property
+	def available(self):
+		return self._available
+
+	@property
+	def native_value(self):
+		return self._native_value
+
+	@property
+	def extra_state_attributes(self):
+		return {
+			"source_entity_ids": list(self._source_entity_ids),
+			"source_watts": dict(self._last_sources),
+		}
 
 
 class PriceAdjustedSensor(SensorEntity):
@@ -1186,6 +1426,26 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			self._state = float(self._restart_baseline_kwh)
 			await self._save_state()
 			self.safe_write_ha_state()
+
+			# Adjust statistics so the Energy dashboard stays consistent
+			try:
+				if recorder and statistics:
+					recorder_instance = recorder.get_instance(self._hass)
+					if recorder_instance:
+						state = self._hass.states.get(self.entity_id)
+						unit = str(UnitOfEnergy.KILO_WATT_HOUR)
+						if state:
+							unit = str(state.attributes.get("unit_of_measurement", unit))
+						await recorder_instance.async_add_executor_job(
+							statistics.adjust_statistics,
+							recorder_instance,
+							self.entity_id,
+							self._restart_baseline_time,
+							-delta_kwh,
+							unit,
+						)
+			except Exception:
+				pass
 
 			# Single notification per HA runtime to avoid spam
 			try:

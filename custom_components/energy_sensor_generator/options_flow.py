@@ -24,7 +24,12 @@ from .const import (
 	CONF_STAT_LOOKBACK_MINUTES,
 	CONF_MAX_ENERGY_PER_HOUR,
 	CONF_CONSTANT_POWER_DEVICES,
-	CONF_PRICE_ADJUST_SENSORS
+	CONF_PRICE_ADJUST_SENSORS,
+	CONF_POWER_SUM_SENSORS,
+	CONF_CONSTANT_DEVICE_SWITCH_ENTITY_ID,
+	CONF_CONSTANT_DEVICE_POWER_W,
+	CONF_CONSTANT_DEVICE_NAME,
+	CONF_CONSTANT_DEVICE_INSTANCES
 )
 from .__init__ import detect_power_sensors  # Import the detect function
 from .utils import format_constant_power_devices_text
@@ -36,9 +41,9 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		self.options = dict(config_entry.options)
 		self._errors = {}
 		self._user_defaults = {}
-		self._show_advanced = False
-		self._constant_devices_return_step = "init"
-		self._price_adjust_return_step = "init"
+		self._constant_devices_return_step = "menu"
+		self._power_sum_return_step = "menu"
+		self._price_adjust_return_step = "menu"
 
 	def _get_constant_devices(self) -> list:
 		"""Return a copy of the currently edited constant device list."""
@@ -58,38 +63,25 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		"""Persist the working price adjustment list."""
 		self._user_defaults[CONF_PRICE_ADJUST_SENSORS] = [dict(item) for item in items]
 
-	async def async_step_init(self, user_input=None):
-		"""Manage the options for the integration."""
-		self._errors = {}
-		
-		hass = self.hass
-		
-		# Get auto-detected power sensors
-		auto_detected_sensors = detect_power_sensors(hass)
-		
-		# Get current selections if present
-		current_sensors = self.config_entry.options.get("selected_power_sensors", [])
-		
-		# Handle navigation to advanced step
-		if user_input is not None:
-			requested_show_advanced = user_input.get("show_advanced", False)
-			# Navigate to advanced step if requested
-			if requested_show_advanced:
-				self._user_defaults.update(user_input)
-				return await self.async_step_advanced()
-		else:
-			requested_show_advanced = False
-		
-		# Compose defaults from saved options and any prior user edits
+	def _get_power_sums(self) -> list:
+		"""Return a copy of the currently edited power sum list."""
 		defaults = {**self.config_entry.options, **self._user_defaults}
-		
-		# Get current settings
-		create_daily = defaults.get("create_daily_sensors", True)
-		create_monthly = defaults.get("create_monthly_sensors", True)
-		create_weekly = defaults.get("create_weekly_sensors", True)
-		create_annual = defaults.get("create_annual_sensors", True)
-		existing_constant_devices = defaults.get(CONF_CONSTANT_POWER_DEVICES, [])
-		constant_devices_summary = format_constant_power_devices_text(existing_constant_devices) or "— None configured —"
+		return [dict(item) for item in defaults.get(CONF_POWER_SUM_SENSORS, []) or []]
+
+	def _set_power_sums(self, items: list) -> None:
+		"""Persist the working power sum list."""
+		self._user_defaults[CONF_POWER_SUM_SENSORS] = [dict(item) for item in items]
+
+	async def async_step_init(self, user_input=None):
+		"""Entry point: show the menu."""
+		return await self.async_step_menu(user_input)
+
+	async def async_step_menu(self, user_input=None):
+		"""Show the options menu."""
+		defaults = {**self.config_entry.options, **self._user_defaults}
+		constant_devices_summary = format_constant_power_devices_text(
+			defaults.get(CONF_CONSTANT_POWER_DEVICES, [])
+		) or "— None configured —"
 		price_adjust_summary = "— None configured —"
 		try:
 			if defaults.get(CONF_PRICE_ADJUST_SENSORS, []):
@@ -100,7 +92,54 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				]) or "— None configured —"
 		except Exception:
 			price_adjust_summary = "— None configured —"
+		power_sum_summary = "— None configured —"
+		try:
+			if defaults.get(CONF_POWER_SUM_SENSORS, []):
+				power_sum_summary = "\n".join([
+					f"{item.get('name') or item.get('id')} ({len(item.get('source_entity_ids') or [])} sources)"
+					for item in defaults.get(CONF_POWER_SUM_SENSORS, []) or []
+					if item.get("id") and (item.get("source_entity_ids") or [])
+				]) or "— None configured —"
+		except Exception:
+			power_sum_summary = "— None configured —"
+
+		return self.async_show_menu(
+			step_id="menu",
+			menu_options=[
+				"sensors",
+				"constant_devices",
+				"power_sums",
+				"price_adjustments",
+				"advanced",
+			],
+			description_placeholders={
+				"constant_summary": constant_devices_summary,
+				"power_sum_summary": power_sum_summary,
+				"price_adjust_summary": price_adjust_summary,
+			},
+		)
+
+	async def async_step_sensors(self, user_input=None):
+		"""Select power sensors and period sensors."""
+		self._errors = {}
 		
+		hass = self.hass
+		
+		# Get auto-detected power sensors
+		auto_detected_sensors = detect_power_sensors(hass)
+		
+		# Get current selections if present
+		current_sensors = self.config_entry.options.get("selected_power_sensors", [])
+		
+		# Compose defaults from saved options and any prior user edits
+		defaults = {**self.config_entry.options, **self._user_defaults}
+		
+		# Get current settings
+		create_daily = defaults.get("create_daily_sensors", True)
+		create_monthly = defaults.get("create_monthly_sensors", True)
+		create_weekly = defaults.get("create_weekly_sensors", True)
+		create_annual = defaults.get("create_annual_sensors", True)
+		# Keep this step focused on sensor selection only; summaries live in the menu/advanced steps.
 		# Advanced settings (hidden by default)
 		sample_interval = defaults.get("sample_interval", 60)
 		debug_logging = defaults.get(CONF_DEBUG_LOGGING, False)
@@ -199,23 +238,6 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			# Get selected sensors from multi-select
 			selected_sensors = user_input.get("selected_power_sensors", [])
 			
-			# Add custom sensor if provided
-			custom_sensor = user_input.get("custom_power_sensor", "")
-			if custom_sensor and custom_sensor not in selected_sensors:
-				selected_sensors.append(custom_sensor)
-			
-			if user_input.get("configure_constant_devices"):
-				self._user_defaults.update(user_input)
-				self._user_defaults.pop("configure_constant_devices", None)
-				self._constant_devices_return_step = "init"
-				return await self.async_step_constant_devices()
-			
-			if user_input.get("configure_price_adjustments"):
-				self._user_defaults.update(user_input)
-				self._user_defaults.pop("configure_price_adjustments", None)
-				self._price_adjust_return_step = "init"
-				return await self.async_step_price_adjustments()
-			
 			# Get period sensor options - parse from multi-select
 			period_sensors = user_input.get("period_sensors", ["daily", "monthly", "weekly", "annual"])
 			create_daily = "daily" in period_sensors
@@ -248,6 +270,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 						CONF_FORCE_STATISTICAL_ONLY: force_statistical_only,
 						CONF_STAT_LOOKBACK_MINUTES: stat_lookback,
 						CONF_CONSTANT_POWER_DEVICES: self._get_constant_devices(),
+						CONF_POWER_SUM_SENSORS: self._get_power_sums(),
 						CONF_PRICE_ADJUST_SENSORS: self._get_price_adjustments()
 					}
 				)
@@ -277,14 +300,6 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			)
 		)
 		
-		# Add custom sensor field
-		schema[vol.Optional("custom_power_sensor")] = EntitySelector(
-			EntitySelectorConfig(domain="sensor", multiple=False)
-		)
-		
-		schema[vol.Optional("configure_constant_devices", default=False)] = BooleanSelector()
-		schema[vol.Optional("configure_price_adjustments", default=False)] = BooleanSelector()
-		
 		# Create period sensors multi-select
 		default_periods = []
 		if create_daily:
@@ -310,20 +325,12 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		)
 		
 		
-		# Show advanced (navigates to next step)
-		schema[vol.Optional("show_advanced", default=False)] = BooleanSelector()
-		
-		# Note: Advanced fields moved to dedicated step
-		
 		return self.async_show_form(
-			step_id="init",
+			step_id="sensors",
 			data_schema=vol.Schema(schema),
 			errors=self._errors,
 			description_placeholders={
-				"count": len(all_power_sensors),
-				"constant_hint": "switch.boiler_element = 3 kW | Hot Water Boost",
-				"constant_summary": constant_devices_summary,
-				"price_adjust_summary": price_adjust_summary
+				"count": len(all_power_sensors)
 			}
 		) 
 
@@ -355,16 +362,6 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		if user_input is not None:
 			# Update defaults with advanced settings
 			self._user_defaults.update(user_input)
-			
-			if user_input.get("configure_constant_devices"):
-				self._user_defaults.pop("configure_constant_devices", None)
-				self._constant_devices_return_step = "advanced"
-				return await self.async_step_constant_devices()
-			
-			if user_input.get("configure_price_adjustments"):
-				self._user_defaults.pop("configure_price_adjustments", None)
-				self._price_adjust_return_step = "advanced"
-				return await self.async_step_price_adjustments()
 			
 			# Process all the data and save
 			all_data = {**self._user_defaults}
@@ -409,6 +406,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 					CONF_STAT_LOOKBACK_MINUTES: stat_lookback,
 					CONF_MAX_ENERGY_PER_HOUR: max_energy_per_hour,
 					CONF_CONSTANT_POWER_DEVICES: self._get_constant_devices(),
+					CONF_POWER_SUM_SENSORS: self._get_power_sums(),
 					CONF_PRICE_ADJUST_SENSORS: self._get_price_adjustments()
 				}
 			)
@@ -420,6 +418,9 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			return result
 
 		schema = {}
+		schema[vol.Optional("custom_power_sensor")] = EntitySelector(
+			EntitySelectorConfig(domain="sensor", multiple=False)
+		)
 		schema[vol.Optional("sample_interval", default=sample_interval)] = NumberSelector(
 			NumberSelectorConfig(
 				min=5,
@@ -452,8 +453,6 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		)
 		# Option to create synthetic grid total
 		schema[vol.Optional(CONF_CREATE_SYNTHETIC_GRID_TOTAL, default=synthetic_grid_total)] = BooleanSelector()
-		schema[vol.Optional("configure_constant_devices", default=False)] = BooleanSelector()
-		schema[vol.Optional("configure_price_adjustments", default=False)] = BooleanSelector()
 		
 		return self.async_show_form(
 			step_id="advanced",
@@ -461,6 +460,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			errors=self._errors,
 			description_placeholders={
 				"constant_summary": constant_devices_summary,
+				"power_sum_summary": power_sum_summary,
 				"price_adjust_summary": price_adjust_summary
 			}
 		)
@@ -494,11 +494,13 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			action = user_input.get("price_adjust_action", "finish")
 			
 			if action == "finish":
-				next_step = self._price_adjust_return_step or "init"
-				self._price_adjust_return_step = "init"
+				next_step = self._price_adjust_return_step or "menu"
+				self._price_adjust_return_step = "menu"
 				if next_step == "advanced":
 					return await self.async_step_advanced()
-				return await self.async_step_init()
+				if next_step == "sensors":
+					return await self.async_step_sensors()
+				return await self.async_step_menu()
 			
 			if action == "add":
 				source_entity = user_input.get("price_adjust_source")
@@ -594,6 +596,118 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			},
 		)
 
+	async def async_step_power_sums(self, user_input=None):
+		"""Manage derived power sensors that sum multiple source power sensors."""
+		self._errors = {}
+		items = self._get_power_sums()
+		status_message = self._user_defaults.pop("_power_sum_status", None)
+		
+		summary_lines = []
+		for item in items:
+			item_id = item.get("id")
+			name = (item.get("name") or item_id or "").strip()
+			sources = item.get("source_entity_ids") or []
+			if not item_id or not sources:
+				continue
+			summary_lines.append(f"{name} — {len(sources)} sources")
+		power_sum_summary = "\n".join(summary_lines) or "— None configured —"
+		
+		remove_options = []
+		for item in items:
+			item_id = item.get("id")
+			name = (item.get("name") or item_id or "").strip()
+			sources = item.get("source_entity_ids") or []
+			if not item_id:
+				continue
+			remove_options.append({"value": str(item_id), "label": f"{name} — {len(sources)} sources"})
+		
+		if user_input is not None:
+			action = user_input.get("power_sum_action", "finish")
+			
+			if action == "finish":
+				next_step = self._power_sum_return_step or "menu"
+				self._power_sum_return_step = "menu"
+				if next_step == "advanced":
+					return await self.async_step_advanced()
+				if next_step == "sensors":
+					return await self.async_step_sensors()
+				return await self.async_step_menu()
+			
+			if action == "add":
+				name = (user_input.get("power_sum_name") or "").strip()
+				sources = user_input.get("power_sum_sources") or []
+				if not sources or len(sources) < 2:
+					self._errors["base"] = "power_sum_missing_fields"
+				else:
+					# Use stable id derived from name where possible
+					if name:
+						config_id = name.lower().strip().replace(" ", "_")
+					else:
+						config_id = uuid.uuid4().hex
+					items = [x for x in items if str(x.get("id")) != str(config_id)]
+					entry = {
+						"id": config_id,
+						"source_entity_ids": list(sources),
+					}
+					if name:
+						entry["name"] = name
+					items.append(entry)
+					self._set_power_sums(items)
+					self._user_defaults["_power_sum_status"] = f"Added {name or config_id}"
+					return await self.async_step_power_sums()
+			
+			if action == "remove":
+				target_id = user_input.get("power_sum_remove")
+				if not items:
+					self._errors["base"] = "no_power_sums"
+				elif not target_id:
+					self._errors["power_sum_remove"] = "power_sum_missing_fields"
+				else:
+					items = [x for x in items if str(x.get("id")) != str(target_id)]
+					self._set_power_sums(items)
+					self._user_defaults["_power_sum_status"] = "Removed entry"
+					return await self.async_step_power_sums()
+			
+			if action == "clear":
+				if items:
+					items = []
+					self._set_power_sums(items)
+					self._user_defaults["_power_sum_status"] = "Cleared all entries"
+					return await self.async_step_power_sums()
+				self._errors["base"] = "no_power_sums"
+		
+		schema = {}
+		schema[vol.Optional("power_sum_action", default="add")] = SelectSelector(
+			SelectSelectorConfig(
+				options=[
+					{"value": "add", "label": "Add / update sum"},
+					{"value": "remove", "label": "Remove sum"},
+					{"value": "clear", "label": "Remove all"},
+					{"value": "finish", "label": "Done"},
+				],
+				multiple=False,
+				mode=SelectSelectorMode.DROPDOWN,
+			)
+		)
+		schema[vol.Optional("power_sum_name")] = TextSelector(TextSelectorConfig(multiline=False))
+		schema[vol.Optional("power_sum_sources")] = EntitySelector(
+			EntitySelectorConfig(domain="sensor", multiple=True)
+		)
+		if remove_options:
+			schema[vol.Optional("power_sum_remove")] = SelectSelector(
+				SelectSelectorConfig(options=remove_options, multiple=False, mode=SelectSelectorMode.DROPDOWN)
+			)
+		
+		return self.async_show_form(
+			step_id="power_sums",
+			data_schema=vol.Schema(schema),
+			errors=self._errors,
+			description_placeholders={
+				"power_sum_summary": power_sum_summary,
+				"power_sum_status": status_message or "",
+			},
+		)
+
 	async def async_step_constant_devices(self, user_input=None):
 		"""Manage constant power device definitions."""
 		self._errors = {}
@@ -603,18 +717,33 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		
 		remove_options = []
 		for device in devices:
-			switch_id = device.get("switch_entity_id")
+			switch_id = device.get(CONF_CONSTANT_DEVICE_SWITCH_ENTITY_ID)
 			if not switch_id:
 				continue
-			power_w = device.get("power_w")
+			power_w = device.get(CONF_CONSTANT_DEVICE_POWER_W)
+			instances = device.get(CONF_CONSTANT_DEVICE_INSTANCES, 1)
 			try:
 				power_display = f"{float(power_w):g}"
 			except (TypeError, ValueError):
 				power_display = str(power_w)
+			try:
+				instances_int = int(instances)
+			except (TypeError, ValueError):
+				instances_int = 1
+			if instances_int < 1:
+				instances_int = 1
+			if instances_int > 1:
+				try:
+					per_display = f"{(float(power_w) / float(instances_int)):g}"
+				except (TypeError, ValueError, ZeroDivisionError):
+					per_display = "?"
+				power_display = f"{power_display} W x{instances_int} ({per_display} W each)"
+			else:
+				power_display = f"{power_display} W"
 			remove_options.append(
 				{
 					"value": switch_id,
-					"label": f"{device.get('name') or switch_id} — {power_display} W"
+					"label": f"{device.get(CONF_CONSTANT_DEVICE_NAME) or switch_id} — {power_display}"
 				}
 			)
 		
@@ -622,16 +751,19 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			action = user_input.get("constant_device_action", "finish")
 			
 			if action == "finish":
-				self._constant_devices_return_step = self._constant_devices_return_step or "init"
+				self._constant_devices_return_step = self._constant_devices_return_step or "menu"
 				next_step = self._constant_devices_return_step
-				self._constant_devices_return_step = "init"
+				self._constant_devices_return_step = "menu"
 				if next_step == "advanced":
 					return await self.async_step_advanced()
-				return await self.async_step_init()
+				if next_step == "sensors":
+					return await self.async_step_sensors()
+				return await self.async_step_menu()
 			
 			if action == "add":
 				switch_entity = user_input.get("constant_device_switch")
 				power_value = user_input.get("constant_device_power")
+				instances_value = user_input.get("constant_device_instances", 1)
 				friendly_name = user_input.get("constant_device_name")
 				
 				if not switch_entity or power_value is None:
@@ -642,16 +774,27 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 					except (TypeError, ValueError):
 						self._errors["base"] = "constant_device_invalid_power"
 					else:
+						try:
+							instances = int(instances_value)
+						except (TypeError, ValueError):
+							instances = 1
+						if instances < 1 or instances > 50:
+							self._errors["base"] = "constant_device_invalid_instances"
+							return await self.async_step_constant_devices()
 						if power_w <= 0:
 							self._errors["base"] = "constant_device_invalid_power"
 						else:
-							devices = [d for d in devices if d.get("switch_entity_id") != switch_entity]
+							devices = [
+								d for d in devices
+								if d.get(CONF_CONSTANT_DEVICE_SWITCH_ENTITY_ID) != switch_entity
+							]
 							entry = {
-								"switch_entity_id": switch_entity,
-								"power_w": power_w
+								CONF_CONSTANT_DEVICE_SWITCH_ENTITY_ID: switch_entity,
+								CONF_CONSTANT_DEVICE_POWER_W: power_w,
+								CONF_CONSTANT_DEVICE_INSTANCES: instances,
 							}
 							if friendly_name:
-								entry["name"] = friendly_name
+								entry[CONF_CONSTANT_DEVICE_NAME] = friendly_name
 							devices.append(entry)
 							self._set_constant_devices(devices)
 							self._user_defaults["_constant_devices_status"] = f"Added {switch_entity}"
@@ -664,7 +807,10 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				elif not target_switch:
 					self._errors["constant_device_remove"] = "constant_device_missing_fields"
 				else:
-					devices = [d for d in devices if d.get("switch_entity_id") != target_switch]
+					devices = [
+						d for d in devices
+						if d.get(CONF_CONSTANT_DEVICE_SWITCH_ENTITY_ID) != target_switch
+					]
 					self._set_constant_devices(devices)
 					self._user_defaults["_constant_devices_status"] = f"Removed {target_switch}"
 					return await self.async_step_constant_devices()
@@ -704,6 +850,15 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				max=20000,
 				step=10,
 				unit_of_measurement="Watts",
+				mode=NumberSelectorMode.BOX
+			)
+		)
+		schema[vol.Optional("constant_device_instances", default=1)] = NumberSelector(
+			NumberSelectorConfig(
+				min=1,
+				max=50,
+				step=1,
+				unit_of_measurement="entities",
 				mode=NumberSelectorMode.BOX
 			)
 		)

@@ -110,6 +110,8 @@ Follow these steps to install the `energy_sensor_generator` integration:
 - **Manual Generation**:
   - Click the "Generate Energy Sensors" button in your Lovelace dashboard to create or update sensors.
   - This is useful if you add new devices and have "Auto Generate" disabled.
+- **Options Menu**:
+  - The options flow now starts with a short menu so you can jump straight to power sensors, constant devices, power sums, price add-ons, or advanced settings.
 - **Device Swap Handling**:
   - If you swap a device between power sockets, use the `Reassign Energy Data` service to transfer energy data to the new device association.
   - Call the service `energy_sensor_generator.reassign_energy_data` with parameters `from_device` and `to_device` (e.g., `plug_1` to `plug_2`).
@@ -121,13 +123,35 @@ Some appliances (such as hard-wired hot water cylinders or three-phase heaters) 
 1. Go to **Settings → Devices & Services → Energy Sensor Generator → Configure**.
 2. Press **Configure constant power devices** to open the dedicated editor:
    - Pick the controlling switch (or input boolean) from the dropdown.
-   - Enter the rated wattage in the numeric field (kW can be entered as `3000` W).
+   - Enter the **total** rated wattage in the numeric field (kW can be entered as `3000` W).
+   - If you need multiple entities for one switch (e.g. a 3‑phase load), set **Number of entities** to `3` and the integration will split the total power evenly across them.
    - Optionally provide a friendly name override, then choose **Add / update device**.
    - Repeat for every fixed-load circuit, then choose **Done** to return to the main form.
-3. Submit the options. The integration will create energy + period sensors that watch the switch state and apply the constant wattage whenever the switch reports `on`/`open`.
+3. Submit the options. The integration will create both:
+   - A **power** sensor (Watts) for the Energy dashboard “now” chart, and
+   - An **energy** sensor (kWh) plus any enabled period sensors,
+   all driven from the switch state and the configured constant wattage.
 4. Include the new energy sensors (e.g., `sensor.boiler_constant_energy`) in the Energy dashboard just like sensors derived from real power meters.
 
 This method is ideal for fixed loads that are either fully on or off; the integration automatically ignores unavailable states and debounces rapid toggles.
+
+### Power Sums (Combine Two Feeds / Upstreams)
+If you have multiple feeds (e.g. **Hem** and **Bio**) and you dynamically switch loads between them, the Energy dashboard upstream wiring can become messy. Power sums let you create synthetic “combined” phase entities that **sum both feeds**, while keeping the individual feed sensors visible.
+
+- Example: create `Combined L1`, `Combined L2`, `Combined L3` as sums of:
+  - `Hem L1` + `Bio L1`
+  - `Hem L2` + `Bio L2`
+  - `Hem L3` + `Bio L3`
+- Use the **Combined** entities as the stable upstreams in the Energy dashboard.
+- Keep the individual Hem/Bio entities on charts to see which feed is currently active.
+
+To configure:
+1. Go to **Settings → Devices & Services → Energy Sensor Generator → Configure**.
+2. Press **Configure power sums**.
+3. Add a sum:
+   - Set a name like `Combined L1`
+   - Select at least 2 source **power** sensors to sum
+4. Save. The integration creates a **power (W)** sensor (for the “now” chart) and a derived **energy (kWh)** sensor (plus any enabled period sensors).
 
 ### Electricity Price Add-ons (Nordpool + transmission/tax)
 If your electricity price sensor (e.g. Nordpool) only reports the spot price, you can create an **adjusted price sensor** that mirrors another sensor and adds a fixed amount per kWh (for transmission, tax, fixed adders, etc.):
@@ -189,6 +213,7 @@ Storage entry (`.storage/energy_sensor_generator`):
 ### Hourly Copy Service (v0.0.82)
 - Use `hour_to_fix` when you know which hour needs fixing; the integration copies data from `hours_back` hours earlier (default 1).
 - Legacy `target_datetime` still works if you prefer to point at the known-good hour directly.
+- When `hour_to_fix` is provided, the integration also adjusts recorder statistics so the **Energy dashboard hourly graph** corrects.
 - After long restarts (10+ minutes) the integration now skips point sampling rather than guessing the missing energy. If a restart still causes a bump, run the copy service right away to snap all sensors back to the previous hour.
 
 ### Database Access Issues (RESOLVED ✅)

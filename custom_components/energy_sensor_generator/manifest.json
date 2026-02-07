@@ -9,6 +9,7 @@
   "config_flow": true,
   "dependencies": [],
   "homeassistant": "2023.6.0",
-  "icon": "mdi:energy"
+  "icon": "mdi:flash",
+  "logo": "logo.svg"
 }
 

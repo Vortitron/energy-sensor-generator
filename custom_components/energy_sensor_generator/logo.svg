@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Energy Sensor Generator">
+	<defs>
+		<linearGradient id="bolt" x1="0" y1="0" x2="1" y2="1">
+			<stop offset="0%" stop-color="#00bcd4"/>
+			<stop offset="100%" stop-color="#ffeb3b"/>
+		</linearGradient>
+	</defs>
+	<circle cx="64" cy="64" r="60" fill="#101418" stroke="#2b2f33" stroke-width="6"/>
+	<path
+		d="M70 20 L38 72 H60 L52 108 L92 56 H68 Z"
+		fill="url(#bolt)"
+	/>
+</svg>
+

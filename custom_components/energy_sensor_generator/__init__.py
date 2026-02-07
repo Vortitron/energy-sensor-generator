@@ -7,11 +7,34 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.util import slugify as ha_slugify
 from datetime import timedelta
-from .sensor import EnergySensor, DailyEnergySensor, MonthlyEnergySensor, WeeklyEnergySensor, AnnualEnergySensor, SyntheticGridTotalEnergySensor, PriceAdjustedSensor
-from .utils import StorageManager, derive_constant_base_name
+from .sensor import (
+	EnergySensor,
+	ConstantPowerSensor,
+	PowerSumSensor,
+	DailyEnergySensor,
+	MonthlyEnergySensor,
+	WeeklyEnergySensor,
+	AnnualEnergySensor,
+	SyntheticGridTotalEnergySensor,
+	PriceAdjustedSensor,
+)
+from .utils import StorageManager, derive_constant_base_name, expand_constant_power_devices
 from .device_helpers import has_external_energy_sensors
-from .const import DOMAIN, STORAGE_FILE, CONF_DEBUG_LOGGING, CONF_CREATE_SYNTHETIC_GRID_TOTAL, CONF_CONSTANT_POWER_DEVICES, CONF_PRICE_ADJUST_SENSORS
+from .const import (
+	DOMAIN,
+	STORAGE_FILE,
+	CONF_DEBUG_LOGGING,
+	CONF_CREATE_SYNTHETIC_GRID_TOTAL,
+	CONF_CONSTANT_POWER_DEVICES,
+	CONF_POWER_SUM_SENSORS,
+	CONF_PRICE_ADJUST_SENSORS,
+	CONF_CONSTANT_DEVICE_SWITCH_ENTITY_ID,
+	CONF_CONSTANT_DEVICE_POWER_W,
+	CONF_CONSTANT_DEVICE_NAME,
+	CONF_CONSTANT_DEVICE_INSTANCES,
+)
 from .hourly_copy_service import copy_from_previous_hour_service
 import voluptuous as vol
 
@@ -54,6 +77,11 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
         entity_id = state.entity_id
         if not entity_id.startswith("sensor."):
             continue
+
+        # Skip any sensors created by this integration (prevents constant power sensors being re-detected)
+        entity_reg = entity_registry.async_get(entity_id)
+        if entity_reg and entity_reg.platform == DOMAIN:
+            continue
             
         # Check if it looks like a power sensor
         is_power_sensor = False
@@ -89,7 +117,6 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
                 
         # 4. Check for entity_registry entries with unit W/kW or device_class power
         try:
-            entity_reg = entity_registry.async_get(entity_id)
             if entity_reg and (entity_reg.unit_of_measurement in ["W", "kW"] or entity_reg.device_class == "power"):
                 is_power_sensor = True
                 detection_reason += f" + registry ({entity_reg.unit_of_measurement or entity_reg.device_class})" if detection_reason else f"registry ({entity_reg.unit_of_measurement or entity_reg.device_class})"
@@ -398,6 +425,7 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
     options = entry.options
     storage_manager = hass.data[DOMAIN][entry.entry_id]["storage_manager"]
     constant_devices = options.get(CONF_CONSTANT_POWER_DEVICES, []) if options else []
+    power_sums = options.get(CONF_POWER_SUM_SENSORS, []) if options else []
     price_adjustments = options.get(CONF_PRICE_ADJUST_SENSORS, []) if options else []
     
     # Ensure the platform is loaded; we will add via async_forward_entry_setups and recreate entities
@@ -435,10 +463,10 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
         power_sensors = all_power_sensors
         _LOGGER.info(f"Using all detected power sensors: {power_sensors}")
 
-    if not power_sensors and not constant_devices and not price_adjustments:
-        _LOGGER.warning("No power sensors, constant power devices, or price adjustment sensors configured.")
+    if not power_sensors and not constant_devices and not power_sums and not price_adjustments:
+        _LOGGER.warning("No power sensors, constant power devices, power sums, or price adjustment sensors configured.")
         return
-    if not power_sensors and (constant_devices or price_adjustments):
+    if not power_sensors and (constant_devices or power_sums or price_adjustments):
         _LOGGER.info("No power sensors available; continuing with non-power-sensor entities only.")
 
     # Check if we should create period sensors
@@ -615,22 +643,58 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
             annual_sensor = AnnualEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers)
             entities.append(annual_sensor)
 
-    for device in constant_devices:
-        switch_entity = device.get("switch_entity_id")
-        power_w = device.get("power_w")
-        if not switch_entity or power_w is None:
-            _LOGGER.warning(f"Skipped constant device with invalid configuration: {device}")
+    # Track existing constant power sensors so we can remove stale ones
+    existing_constant_power = {}
+    for entity_id, entry_reg in entity_registry.entities.items():
+        if entry_reg.platform != DOMAIN or entry_reg.config_entry_id != entry.entry_id:
             continue
-        base_name = derive_constant_base_name(device)
+        uid = entry_reg.unique_id or ""
+        if uid.endswith("_power") and "_constant" in uid:
+            existing_constant_power[uid] = entity_id
+
+    desired_constant_power_uids = set()
+
+    for base_name, cfg in expand_constant_power_devices(constant_devices):
+        switch_entity = cfg.get(CONF_CONSTANT_DEVICE_SWITCH_ENTITY_ID)
+        power_w = cfg.get(CONF_CONSTANT_DEVICE_POWER_W)
+        if not switch_entity or power_w is None:
+            _LOGGER.warning(f"Skipped constant device with invalid configuration: {cfg}")
+            continue
+        base_name = str(base_name).lower()
         base_names_to_keep.add(base_name)
-        _LOGGER.info(f"Processing constant power device {switch_entity} ({power_w}W) -> base '{base_name}'")
+
         device_identifiers = get_source_device_info(hass, switch_entity)
-        custom_name = device.get("name")
-        constant_config = dict(device)
+        custom_name = cfg.get(CONF_CONSTANT_DEVICE_NAME)
+        constant_config = dict(cfg)
+
+        total_power_w = constant_config.get("total_power_w", power_w)
+        instance_idx = constant_config.get("instance")
+        instances = constant_config.get(CONF_CONSTANT_DEVICE_INSTANCES, 1)
+        _LOGGER.info(
+            f"Processing constant power device {switch_entity} ({total_power_w}W total, "
+            f"{power_w}W each, {instance_idx}/{instances}) -> base '{base_name}'"
+        )
+
         if base_name.endswith("_energy") or "_energy_" in base_name:
             main_energy_entity = f"sensor.{base_name}"
         else:
             main_energy_entity = f"sensor.{base_name}_energy"
+
+        # Create/keep constant power sensor for "now" chart
+        power_uid = f"{base_name}_power"
+        desired_constant_power_uids.add(power_uid)
+        if power_uid not in existing_constant_power:
+            entities.append(
+                ConstantPowerSensor(
+                    hass,
+                    base_name,
+                    switch_entity,
+                    device_identifiers,
+                    custom_name,
+                    constant_config,
+                )
+            )
+
         if base_name in existing_generated:
             existing_entities = existing_generated[base_name]
             _LOGGER.info(f"Found existing entities for constant device {base_name}: {existing_entities}")
@@ -643,16 +707,17 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
                 entity_ids_to_keep.add(main_entity)
             else:
                 _LOGGER.info(f"Main energy sensor missing for constant device {base_name}, recreating primary entity")
-                energy_sensor = EnergySensor(
-                    hass,
-                    base_name,
-                    switch_entity,
-                    storage_manager,
-                    device_identifiers,
-                    custom_name,
-                    constant_config
+                entities.append(
+                    EnergySensor(
+                        hass,
+                        base_name,
+                        switch_entity,
+                        storage_manager,
+                        device_identifiers,
+                        custom_name,
+                        constant_config,
+                    )
                 )
-                entities.append(energy_sensor)
             if create_daily and daily_entity:
                 entity_ids_to_keep.add(daily_entity)
             elif daily_entity:
@@ -669,7 +734,6 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
                 entity_ids_to_keep.add(annual_entity)
             elif annual_entity:
                 entity_registry.async_remove(annual_entity)
-            main_energy_entity = f"sensor.{base_name}_energy"
             if create_daily and not daily_entity:
                 entities.append(DailyEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers))
             if create_monthly and not monthly_entity:
@@ -679,8 +743,18 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
             if create_annual and not annual_entity:
                 entities.append(AnnualEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers))
             continue
-        energy_sensor = EnergySensor(hass, base_name, switch_entity, storage_manager, device_identifiers, custom_name, constant_config)
-        entities.append(energy_sensor)
+
+        entities.append(
+            EnergySensor(
+                hass,
+                base_name,
+                switch_entity,
+                storage_manager,
+                device_identifiers,
+                custom_name,
+                constant_config,
+            )
+        )
         if create_daily:
             entities.append(DailyEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers))
         if create_monthly:
@@ -689,6 +763,80 @@ async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry
             entities.append(WeeklyEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers))
         if create_annual:
             entities.append(AnnualEnergySensor(hass, base_name, main_energy_entity, storage_manager, device_identifiers))
+
+    # Remove stale constant power sensors (zombies) that are no longer configured
+    for uid, entity_id in existing_constant_power.items():
+        if uid not in desired_constant_power_uids:
+            try:
+                entity_registry.async_remove(entity_id)
+                _LOGGER.info(f"Removed stale constant power sensor {entity_id}")
+            except Exception as e:
+                _LOGGER.warning(f"Failed to remove stale constant power sensor {entity_id}: {e}")
+
+    # Power sum sensors: create a combined power sensor and corresponding energy/period sensors.
+    # This allows upstreams to be configured against the combined feed, while still keeping the
+    # individual feed sensors for visibility.
+    existing_power_sums = {}
+    for entity_id, entry_reg in entity_registry.entities.items():
+        if entry_reg.platform != DOMAIN or entry_reg.config_entry_id != entry.entry_id:
+            continue
+        uid = entry_reg.unique_id or ""
+        if uid.startswith("power_sum_") and uid.endswith("_power"):
+            existing_power_sums[uid] = entity_id
+
+    desired_power_sum_uids = set()
+    for item in power_sums or []:
+        cfg_id = str((item or {}).get("id") or "").strip()
+        sources = (item or {}).get("source_entity_ids") or []
+        if not cfg_id or not sources or len(sources) < 2:
+            continue
+        base_name = ha_slugify(cfg_id).replace("-", "_").strip("_")
+        if not base_name:
+            continue
+        desired_power_sum_uids.add(f"power_sum_{base_name}_power")
+        base_names_to_keep.add(base_name)
+
+    # Remove stale power sum sensors
+    for uid, entity_id in list(existing_power_sums.items()):
+        if uid not in desired_power_sum_uids:
+            try:
+                entity_registry.async_remove(entity_id)
+                _LOGGER.info(f"Removed stale power sum sensor {entity_id}")
+            except Exception as e:
+                _LOGGER.warning(f"Failed to remove stale power sum sensor {entity_id}: {e}")
+
+    for item in power_sums or []:
+        cfg_id = str((item or {}).get("id") or "").strip()
+        sources = (item or {}).get("source_entity_ids") or []
+        if not cfg_id or not sources or len(sources) < 2:
+            continue
+        base_name = ha_slugify(cfg_id).replace("-", "_").strip("_")
+        if not base_name:
+            continue
+
+        power_uid = f"power_sum_{base_name}_power"
+        if power_uid not in existing_power_sums:
+            try:
+                entities.append(PowerSumSensor(hass, entry.entry_id, dict(item)))
+            except Exception as e:
+                _LOGGER.error(f"Failed to create power sum sensor from {item}: {e}")
+
+        source_power = f"sensor.{base_name}_power"
+        main_energy_entity = f"sensor.{base_name}_energy"
+
+        existing_entities = existing_generated.get(base_name, [])
+        main_entity = next((e for e in existing_entities if e.lower().endswith(f"{base_name}_energy")), None)
+        if not main_entity:
+            entities.append(EnergySensor(hass, base_name, source_power, storage_manager, None))
+
+        if create_daily and not any("_daily_energy" in e and e.endswith(f"{base_name}_daily_energy") for e in existing_entities):
+            entities.append(DailyEnergySensor(hass, base_name, main_energy_entity, storage_manager, None))
+        if create_monthly and not any("_monthly_energy" in e and e.endswith(f"{base_name}_monthly_energy") for e in existing_entities):
+            entities.append(MonthlyEnergySensor(hass, base_name, main_energy_entity, storage_manager, None))
+        if create_weekly and not any("_weekly_energy" in e and e.endswith(f"{base_name}_weekly_energy") for e in existing_entities):
+            entities.append(WeeklyEnergySensor(hass, base_name, main_energy_entity, storage_manager, None))
+        if create_annual and not any("_annual_energy" in e and e.endswith(f"{base_name}_annual_energy") for e in existing_entities):
+            entities.append(AnnualEnergySensor(hass, base_name, main_energy_entity, storage_manager, None))
 
     # Remove entities that are no longer needed
     entities_removed = 0

@@ -10,6 +10,8 @@ try:
 	from homeassistant.core import HomeAssistant, ServiceCall, State
 	from homeassistant.helpers import entity_registry as er
 	from homeassistant.util import dt as dt_util
+	from homeassistant.components import recorder
+	from homeassistant.components.recorder import statistics
 except ImportError:  # pragma: no cover
 	# Allow importing this module in unit tests without Home Assistant installed.
 	ConfigEntry = object  # type: ignore
@@ -17,6 +19,8 @@ except ImportError:  # pragma: no cover
 	ServiceCall = object  # type: ignore
 	State = object  # type: ignore
 	er = None  # type: ignore
+	recorder = None  # type: ignore
+	statistics = None  # type: ignore
 	from datetime import timezone
 	
 	class _DtUtilFallback:
@@ -246,6 +250,8 @@ async def copy_from_previous_hour_service(
 	storage = await storage_manager.async_load()
 	sensors_updated: list[tuple[str, float, float, datetime]] = []
 	errors: list[str] = []
+	stats_adjusted = 0
+	stats_errors: list[str] = []
 
 	for entity_id in energy_sensors:
 		state_tuple = await _fetch_state_near(hass, entity_id, request.source_utc)
@@ -282,6 +288,41 @@ async def copy_from_previous_hour_service(
 			except Exception:
 				pass
 
+	# Fix long-term statistics so the Energy dashboard hourly graph matches the correction
+	if sensors_updated and request.hour_to_fix_utc:
+		adjust_start = request.hour_to_fix_utc.replace(minute=0, second=0, microsecond=0)
+		try:
+			if recorder is None or statistics is None:
+				raise RuntimeError("Recorder statistics not available")
+			recorder_instance = recorder.get_instance(hass)
+			if not recorder_instance:
+				raise RuntimeError("Recorder instance not available")
+
+			for entity_id, old_value, new_value, _ in sensors_updated:
+				delta_kwh = new_value - old_value
+				if abs(delta_kwh) < 1e-9:
+					continue
+
+				state = hass.states.get(entity_id)
+				unit = "kWh"
+				if state:
+					unit = str(state.attributes.get("unit_of_measurement", unit))
+
+				ok = await recorder_instance.async_add_executor_job(
+					statistics.adjust_statistics,
+					recorder_instance,
+					entity_id,
+					adjust_start,
+					delta_kwh,
+					unit,
+				)
+				if ok is False:
+					stats_errors.append(f"{entity_id}: statistics adjustment failed")
+				else:
+					stats_adjusted += 1
+		except Exception as err:
+			stats_errors.append(str(err))
+
 	success_count = len(sensors_updated)
 	error_count = len(errors)
 
@@ -304,7 +345,11 @@ async def copy_from_previous_hour_service(
 	if request.hour_to_fix_utc:
 		parts.append(f"Hour to fix: {target_label}")
 	parts.append(f"Updated sensors: {success_count}")
+	if request.hour_to_fix_utc:
+		parts.append(f"Statistics adjusted: {stats_adjusted}")
 	parts.append(f"Errors: {error_count}")
+	if stats_errors:
+		parts.append("Statistics errors: " + ", ".join(stats_errors[:_MAX_ERROR_MESSAGES]))
 	notification_msg = "\n".join(parts)
 
 	await hass.services.async_call(

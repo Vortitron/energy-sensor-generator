@@ -174,6 +174,7 @@ From v0.0.83, each generated energy sensor performs a **one-shot audit ~10 minut
 
 - If the sensor jumps by an amount that is clearly impossible given the elapsed time and power readings, it automatically rolls back to the pre-restart value.
 - A single persistent notification is created the first time this triggers (to avoid spam).
+- Recorder statistics are adjusted at the same time so the Energy dashboard hourly graph stays consistent.
 
 This is intentionally conservative: it only triggers on obvious phantom jumps, not legitimate usage.
 
