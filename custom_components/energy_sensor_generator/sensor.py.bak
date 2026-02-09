@@ -830,7 +830,6 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		# Backwards compat: storage_path param may be Path; but prefer StorageManager
 		self._storage_manager: StorageManager | None = storage_path if isinstance(storage_path, StorageManager) else None
 		self._storage_path = storage_path  # kept for type compatibility
-		self._fallback_store = None  # Lazy-init fallback if StorageManager not available
 		self._device_identifiers = device_identifiers
 		self._constant_power_w = None
 		self._constant_config = None
@@ -1174,10 +1173,9 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		if self._storage_manager:
 			storage = await self._storage_manager.async_load()
 		else:
-			if not self._fallback_store:
-				from homeassistant.helpers import storage as ha_storage
-				self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-			storage = await self._fallback_store.async_load() or {}
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			storage = await store.async_load() or {}
 		state_data = storage.get(self._storage_key, {})
 		
 		if isinstance(state_data, dict):
@@ -1230,10 +1228,9 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		if self._storage_manager:
 			storage = await self._storage_manager.async_load()
 		else:
-			if not self._fallback_store:
-				from homeassistant.helpers import storage as ha_storage
-				self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-			storage = await self._fallback_store.async_load() or {}
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			storage = await store.async_load() or {}
 		storage[self._storage_key] = {
 			"value": self._state,
 			"last_power": self._last_power,
@@ -1245,10 +1242,9 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			if self._storage_manager:
 				await self._storage_manager.async_save(storage)
 			else:
-				if not self._fallback_store:
-					from homeassistant.helpers import storage as ha_storage
-					self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-				await self._fallback_store.async_save(storage)
+				from homeassistant.helpers import storage as ha_storage
+				store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+				await store.async_save(storage)
 		except Exception:
 			pass
 
@@ -1859,6 +1855,11 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		return round(self._state, 4)  # More decimal places for accuracy
 
 	@property
+	def state(self):
+		"""Return the current state."""
+		return round(self._state, 4)  # More decimal places for accuracy
+		
+	@property
 	def extra_state_attributes(self):
 		"""Return the state attributes."""
 		attrs = {}
@@ -1931,7 +1932,6 @@ class DailyEnergySensor(SensorEntity, RestoreEntity):
 		# Prefer StorageManager if provided
 		self._storage_manager: StorageManager | None = storage_path if isinstance(storage_path, StorageManager) else None
 		self._storage_path = storage_path
-		self._fallback_store = None  # Lazy-init fallback if StorageManager not available
 		
 		# Get friendly name - for daily/monthly sensors, derive from base_name
 		# since the source_sensor is the energy sensor, not the original power sensor
@@ -1968,7 +1968,7 @@ class DailyEnergySensor(SensorEntity, RestoreEntity):
 					self._attr_device_info = DeviceInfo(identifiers=device.identifiers)
 		
 		self._state = 0.0
-		self._last_energy = None  # None = not yet initialised; 0.0 is a valid energy reading
+		self._last_energy = 0.0
 		self._last_reset = None
 		self._storage_key = f"{base_name}_daily_energy"
 		# State will be loaded in async_added_to_hass
@@ -1978,24 +1978,22 @@ class DailyEnergySensor(SensorEntity, RestoreEntity):
 		if self._storage_manager:
 			storage = await self._storage_manager.async_load()
 		else:
-			if not self._fallback_store:
-				from homeassistant.helpers import storage as ha_storage
-				self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-			storage = await self._fallback_store.async_load() or {}
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			storage = await store.async_load() or {}
 		state_data = storage.get(self._storage_key, {})
 		self._state = state_data.get("value", 0.0)
 		self._last_reset = state_data.get("last_reset", dt_util.utcnow().isoformat())
-		self._last_energy = state_data.get("last_energy", None)
+		self._last_energy = state_data.get("last_energy", 0.0)
 
 	async def _save_state(self):
 		"""Save state to storage."""
 		if self._storage_manager:
 			storage = await self._storage_manager.async_load()
 		else:
-			if not self._fallback_store:
-				from homeassistant.helpers import storage as ha_storage
-				self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-			storage = await self._fallback_store.async_load() or {}
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			storage = await store.async_load() or {}
 		storage[self._storage_key] = {
 			"value": self._state,
 			"last_reset": self._last_reset,
@@ -2004,10 +2002,9 @@ class DailyEnergySensor(SensorEntity, RestoreEntity):
 		if self._storage_manager:
 			await self._storage_manager.async_save(storage)
 		else:
-			if not self._fallback_store:
-				from homeassistant.helpers import storage as ha_storage
-				self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-			await self._fallback_store.async_save(storage)
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			await store.async_save(storage)
 
 	async def async_added_to_hass(self):
 		"""Handle entity addition."""
@@ -2048,9 +2045,9 @@ class DailyEnergySensor(SensorEntity, RestoreEntity):
 			try:
 				self._last_energy = float(state.state)
 			except (ValueError, TypeError):
-				self._last_energy = None  # Will re-initialise on next valid reading
+				self._last_energy = 0.0
 		else:
-			self._last_energy = None  # Will re-initialise on next valid reading
+			self._last_energy = 0.0
 			
 		await self._save_state()
 		self.safe_write_ha_state()
@@ -2081,7 +2078,7 @@ class DailyEnergySensor(SensorEntity, RestoreEntity):
 			return
 
 		# If this is the first time we're getting a valid energy reading, initialise tracking
-		if self._last_energy is None:
+		if self._last_energy == 0.0:
 			_debug_log(self.hass, f"Source energy sensor {self._source_sensor} became available, initialising daily tracking for {self._attr_name}")
 			self._last_energy = energy
 			await self._save_state()
@@ -2098,6 +2095,11 @@ class DailyEnergySensor(SensorEntity, RestoreEntity):
 
 	@property
 	def native_value(self):
+		"""Return the current state."""
+		return round(self._state, 4)  # Match main energy sensor precision
+
+	@property
+	def state(self):
 		"""Return the current state."""
 		return round(self._state, 4)  # Match main energy sensor precision
 
@@ -2145,7 +2147,6 @@ class MonthlyEnergySensor(SensorEntity, RestoreEntity):
 		self._source_sensor = source_sensor
 		self._storage_manager: StorageManager | None = storage_path if isinstance(storage_path, StorageManager) else None
 		self._storage_path = storage_path
-		self._fallback_store = None  # Lazy-init fallback if StorageManager not available
 		
 		# Get friendly name - for daily/monthly sensors, derive from base_name
 		# since the source_sensor is the energy sensor, not the original power sensor
@@ -2182,7 +2183,7 @@ class MonthlyEnergySensor(SensorEntity, RestoreEntity):
 					self._attr_device_info = DeviceInfo(identifiers=device.identifiers)
 		
 		self._state = 0.0
-		self._last_energy = None  # None = not yet initialised; 0.0 is a valid energy reading
+		self._last_energy = 0.0
 		self._last_reset = None
 		self._storage_key = f"{base_name}_monthly_energy"
 		# State will be loaded in async_added_to_hass
@@ -2192,24 +2193,22 @@ class MonthlyEnergySensor(SensorEntity, RestoreEntity):
 		if self._storage_manager:
 			storage = await self._storage_manager.async_load()
 		else:
-			if not self._fallback_store:
-				from homeassistant.helpers import storage as ha_storage
-				self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-			storage = await self._fallback_store.async_load() or {}
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			storage = await store.async_load() or {}
 		state_data = storage.get(self._storage_key, {})
 		self._state = state_data.get("value", 0.0)
 		self._last_reset = state_data.get("last_reset", dt_util.utcnow().isoformat())
-		self._last_energy = state_data.get("last_energy", None)
+		self._last_energy = state_data.get("last_energy", 0.0)
 
 	async def _save_state(self):
 		"""Save state to storage."""
 		if self._storage_manager:
 			storage = await self._storage_manager.async_load()
 		else:
-			if not self._fallback_store:
-				from homeassistant.helpers import storage as ha_storage
-				self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-			storage = await self._fallback_store.async_load() or {}
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			storage = await store.async_load() or {}
 		storage[self._storage_key] = {
 			"value": self._state,
 			"last_reset": self._last_reset,
@@ -2218,10 +2217,9 @@ class MonthlyEnergySensor(SensorEntity, RestoreEntity):
 		if self._storage_manager:
 			await self._storage_manager.async_save(storage)
 		else:
-			if not self._fallback_store:
-				from homeassistant.helpers import storage as ha_storage
-				self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-			await self._fallback_store.async_save(storage)
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			await store.async_save(storage)
 
 	async def async_added_to_hass(self):
 		"""Handle entity addition."""
@@ -2264,9 +2262,9 @@ class MonthlyEnergySensor(SensorEntity, RestoreEntity):
 				try:
 					self._last_energy = float(state.state)
 				except (ValueError, TypeError):
-					self._last_energy = None  # Will re-initialise on next valid reading
+					self._last_energy = 0.0
 			else:
-				self._last_energy = None  # Will re-initialise on next valid reading
+				self._last_energy = 0.0
 				
 			await self._save_state()
 			self.safe_write_ha_state()
@@ -2284,7 +2282,7 @@ class MonthlyEnergySensor(SensorEntity, RestoreEntity):
 			return
 
 		# If this is the first time we're getting a valid energy reading, initialise tracking
-		if self._last_energy is None:
+		if self._last_energy == 0.0:
 			_debug_log(self.hass, f"Source energy sensor {self._source_sensor} became available, initialising monthly tracking for {self._attr_name}")
 			self._last_energy = energy
 			await self._save_state()
@@ -2314,6 +2312,11 @@ class MonthlyEnergySensor(SensorEntity, RestoreEntity):
 
 	@property
 	def native_value(self):
+		"""Return the current state."""
+		return round(self._state, 4)  # Match main energy sensor precision
+
+	@property
+	def state(self):
 		"""Return the current state."""
 		return round(self._state, 4)  # Match main energy sensor precision
 
@@ -2361,7 +2364,6 @@ class WeeklyEnergySensor(SensorEntity, RestoreEntity):
 		self._source_sensor = source_sensor
 		self._storage_manager: StorageManager | None = storage_path if isinstance(storage_path, StorageManager) else None
 		self._storage_path = storage_path
-		self._fallback_store = None  # Lazy-init fallback if StorageManager not available
 		friendly_name = get_friendly_name_from_base(hass, base_name)
 		proposed_name = f"{friendly_name} Weekly Energy"
 		unique_name = get_unique_entity_name(hass, proposed_name)
@@ -2383,7 +2385,7 @@ class WeeklyEnergySensor(SensorEntity, RestoreEntity):
 				if device:
 					self._attr_device_info = DeviceInfo(identifiers=device.identifiers)
 		self._state = 0.0
-		self._last_energy = None  # None = not yet initialised; 0.0 is a valid energy reading
+		self._last_energy = 0.0
 		self._last_reset = None
 		self._storage_key = f"{base_name}_weekly_energy"
 
@@ -2393,24 +2395,22 @@ class WeeklyEnergySensor(SensorEntity, RestoreEntity):
 		if self._storage_manager:
 			storage = await self._storage_manager.async_load()
 		else:
-			if not self._fallback_store:
-				from homeassistant.helpers import storage as ha_storage
-				self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-			storage = await self._fallback_store.async_load() or {}
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			storage = await store.async_load() or {}
 		state_data = storage.get(self._storage_key, {})
 		self._state = state_data.get("value", 0.0)
 		self._last_reset = state_data.get("last_reset", dt_util.utcnow().isoformat())
-		self._last_energy = state_data.get("last_energy", None)
+		self._last_energy = state_data.get("last_energy", 0.0)
 
 	async def _save_state(self):
 		"""Save state to storage."""
 		if self._storage_manager:
 			storage = await self._storage_manager.async_load()
 		else:
-			if not self._fallback_store:
-				from homeassistant.helpers import storage as ha_storage
-				self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-			storage = await self._fallback_store.async_load() or {}
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			storage = await store.async_load() or {}
 		storage[self._storage_key] = {
 			"value": self._state,
 			"last_reset": self._last_reset,
@@ -2420,10 +2420,9 @@ class WeeklyEnergySensor(SensorEntity, RestoreEntity):
 			if self._storage_manager:
 				await self._storage_manager.async_save(storage)
 			else:
-				if not self._fallback_store:
-					from homeassistant.helpers import storage as ha_storage
-					self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-				await self._fallback_store.async_save(storage)
+				from homeassistant.helpers import storage as ha_storage
+				store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+				await store.async_save(storage)
 		except Exception as e:
 			_DEBUG = False
 			try:
@@ -2480,9 +2479,9 @@ class WeeklyEnergySensor(SensorEntity, RestoreEntity):
 				try:
 					self._last_energy = float(state.state)
 				except (ValueError, TypeError):
-					self._last_energy = None  # Will re-initialise on next valid reading
+					self._last_energy = 0.0
 			else:
-				self._last_energy = None  # Will re-initialise on next valid reading
+				self._last_energy = 0.0
 			await self._save_state()
 			self.safe_write_ha_state()
 
@@ -2496,7 +2495,7 @@ class WeeklyEnergySensor(SensorEntity, RestoreEntity):
 		except ValueError:
 			_LOGGER.warning(f"Invalid energy value: {new_state.state}")
 			return
-		if self._last_energy is None:
+		if self._last_energy == 0.0:
 			_debug_log(self.hass, f"Source energy sensor {self._source_sensor} became available, initialising weekly tracking for {self._attr_name}")
 			self._last_energy = energy
 			await self._save_state()
@@ -2510,6 +2509,10 @@ class WeeklyEnergySensor(SensorEntity, RestoreEntity):
 
 	@property
 	def native_value(self):
+		return round(self._state, 4)
+
+	@property
+	def state(self):
 		return round(self._state, 4)
 
 	@property
@@ -2547,7 +2550,6 @@ class AnnualEnergySensor(SensorEntity, RestoreEntity):
 		self._source_sensor = source_sensor
 		self._storage_manager: StorageManager | None = storage_path if isinstance(storage_path, StorageManager) else None
 		self._storage_path = storage_path
-		self._fallback_store = None  # Lazy-init fallback if StorageManager not available
 		friendly_name = get_friendly_name_from_base(hass, base_name)
 		proposed_name = f"{friendly_name} Annual Energy"
 		unique_name = get_unique_entity_name(hass, proposed_name)
@@ -2569,7 +2571,7 @@ class AnnualEnergySensor(SensorEntity, RestoreEntity):
 				if device:
 					self._attr_device_info = DeviceInfo(identifiers=device.identifiers)
 		self._state = 0.0
-		self._last_energy = None  # None = not yet initialised; 0.0 is a valid energy reading
+		self._last_energy = 0.0
 		self._last_reset = None
 		self._storage_key = f"{base_name}_annual_energy"
 
@@ -2577,23 +2579,21 @@ class AnnualEnergySensor(SensorEntity, RestoreEntity):
 		if self._storage_manager:
 			storage = await self._storage_manager.async_load()
 		else:
-			if not self._fallback_store:
-				from homeassistant.helpers import storage as ha_storage
-				self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-			storage = await self._fallback_store.async_load() or {}
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			storage = await store.async_load() or {}
 		state_data = storage.get(self._storage_key, {})
 		self._state = state_data.get("value", 0.0)
 		self._last_reset = state_data.get("last_reset", dt_util.utcnow().isoformat())
-		self._last_energy = state_data.get("last_energy", None)
+		self._last_energy = state_data.get("last_energy", 0.0)
 
 	async def _save_state(self):
 		if self._storage_manager:
 			storage = await self._storage_manager.async_load()
 		else:
-			if not self._fallback_store:
-				from homeassistant.helpers import storage as ha_storage
-				self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-			storage = await self._fallback_store.async_load() or {}
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			storage = await store.async_load() or {}
 		storage[self._storage_key] = {
 			"value": self._state,
 			"last_reset": self._last_reset,
@@ -2602,10 +2602,9 @@ class AnnualEnergySensor(SensorEntity, RestoreEntity):
 		if self._storage_manager:
 			await self._storage_manager.async_save(storage)
 		else:
-			if not self._fallback_store:
-				from homeassistant.helpers import storage as ha_storage
-				self._fallback_store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
-			await self._fallback_store.async_save(storage)
+			from homeassistant.helpers import storage as ha_storage
+			store = ha_storage.Store(self._hass, version=1, key="energy_sensor_generator")
+			await store.async_save(storage)
 
 	async def async_added_to_hass(self):
 		await self._load_state()
@@ -2652,9 +2651,9 @@ class AnnualEnergySensor(SensorEntity, RestoreEntity):
 				try:
 					self._last_energy = float(state.state)
 				except (ValueError, TypeError):
-					self._last_energy = None  # Will re-initialise on next valid reading
+					self._last_energy = 0.0
 			else:
-				self._last_energy = None  # Will re-initialise on next valid reading
+				self._last_energy = 0.0
 			await self._save_state()
 			self.safe_write_ha_state()
 
@@ -2667,7 +2666,7 @@ class AnnualEnergySensor(SensorEntity, RestoreEntity):
 		except ValueError:
 			_LOGGER.warning(f"Invalid energy value: {new_state.state}")
 			return
-		if self._last_energy is None:
+		if self._last_energy == 0.0:
 			_debug_log(self.hass, f"Source energy sensor {self._source_sensor} became available, initialising annual tracking for {self._attr_name}")
 			self._last_energy = energy
 			await self._save_state()
@@ -2681,6 +2680,10 @@ class AnnualEnergySensor(SensorEntity, RestoreEntity):
 
 	@property
 	def native_value(self):
+		return round(self._state, 4)
+
+	@property
+	def state(self):
 		return round(self._state, 4)
 
 	@property
@@ -2812,6 +2815,10 @@ class SyntheticGridTotalEnergySensor(SensorEntity):
 
 	@property
 	def native_value(self):
+		return round(self._state, 4)
+
+	@property
+	def state(self):
 		return round(self._state, 4)
 
 	@property

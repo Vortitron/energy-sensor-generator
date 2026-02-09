@@ -245,14 +245,6 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			create_weekly = "weekly" in period_sensors
 			create_annual = "annual" in period_sensors
 			
-			# Advanced options (only if advanced is shown)
-			sample_interval = user_input.get("sample_interval", 60)
-			debug_logging = user_input.get(CONF_DEBUG_LOGGING, False)
-			use_statistical = user_input.get(CONF_USE_STATISTICAL, True)
-			synthetic_grid_total = user_input.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
-			force_statistical_only = user_input.get(CONF_FORCE_STATISTICAL_ONLY, False)
-			stat_lookback = user_input.get(CONF_STAT_LOOKBACK_MINUTES, 60)
-			
 			if not self._errors:
 				# Create the configuration entry first
 				result = self.async_create_entry(
@@ -358,16 +350,26 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				]) or "— None configured —"
 		except Exception:
 			price_adjust_summary = "— None configured —"
+		power_sum_summary = "— None configured —"
+		try:
+			if defaults.get(CONF_POWER_SUM_SENSORS, []):
+				power_sum_summary = "\n".join([
+					f"{item.get('name') or item.get('id')} ({len(item.get('source_entity_ids') or [])} sources)"
+					for item in defaults.get(CONF_POWER_SUM_SENSORS, []) or []
+					if item.get("id") and (item.get("source_entity_ids") or [])
+				]) or "— None configured —"
+		except Exception:
+			power_sum_summary = "— None configured —"
 		
 		if user_input is not None:
 			# Update defaults with advanced settings
 			self._user_defaults.update(user_input)
 			
 			# Process all the data and save
-			all_data = {**self._user_defaults}
+			all_data = {**self.config_entry.options, **self._user_defaults}
 			
 			# Get selected sensors from user defaults
-			selected_sensors = all_data.get("selected_power_sensors", [])
+			selected_sensors = list(all_data.get("selected_power_sensors", []))
 			
 			# Add custom sensor if provided
 			custom_sensor = all_data.get("custom_power_sensor", "")
