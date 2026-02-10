@@ -190,25 +190,44 @@ def find_generated_sensors(hass: HomeAssistant) -> dict:
 		if entry.platform == DOMAIN:
 			# Get the base_name from the unique_id
 			unique_id = entry.unique_id
-			if "_energy" in unique_id:
-				# Extract base name, handling different patterns
-				if "_daily_energy" in unique_id:
-					base_name = unique_id.replace("_daily_energy", "")
-				elif "_monthly_energy" in unique_id:
-					base_name = unique_id.replace("_monthly_energy", "")
-				elif "_weekly_energy" in unique_id:
-					base_name = unique_id.replace("_weekly_energy", "")
-				elif "_annual_energy" in unique_id:
-					base_name = unique_id.replace("_annual_energy", "")
-				else:
-					base_name = unique_id.replace("_energy", "")
-				
-				# Normalize to lowercase for consistency with sensor generation
-				base_name = base_name.lower()
-				
-				if base_name not in result:
-					result[base_name] = []
-				result[base_name].append(entity_id)
+			if not unique_id:
+				continue
+			
+			base_name = None
+			
+			# Skip price adjustment sensors — they are managed separately
+			if unique_id.startswith("price_adjust_"):
+				continue
+			
+			# Extract base name from known suffixes (order matters: most specific first)
+			if "_daily_energy" in unique_id:
+				base_name = unique_id.replace("_daily_energy", "")
+			elif "_monthly_energy" in unique_id:
+				base_name = unique_id.replace("_monthly_energy", "")
+			elif "_weekly_energy" in unique_id:
+				base_name = unique_id.replace("_weekly_energy", "")
+			elif "_annual_energy" in unique_id:
+				base_name = unique_id.replace("_annual_energy", "")
+			elif "_energy" in unique_id:
+				base_name = unique_id.replace("_energy", "")
+			elif unique_id.endswith("_power"):
+				# Constant power sensors (xxx_constant_power) and
+				# power sum sensors (power_sum_xxx_power) — strip the _power suffix
+				base_name = unique_id[: -len("_power")]
+				# Power sum sensors have a "power_sum_" prefix in the unique_id
+				# but the base_name used in generate_sensors_service is without that prefix.
+				if base_name.startswith("power_sum_"):
+					base_name = base_name[len("power_sum_"):]
+			
+			if base_name is None:
+				continue
+			
+			# Normalize to lowercase for consistency with sensor generation
+			base_name = base_name.lower()
+			
+			if base_name not in result:
+				result[base_name] = []
+			result[base_name].append(entity_id)
 	
 	_debug_log(hass, f"Found {len(result)} generated sensor groups: {result}")
 	return result

@@ -272,11 +272,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 	selected_sensors = options.get("selected_power_sensors", []) or []
 	constant_devices = options.get(CONF_CONSTANT_POWER_DEVICES, []) or []
 	price_adjustments = options.get(CONF_PRICE_ADJUST_SENSORS, []) or []
+	power_sums = options.get(CONF_POWER_SUM_SENSORS, []) or []
 	_LOGGER.info(f"Setting up energy sensors for selected power sensors: {selected_sensors}")
 	_LOGGER.info(f"Setting up constant power devices: {constant_devices}")
 	_LOGGER.info(f"Setting up price adjustment sensors: {len(price_adjustments)} configured")
-	if not selected_sensors and not constant_devices and not price_adjustments:
-		_LOGGER.warning("No power sensors, constant devices, or price adjustments configured, skipping sensor setup")
+	_LOGGER.info(f"Setting up power sum sensors: {len(power_sums)} configured")
+	if not selected_sensors and not constant_devices and not price_adjustments and not power_sums:
+		_LOGGER.warning("No power sensors, constant devices, price adjustments, or power sums configured, skipping sensor setup")
 		return
 	constant_device_map = {}
 	for base_name, cfg in expand_constant_power_devices(constant_devices):
@@ -284,6 +286,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 			constant_device_map[base_name] = cfg
 		except Exception as err:
 			_LOGGER.error(f"Failed to prepare constant power device {cfg}: {err}")
+	
+	# Build a set of power sum base names so we can identify their energy/period
+	# sensors during recreation.  The base_name for a power sum with id "xxx"
+	# is ha_slugify("xxx") with hyphens replaced by underscores.
+	power_sum_base_names = set()
+	for item in power_sums:
+		cfg_id = str((item or {}).get("id") or "").strip()
+		if not cfg_id:
+			continue
+		ps_base = ha_slugify(cfg_id).replace("-", "_").strip("_")
+		if ps_base:
+			power_sum_base_names.add(ps_base)
 	
 	# Find existing generated sensors
 	entity_registry = er.async_get(hass)
@@ -316,8 +330,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 		for entity_id, unique_id in existing_entities:
 			if not unique_id:
 				continue
-			# Skip sensors that are recreated elsewhere in this setup function
+			# Skip sensors that are managed by generate_sensors_service in __init__.py
 			if str(unique_id).startswith("price_adjust_"):
+				continue
+			# Power sum sensors (power_sum_xxx_power) are created/managed by
+			# generate_sensors_service, not by async_setup_entry.  Skip them here
+			# so we don't accidentally fail to find a source and skip the group.
+			if str(unique_id).startswith("power_sum_"):
 				continue
 			
 			# Extract base name from unique_id
@@ -352,6 +371,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 		entities_to_add = []
 		
 		for base_name, sensor_types in entities_by_base.items():
+			# Power sum energy/period sensors: their source is the PowerSumSensor
+			# which is created by generate_sensors_service.  We just need to
+			# recreate the energy & period entities here.
+			is_power_sum = base_name in power_sum_base_names
+			
 			# Determine source sensor from base name
 			constant_config = constant_device_map.get(base_name)
 			expected_source_sensor = f"sensor.{base_name}_power"
@@ -359,11 +383,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 			custom_name = constant_config.get(CONF_CONSTANT_DEVICE_NAME) if constant_config else None
 			
 			# Debug the mapping process
-			_LOGGER.debug(f"Recreating sensors for base_name '{base_name}', expected source: '{expected_source_sensor}'")
+			_LOGGER.debug(f"Recreating sensors for base_name '{base_name}', expected source: '{expected_source_sensor}', is_power_sum: {is_power_sum}")
 			_LOGGER.debug(f"Selected sensors: {selected_sensors}")
 			
 			# Verify the expected source sensor is in the selected list
-			if not constant_config and expected_source_sensor not in selected_sensors:
+			# (skip this check for constant devices and power sum sensors)
+			if not constant_config and not is_power_sum and expected_source_sensor not in selected_sensors:
 				_LOGGER.warning(f"Expected source sensor '{expected_source_sensor}' not found in selected sensors for {base_name}")
 				# Try to find the actual source sensor from selected sensors
 				found_source = None
@@ -386,7 +411,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 				_LOGGER.warning(f"Source sensor {source_sensor} not yet available during startup for {base_name}")
 				# During startup, we'll proceed anyway - the sensor should handle unavailable source gracefully
 			else:
-				if not constant_config:
+				if is_power_sum:
+					# Power sum source is our own PowerSumSensor — no extra validation needed
+					_LOGGER.debug(f"Validated power sum source {source_sensor} for {base_name}")
+				elif not constant_config:
 					# Validate that this is actually a power sensor
 					source_state = hass.states.get(source_sensor)
 					unit = source_state.attributes.get("unit_of_measurement", "")
