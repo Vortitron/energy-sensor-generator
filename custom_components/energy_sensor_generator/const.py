@@ -15,9 +15,7 @@ CONF_CONSTANT_POWER_DEVICES = "constant_power_devices"
 CONF_PRICE_ADJUST_SENSORS = "price_adjust_sensors"
 
 # Internal safeguards
-POINT_SAMPLING_MAX_GAP_SECONDS = 600  # Skip point sampling if the gap exceeds this
-
-# Post-restart safety net: audit shortly after startup and roll back obvious overreads
-RESTART_AUDIT_DELAY_SECONDS = 600
-RESTART_AUDIT_MULTIPLIER = 3.0
-RESTART_AUDIT_MIN_DELTA_KWH = 0.05
+# Maximum gap (seconds) we are willing to bridge with energy calculations.
+# Gaps longer than max(this, 3 x sample_interval) indicate a restart or an
+# offline source; we resync tracking instead of guessing the missing energy.
+POINT_SAMPLING_MAX_GAP_SECONDS = 600

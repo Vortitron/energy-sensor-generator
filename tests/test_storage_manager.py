@@ -90,3 +90,35 @@ async def test_async_update_and_flush(monkeypatch):
 	assert store._data["a"] == 10
 
 
+@pytest.mark.asyncio
+async def test_async_set_key_is_atomic(monkeypatch):
+	from custom_components.energy_sensor_generator import utils
+
+	fake_store_ref = {"store": None}
+
+	def _fake_store_ctor(hass, version, key):
+		fake = FakeStore(hass, version, key)
+		fake_store_ref["store"] = fake
+		return fake
+
+	monkeypatch.setattr(utils.ha_storage, "Store", _fake_store_ctor)
+
+	hass = MagicMock()
+	hass.config.path = lambda rel: "/tmp/" + str(rel)
+
+	manager = utils.StorageManager(hass, debounce_seconds=0.005, min_interval_seconds=0.0)
+
+	# Concurrent single-key writes from different "sensors" must all survive
+	await asyncio.gather(
+		manager.async_set_key("sensor_a", {"value": 1.0}),
+		manager.async_set_key("sensor_b", {"value": 2.0}),
+		manager.async_set_key("sensor_c", {"value": 3.0}),
+	)
+	await manager.async_flush()
+
+	store = fake_store_ref["store"]
+	assert store._data["sensor_a"] == {"value": 1.0}
+	assert store._data["sensor_b"] == {"value": 2.0}
+	assert store._data["sensor_c"] == {"value": 3.0}
+
+

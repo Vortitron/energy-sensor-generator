@@ -8,7 +8,9 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 from datetime import timedelta
-from .sensor import EnergySensor, DailyEnergySensor, MonthlyEnergySensor, WeeklyEnergySensor, AnnualEnergySensor, SyntheticGridTotalEnergySensor, PriceAdjustedSensor
+from .sensor import EnergySensor, SyntheticGridTotalEnergySensor, PriceAdjustedSensor
+from .period_sensors import DailyEnergySensor, MonthlyEnergySensor, WeeklyEnergySensor, AnnualEnergySensor
+from .entity_helpers import debug_log as _debug_log, info_log as _info_log
 from .utils import StorageManager, derive_constant_base_name
 from .device_helpers import has_external_energy_sensors
 from .const import DOMAIN, STORAGE_FILE, CONF_DEBUG_LOGGING, CONF_CREATE_SYNTHETIC_GRID_TOTAL, CONF_CONSTANT_POWER_DEVICES, CONF_PRICE_ADJUST_SENSORS
@@ -16,27 +18,6 @@ from .hourly_copy_service import copy_from_previous_hour_service
 import voluptuous as vol
 
 _LOGGER = logging.getLogger(__name__)
-
-def _is_debug_enabled(hass: HomeAssistant) -> bool:
-	"""Check if debug logging is enabled for this integration."""
-	if DOMAIN not in hass.data:
-		return False
-	
-	# Check all config entries for debug setting
-	for config_entry in hass.config_entries.async_entries(DOMAIN):
-		if config_entry.options.get(CONF_DEBUG_LOGGING, False):
-			return True
-	return False
-
-def _debug_log(hass: HomeAssistant, message: str) -> None:
-	"""Log debug message only if debug logging is enabled."""
-	if _is_debug_enabled(hass):
-		_LOGGER.warning(f"DEBUG: {message}")
-
-def _info_log(hass: HomeAssistant, message: str, force: bool = False) -> None:
-	"""Log info message, respecting debug setting unless forced."""
-	if force or _is_debug_enabled(hass):
-		_LOGGER.info(message)
 
 def detect_power_sensors(hass: HomeAssistant) -> list:
     """Detect power sensors using various criteria for broader detection."""
@@ -221,8 +202,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Setup storage manager (HA Store-based)
     storage_manager = StorageManager(hass)
     
-    # Create main integration device
+    # Create main integration device; sw_version comes from the manifest so it never goes stale
     from homeassistant.helpers import device_registry as dr
+    from homeassistant.loader import async_get_integration
+    integration = await async_get_integration(hass, DOMAIN)
     device_registry = dr.async_get(hass)
     device_registry.async_get_or_create(
         config_entry_id=entry.entry_id,
@@ -230,7 +213,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         name="Energy Sensor Generator",
         manufacturer="Energy Sensor Generator",
         model="Integration",
-        sw_version="0.0.79",
+        sw_version=str(integration.version),
     )
     
     # Store references in hass.data

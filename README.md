@@ -260,6 +260,14 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 
 ### Changelog
 
+#### Version 0.0.85
+- **🛑 Removed the post-restart audit and its persistent notification**: The audit could roll back legitimate energy, and the rollback itself was recorded as a negative delta in long-term statistics, producing negative bars on the Energy dashboard. The root causes are now fixed directly (see below), so no rollback is needed.
+- **🚧 Gap guard for restarts/offline sources**: If the time since the last calculation anchor exceeds `max(sample_interval × 3, 10 minutes)`, the calculation window restarts from "now" and only counts fresh data, so phantom restart energy is never added in the first place.
+- **📐 Fixed systematic under-read (~17%) in statistical calculation**: Each statistical window now includes the final segment up to the window end (left Riemann sum, matching Home Assistant's integration helper). Previously the last slice of every window was dropped.
+- **🧮 Point sampling no longer loses energy between ticks**: State changes between interval ticks accumulate into a pending bucket, which is added by the interval timer (or discarded when a statistical result covers the same window) - nothing is double-counted or lost.
+- **💾 Reliable tracking persistence**: Calculation anchors (`last_update`, `last_statistical_calculation`) are persisted (debounced) on every interval, so they no longer go stale across restarts. Storage writes are now atomic via a shared lock, fixing a race where concurrent sensors could overwrite each other's saves.
+- **🧹 Refactoring**: Pure energy maths extracted to `energy_math.py` with full unit tests; the four period sensor classes consolidated into a shared `PeriodEnergySensor` base in `period_sensors.py`; shared naming/logging/persistence helpers moved to `entity_helpers.py`. The device `sw_version` now reads from the manifest so it cannot go stale.
+
 #### Version 0.0.47
 - **🎉 FIXED: Resolved All Blocking Database Call Issues**: Successfully implemented proper async access to Home Assistant's historical data using `recorder.get_instance(hass).async_add_executor_job()`
 - **⚡ Statistical Calculation Re-Enabled**: Now properly accesses the same historical data that the Energy Dashboard uses, providing much more accurate energy calculations

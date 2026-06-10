@@ -168,16 +168,23 @@ Occasionally Home Assistant restarts leave a long gap (10+ minutes) between the 
 
 From v0.0.82 onwards, point sampling is **skipped** whenever the gap exceeds `max(sample_interval × 3, 10 minutes)`. The integration now just refreshes its tracking timestamps and waits for fresh power readings (or a statistical calculation) before adding any new energy. If an actual overread still slips through, use the hourly copy service with `hour_to_fix` to revert the hour cleanly.
 
-### Automatic Post-Restart Audit (v0.0.83)
+### Automatic Post-Restart Audit (v0.0.83, removed in v0.0.85)
 
-From v0.0.83, each generated energy sensor performs a **one-shot audit ~10 minutes after Home Assistant starts**:
+v0.0.83 added a one-shot audit ~10 minutes after start that rolled back "impossible" jumps and raised a persistent notification.
 
-- If the sensor jumps by an amount that is clearly impossible given the elapsed time and power readings, it automatically rolls back to the pre-restart value.
-- A single persistent notification is created the first time this triggers (to avoid spam).
+**This audit was removed in v0.0.85.** In practice it could roll back *legitimate* energy (the rollback itself appeared as a negative delta in long-term statistics, producing negative bars on the Energy dashboard) and the notification was noisy. The root causes it papered over are now fixed directly:
 
-This is intentionally conservative: it only triggers on obvious phantom jumps, not legitimate usage.
+### Root-Cause Fix (v0.0.85)
+
+- **Gap guard on the statistical path**: if the time since the last calculation anchor exceeds `max(sample_interval × 3, 10 minutes)` (a restart or an offline source), the integration does **not** bridge the gap. It restarts the calculation window from "now" and only counts fresh data, so phantom energy is never added in the first place - no audit, no rollback, no notification.
+- **Tracking timestamps are persisted on every interval** (debounced via the storage manager), so `_last_statistical_calculation` no longer goes stale across restarts.
+- **Final window segment included**: each statistical window now integrates right up to the window end (previously the last slice was dropped, under-reading by roughly `source_interval / window_length`, ~17% in testing).
+- **Point sampling accumulates between ticks**: state changes between interval ticks accumulate energy into a pending bucket (left Riemann), which the interval timer either adds or discards when a statistical result covers the same window - nothing is counted twice and nothing is lost.
 
 ## Version History
+- **v0.0.85** - Removed the restart audit and its notification; gap guard prevents phantom restart energy at source; fixed statistical under-read (final segment); point sampling accumulates between ticks; tracking persisted reliably
+- **v0.0.83** - Added post-restart audit (since removed)
+- **v0.0.82** - Skip point sampling across long gaps
 - **v0.0.78** - Fixed restart overread by using `_last_update` instead of lookback
 - **v0.0.77** - Fixed double-counting in statistical calculations (removed 1-minute buffer)
 - **v0.0.76** - Added spike protection, hourly copy service, config persistence fix

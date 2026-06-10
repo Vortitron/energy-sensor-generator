@@ -74,15 +74,29 @@ class StorageManager:
                 self._save_task = asyncio.create_task(self._debounced_save())
 
     async def async_update(self, mutator: Callable[[dict], None]) -> dict:
-        """Load, mutate, and schedule save; returns updated data."""
-        data = await self.async_load()
-        try:
-            mutator(data)
-        except Exception as e:
-            _LOGGER.error("Storage mutation failed: %s", e)
-            raise
-        await self.async_save(data)
-        return data
+        """Atomically mutate the cached data and schedule a save.
+
+        Unlike load/modify/save in callers, the mutation happens on the live
+        cache under the lock, so concurrent updates from different sensors
+        cannot overwrite each other.
+        """
+        await self.async_load()  # Ensure the cache is populated
+        async with self._lock:
+            assert self._cache is not None
+            try:
+                mutator(self._cache)
+            except Exception as e:
+                _LOGGER.error("Storage mutation failed: %s", e)
+                raise
+            if self._save_task is None or self._save_task.done():
+                self._save_task = asyncio.create_task(self._debounced_save())
+            return dict(self._cache)
+
+    async def async_set_key(self, key: str, value) -> None:
+        """Atomically set a single top-level key and schedule a save."""
+        def _mutate(data: dict) -> None:
+            data[key] = value
+        await self.async_update(_mutate)
 
     async def _debounced_save(self) -> None:
         try:
