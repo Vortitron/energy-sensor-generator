@@ -227,6 +227,13 @@ Check logs for warnings about invalid power values.
 - If you explicitly tick a power sensor in the options flow the integration now honours that request and creates the kWh entities even when other energy sensors exist (handy for multi P1IB setups that ship their own cumulative counters).
 - You'll see a warning in the logs noting that the safety check was overridden.
 
+### Negative bars on the Energy dashboard ("untracked" drops below zero)
+- **This is almost always a dashboard configuration issue, not a bug in the generated sensors.** The generated kWh sensors are `total_increasing` and only ever rise; verify with Developer Tools → Statistics (no negative `change`).
+- The negative bars come from the Energy dashboard's *"included in another device"* setting (`included_in_stat`). The dashboard draws `parent − children`, so if a sub-device draws **more** than the parent it's nested under during an hour, the parent's "untracked" remainder goes negative.
+- The classic trigger is a **dual-meter / swapped-feed** setup: if you nest a device under one specific meter's phase (e.g. *Hem L2*) but the house is currently running off the **other** meter (e.g. *Bio*), that phase reads ~0 while the device keeps drawing → negative remainder.
+- **Fix:** nest each device under a phase total that is independent of which feed is live. Create one *combined* sensor per phase (a **Settings → Devices & Services → Helpers → Group → Sensor** with type **sum**) that adds the matching phase of *both* meters, e.g. `House L2 = Hem L2 + Bio L2`. Use those three combined sensors as the per-phase "individual devices" and nest each appliance under the **correct phase** it is physically wired to. Because only one feed is live at a time, the combined phase total always covers its children, so the remainder can never go negative.
+- Also make sure each appliance is nested under the phase it is actually on - a load nested under the wrong phase can still produce a (smaller) negative.
+
 Storage Errors:
 Ensure the .storage directory is writable: chmod -R 755 /config/.storage.
 Monitor disk space to prevent write failures.
@@ -267,6 +274,7 @@ Enjoy tracking your energy usage with a tidy, all-in-one integration!
 - **🧮 Point sampling no longer loses energy between ticks**: State changes between interval ticks accumulate into a pending bucket, which is added by the interval timer (or discarded when a statistical result covers the same window) - nothing is double-counted or lost.
 - **💾 Reliable tracking persistence**: Calculation anchors (`last_update`, `last_statistical_calculation`) are persisted (debounced) on every interval, so they no longer go stale across restarts. Storage writes are now atomic via a shared lock, fixing a race where concurrent sensors could overwrite each other's saves.
 - **🧹 Refactoring**: Pure energy maths extracted to `energy_math.py` with full unit tests; the four period sensor classes consolidated into a shared `PeriodEnergySensor` base in `period_sensors.py`; shared naming/logging/persistence helpers moved to `entity_helpers.py`. The device `sw_version` now reads from the manifest so it cannot go stale.
+- **🗑️ Stale devices are now removable**: Implemented `async_remove_config_entry_device`, so generated devices that no longer expose any entities (e.g. left over from an old naming scheme) can be deleted directly from the device page. Devices that still have live generated entities remain protected.
 
 #### Version 0.0.47
 - **🎉 FIXED: Resolved All Blocking Database Call Issues**: Successfully implemented proper async access to Home Assistant's historical data using `recorder.get_instance(hass).async_add_executor_job()`

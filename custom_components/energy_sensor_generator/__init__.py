@@ -365,6 +365,21 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         
     return unload_ok
 
+async def async_remove_config_entry_device(hass: HomeAssistant, config_entry: ConfigEntry, device_entry) -> bool:
+    """Allow deleting a generated device from the UI.
+
+    Removal is permitted only when the device no longer exposes any entities
+    belonging to this integration - e.g. stale devices left over from an old
+    naming scheme. Devices that still have generated entities are protected so
+    a live sensor cannot be deleted by accident (it would just be recreated).
+    """
+    entity_registry = er.async_get(hass)
+    device_entities = er.async_entries_for_device(
+        entity_registry, device_entry.id, include_disabled_entities=True
+    )
+    has_live_entity = any(e.config_entry_id == config_entry.entry_id for e in device_entities)
+    return not has_live_entity
+
 async def generate_sensors_service(hass: HomeAssistant, call, entry: ConfigEntry = None) -> None:
     """Service to generate energy sensors."""
     _LOGGER.info("Generating energy sensors")
