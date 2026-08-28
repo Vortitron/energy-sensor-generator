@@ -19,6 +19,8 @@ MAX_SEGMENT_HOURS = _energy_math.MAX_SEGMENT_HOURS
 held_power_energy_kwh = _energy_math.held_power_energy_kwh
 left_riemann_energy = _energy_math.left_riemann_energy
 trapezoid_energy_kwh = _energy_math.trapezoid_energy_kwh
+conversion_factor_from_unit = _energy_math.conversion_factor_from_unit
+point_sampling_window_energy_kwh = _energy_math.point_sampling_window_energy_kwh
 
 T0 = datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -130,3 +132,48 @@ class TestLeftRiemannEnergy:
 		samples = [(1.5, _ts(0))]
 		result = left_riemann_energy(samples, _ts(3600), 1.0)
 		assert result["total_energy"] == pytest.approx(1.5)
+
+
+class TestConversionFactorFromUnit:
+	def test_kw_units(self):
+		assert conversion_factor_from_unit("kW") == 1
+		assert conversion_factor_from_unit("kilowatt") == 1
+
+	def test_watt_and_unknown_assume_watts(self):
+		assert conversion_factor_from_unit("W") == 1000
+		assert conversion_factor_from_unit("") == 1000
+		assert conversion_factor_from_unit(None) == 1000
+		assert conversion_factor_from_unit("VA") == 1000
+
+
+class TestPointSamplingWindow:
+	def test_pending_plus_tail_is_left_riemann(self):
+		# 500 W for 30 s already pending, plus 500 W held for another 30 s
+		pending = held_power_energy_kwh(500.0, 30.0, 1000.0)
+		result = point_sampling_window_energy_kwh(pending, 500.0, 30.0, 1000.0, 600.0)
+		assert result == pytest.approx(held_power_energy_kwh(500.0, 60.0, 1000.0))
+
+	def test_state_change_during_interval_does_not_double_count(self):
+		"""If a state change already consumed t0→t1 into pending, the tail
+		must only cover t1→now — not the original full window."""
+		pending = held_power_energy_kwh(1000.0, 20.0, 1000.0)
+		# Remaining 40 s at the new power
+		result = point_sampling_window_energy_kwh(pending, 500.0, 40.0, 1000.0, 600.0)
+		expected = (
+			held_power_energy_kwh(1000.0, 20.0, 1000.0)
+			+ held_power_energy_kwh(500.0, 40.0, 1000.0)
+		)
+		assert result == pytest.approx(expected)
+		# Using the stale full-window duration would over-read
+		stale = point_sampling_window_energy_kwh(pending, 500.0, 60.0, 1000.0, 600.0)
+		assert stale > expected
+
+	def test_gap_returns_none(self):
+		assert point_sampling_window_energy_kwh(0.0, 1000.0, 601.0, 1000.0, 600.0) is None
+
+	def test_missing_last_power_returns_none(self):
+		assert point_sampling_window_energy_kwh(0.1, None, 60.0, 1000.0, 600.0) is None
+
+	def test_kw_source(self):
+		result = point_sampling_window_energy_kwh(0.0, 2.0, 3600.0, 1.0, 7200.0)
+		assert result == pytest.approx(2.0)

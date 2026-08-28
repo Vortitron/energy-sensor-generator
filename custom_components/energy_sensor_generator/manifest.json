@@ -1,14 +1,13 @@
 {
   "domain": "energy_sensor_generator",
   "name": "Energy Sensor Generator",
-  "version": "0.0.85",
-  "documentation": "https://github.com/Vortitron/energy-sensor-generator",
-  "requirements": [],
   "codeowners": ["@Vortitron"],
-  "iot_class": "local_polling",
   "config_flow": true,
-  "dependencies": [],
-  "homeassistant": "2023.6.0",
-  "icon": "mdi:energy"
+  "documentation": "https://github.com/Vortitron/energy-sensor-generator",
+  "integration_type": "helper",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/Vortitron/energy-sensor-generator/issues",
+  "loggers": ["custom_components.energy_sensor_generator"],
+  "requirements": [],
+  "version": "0.0.86"
 }
-

@@ -37,7 +37,13 @@ from .const import (
 	POINT_SAMPLING_MAX_GAP_SECONDS,
 )
 import time
-from .energy_math import left_riemann_energy, held_power_energy_kwh, MIN_STATISTICAL_WINDOW_SECONDS
+from .energy_math import (
+	left_riemann_energy,
+	held_power_energy_kwh,
+	MIN_STATISTICAL_WINDOW_SECONDS,
+	conversion_factor_from_unit,
+	point_sampling_window_energy_kwh,
+)
 from .price_adjustment import compute_adjusted_value, is_price_attribute_key, adjust_attribute_value
 from .entity_helpers import (
 	is_debug_enabled as _is_debug_enabled,
@@ -543,21 +549,14 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			
 			_LOGGER.info(f"UNIT DETECTION: {source_sensor} | unit='{unit}' | device_class='{device_class}' | state={state.state}")
 			
-			# Normalise unit to lowercase for comparison
-			unit_lower = unit.lower()
-			
-			if unit_lower in ["kw", "kilowatt", "kilowatts"]:
-				# Source is already in kW, no conversion needed
+			factor = conversion_factor_from_unit(unit)
+			if factor == 1:
 				_LOGGER.info(f"Power unit detected for {source_sensor}: kW (conversion factor: 1) - Current value: {state.state}")
-				return 1
-			elif unit_lower in ["w", "watt", "watts"]:
-				# Source is in Watts, need to divide by 1000 to get kW
-				_LOGGER.info(f"Power unit detected for {source_sensor}: W (conversion factor: 1000) - Current value: {state.state}")
-				return 1000
+			elif unit:
+				_LOGGER.info(f"Power unit detected for {source_sensor}: {unit} (conversion factor: {factor}) - Current value: {state.state}")
 			else:
-				# Unknown or missing unit, assume Watts for backwards compatibility
 				_LOGGER.warning(f"Unknown/missing unit for {source_sensor} ('{unit}'), assuming Watts (conversion factor: 1000) - Current value: {state.state}")
-				return 1000
+			return factor
 		except Exception as e:
 			_LOGGER.error(f"Error determining power conversion factor for {source_sensor}: {e}")
 			return None
@@ -908,6 +907,7 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			
 		self._calculating_energy = True
 		try:
+			now = dt_util.as_utc(now)
 			# Ensure conversion factor is set
 			self._ensure_conversion_factor()
 			
@@ -1013,6 +1013,9 @@ class EnergySensor(SensorEntity, RestoreEntity):
 				force_statistical_only = False
 			
 			# Decide how much energy to add this tick.
+			# Point-sampling duration is taken from the *current* last-update
+			# anchor AFTER the statistical await, so a state change that arrived
+			# during history lookup cannot double-count the same window.
 			energy_kwh = None
 			method = None
 			window_seconds = (now - self._last_update).total_seconds() if self._last_update else 0.0
@@ -1034,25 +1037,29 @@ class EnergySensor(SensorEntity, RestoreEntity):
 				# successful statistical window covers this period.
 				_debug_log(self.hass, f"Previously used statistical for {self._attr_name} - not falling back to point sampling")
 				self._pending_point_energy = 0.0
-			elif self._last_power is not None and self._last_update is not None:
-				if window_seconds > max_gap_seconds:
-					_LOGGER.info(
-						f"Skipping point sampling for {self._attr_name}: "
-						f"{window_seconds:.0f}s gap since last update (likely restart/offline). "
-						f"Resuming from fresh data to avoid phantom energy."
-					)
+			else:
+				sampled = point_sampling_window_energy_kwh(
+					self._pending_point_energy,
+					self._last_power,
+					window_seconds,
+					self._power_to_kw_factor,
+					max_gap_seconds,
+				)
+				if sampled is None:
+					if self._last_power is not None and window_seconds > max_gap_seconds:
+						_LOGGER.info(
+							f"Skipping point sampling for {self._attr_name}: "
+							f"{window_seconds:.0f}s gap since last update (likely restart/offline). "
+							f"Resuming from fresh data to avoid phantom energy."
+						)
+					else:
+						_debug_log(self.hass, f"No previous data available for {self._attr_name} - will start tracking on next update")
 					self._pending_point_energy = 0.0
 				else:
-					# Point sampling: energy accumulated from state changes since
-					# the last tick, plus the final segment holding the last
-					# known power up to now (left Riemann, matching statistics).
-					final_segment = held_power_energy_kwh(self._last_power, window_seconds, self._power_to_kw_factor)
-					energy_kwh = self._pending_point_energy + final_segment
+					energy_kwh = sampled
 					method = "point sampling"
 					self._pending_point_energy = 0.0
 					self._using_statistical = False
-			else:
-				_debug_log(self.hass, f"No previous data available for {self._attr_name} - will start tracking on next update")
 			
 			if energy_kwh is not None and energy_kwh > 0:
 				# Spike protection: reject unrealistic additions (only if enabled)

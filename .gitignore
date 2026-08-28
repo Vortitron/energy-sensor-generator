@@ -1,3 +1,6 @@
-custom_components/energy_sensor_generator/__pycache__/*
-custom_components/energy_sensor_generator/__pycache__/sensor.cpython-310.pyc
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
 .env
+*.egg-info/

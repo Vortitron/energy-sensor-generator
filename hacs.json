@@ -1,0 +1,6 @@
+{
+  "name": "Energy Sensor Generator",
+  "homeassistant": "2024.4.0",
+  "render_readme": true,
+  "hide_default_branch": false
+}

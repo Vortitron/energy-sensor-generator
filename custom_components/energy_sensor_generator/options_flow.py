@@ -1,476 +1,293 @@
-from homeassistant import config_entries
+"""Options flow for Energy Sensor Generator."""
+from __future__ import annotations
+
+import logging
+import uuid
+
 import voluptuous as vol
-from homeassistant.helpers import entity_registry as er
+from homeassistant import config_entries
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.selector import (
-	EntitySelector, 
-	EntitySelectorConfig,
-	SelectSelector,
-	SelectSelectorConfig,
-	SelectSelectorMode,
 	BooleanSelector,
+	EntitySelector,
+	EntitySelectorConfig,
 	NumberSelector,
 	NumberSelectorConfig,
 	NumberSelectorMode,
+	SelectSelector,
+	SelectSelectorConfig,
+	SelectSelectorMode,
 	TextSelector,
-	TextSelectorConfig
+	TextSelectorConfig,
 )
+
 from .const import (
-	DOMAIN, 
-	CONF_DEBUG_LOGGING, 
-	CONF_USE_STATISTICAL, 
-	CONF_CREATE_SYNTHETIC_GRID_TOTAL,
-	CONF_FORCE_STATISTICAL_ONLY,
-	CONF_STAT_LOOKBACK_MINUTES,
-	CONF_MAX_ENERGY_PER_HOUR,
 	CONF_CONSTANT_POWER_DEVICES,
-	CONF_PRICE_ADJUST_SENSORS
+	CONF_CREATE_SYNTHETIC_GRID_TOTAL,
+	CONF_DEBUG_LOGGING,
+	CONF_FORCE_STATISTICAL_ONLY,
+	CONF_MAX_ENERGY_PER_HOUR,
+	CONF_PRICE_ADJUST_SENSORS,
+	CONF_STAT_LOOKBACK_MINUTES,
+	CONF_USE_STATISTICAL,
 )
-from .__init__ import detect_power_sensors  # Import the detect function
+from .sensor_picker import (
+	grouped_selector_options,
+	merge_saved_options,
+	options_overview,
+	period_flags_from_selection,
+	period_selection_from_flags,
+	short_sensor_label,
+	uniquify_labels,
+)
 from .utils import format_constant_power_devices_text
-import uuid
+
+_LOGGER = logging.getLogger(__name__)
+
+PERIOD_OPTIONS = [
+	{"value": "daily", "label": "Daily"},
+	{"value": "weekly", "label": "Weekly"},
+	{"value": "monthly", "label": "Monthly"},
+	{"value": "annual", "label": "Annual"},
+]
+
 
 class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
-	def __init__(self, config_entry):
-		"""Initialize options flow."""
-		self.options = dict(config_entry.options)
-		self._errors = {}
-		self._user_defaults = {}
-		self._show_advanced = False
-		self._constant_devices_return_step = "init"
-		self._price_adjust_return_step = "init"
+	"""Menu-based options flow: one concern per step, saved together at the end."""
+
+	def __init__(self) -> None:
+		self._errors: dict = {}
+		self._user_defaults: dict = {}
+
+	def _defaults(self) -> dict:
+		return {**self.config_entry.data, **self.config_entry.options, **self._user_defaults}
 
 	def _get_constant_devices(self) -> list:
-		"""Return a copy of the currently edited constant device list."""
-		defaults = {**self.config_entry.options, **self._user_defaults}
-		return [dict(device) for device in defaults.get(CONF_CONSTANT_POWER_DEVICES, []) or []]
+		return [dict(device) for device in self._defaults().get(CONF_CONSTANT_POWER_DEVICES, []) or []]
 
 	def _set_constant_devices(self, devices: list) -> None:
-		"""Persist the working constant device list."""
 		self._user_defaults[CONF_CONSTANT_POWER_DEVICES] = [dict(device) for device in devices]
-	
+
 	def _get_price_adjustments(self) -> list:
-		"""Return a copy of the currently edited price adjustment list."""
-		defaults = {**self.config_entry.options, **self._user_defaults}
-		return [dict(item) for item in defaults.get(CONF_PRICE_ADJUST_SENSORS, []) or []]
-	
+		return [dict(item) for item in self._defaults().get(CONF_PRICE_ADJUST_SENSORS, []) or []]
+
 	def _set_price_adjustments(self, items: list) -> None:
-		"""Persist the working price adjustment list."""
 		self._user_defaults[CONF_PRICE_ADJUST_SENSORS] = [dict(item) for item in items]
 
-	async def async_step_init(self, user_input=None):
-		"""Manage the options for the integration."""
-		self._errors = {}
-		
-		hass = self.hass
-		
-		# Get auto-detected power sensors
-		auto_detected_sensors = detect_power_sensors(hass)
-		
-		# Get current selections if present
-		current_sensors = self.config_entry.options.get("selected_power_sensors", [])
-		
-		# Handle navigation to advanced step
-		if user_input is not None:
-			requested_show_advanced = user_input.get("show_advanced", False)
-			# Navigate to advanced step if requested
-			if requested_show_advanced:
-				self._user_defaults.update(user_input)
-				return await self.async_step_advanced()
-		else:
-			requested_show_advanced = False
-		
-		# Compose defaults from saved options and any prior user edits
-		defaults = {**self.config_entry.options, **self._user_defaults}
-		
-		# Get current settings
-		create_daily = defaults.get("create_daily_sensors", True)
-		create_monthly = defaults.get("create_monthly_sensors", True)
-		create_weekly = defaults.get("create_weekly_sensors", True)
-		create_annual = defaults.get("create_annual_sensors", True)
-		existing_constant_devices = defaults.get(CONF_CONSTANT_POWER_DEVICES, [])
-		constant_devices_summary = format_constant_power_devices_text(existing_constant_devices) or "— None configured —"
-		price_adjust_summary = "— None configured —"
-		try:
-			if defaults.get(CONF_PRICE_ADJUST_SENSORS, []):
-				price_adjust_summary = "\n".join([
-					f"{item.get('name') or item.get('source_entity_id')} (+{item.get('add_amount')})"
-					for item in defaults.get(CONF_PRICE_ADJUST_SENSORS, []) or []
-					if item.get("source_entity_id")
-				]) or "— None configured —"
-		except Exception:
-			price_adjust_summary = "— None configured —"
-		
-		# Advanced settings (hidden by default)
-		sample_interval = defaults.get("sample_interval", 60)
-		debug_logging = defaults.get(CONF_DEBUG_LOGGING, False)
-		use_statistical = defaults.get(CONF_USE_STATISTICAL, True)
-		synthetic_grid_total = defaults.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
-		force_statistical_only = defaults.get(CONF_FORCE_STATISTICAL_ONLY, False)
-		stat_lookback = defaults.get(CONF_STAT_LOOKBACK_MINUTES, 30)
-		
-		# Merge auto-detected and previously selected sensors for the selection list
-		all_power_sensors = {}
-		
-		# Get entity registry to retrieve friendly names
-		entity_registry = er.async_get(hass)
-		# Get device registry
-		device_registry = dr.async_get(hass)
-		
-		# Check which current sensors still exist
-		validated_current_sensors = []
-		for sensor_id in current_sensors:
-			state = hass.states.get(sensor_id)
-			if state is not None:
-				validated_current_sensors.append(sensor_id)
-		
-		# Add auto-detected sensors
-		for sensor in auto_detected_sensors:
-			# Get friendly name from entity registry
-			entity_id = sensor
+	def _build_options(self, extra: dict | None = None) -> dict:
+		"""Merge saved options with in-progress edits without resetting advanced keys."""
+		return merge_saved_options(
+			self.config_entry.data,
+			self.config_entry.options,
+			self._user_defaults,
+			extra or {},
+		)
+
+	def _overview_placeholders(self) -> dict[str, str]:
+		defaults = self._defaults()
+		found = self._discovered_power_sensors()
+		selected = defaults.get("selected_power_sensors", []) or []
+		selected_valid = [entity_id for entity_id in selected if entity_id in found or self.hass.states.get(entity_id)]
+		return {
+			"overview": options_overview(
+				selected_count=len(selected_valid),
+				found_count=len(found),
+				constant_count=len(self._get_constant_devices()),
+				price_count=len(self._get_price_adjustments()),
+			)
+		}
+
+	def _discovered_power_sensors(self) -> list[str]:
+		from .__init__ import detect_power_sensors
+		return detect_power_sensors(self.hass)
+
+	def _sensor_choice_items(self, entity_ids: list[str]) -> list[tuple[str, str, str | None]]:
+		"""(entity_id, short label, device name) for the grouped checkbox list."""
+		entity_registry = er.async_get(self.hass)
+		device_registry = dr.async_get(self.hass)
+		labels: dict[str, str] = {}
+		devices: dict[str, str | None] = {}
+
+		for entity_id in entity_ids:
 			entity = entity_registry.async_get(entity_id)
-			friendly_name = entity.name if entity and entity.name else entity_id
-			
-			# Get device name if available
+			state = self.hass.states.get(entity_id)
+			friendly_name = None
+			if state and state.attributes.get("friendly_name"):
+				friendly_name = state.attributes["friendly_name"]
+			elif entity and (entity.name or entity.original_name):
+				friendly_name = entity.name or entity.original_name
+
 			device_name = None
 			if entity and entity.device_id:
 				device = device_registry.async_get(entity.device_id)
-				if device and device.name:
-					device_name = device.name
-			
-			# Create comprehensive display name
-			if device_name and friendly_name and device_name != friendly_name:
-				# Check if friendly name already contains device name to avoid redundancy
-				if device_name.lower() in friendly_name.lower():
-					display_name = friendly_name
-				else:
-					# Show both device and sensor name if they're different
-					display_name = f"{device_name} - {friendly_name}"
-			elif device_name:
-				# Use device name if sensor name is generic or missing
-				display_name = device_name
-			else:
-				# Fallback to friendly name or entity ID
-				display_name = friendly_name
-			
-			# Always add entity ID suffix for clear identification
-			# This helps distinguish between similar devices (e.g., multiple smart plugs)
-			entity_id_short = entity_id.replace("sensor.", "")
-			display_name = f"{display_name} — {entity_id_short}"
-			
-			all_power_sensors[sensor] = display_name
-			
-		# Add custom sensors that were previously selected
-		for sensor in validated_current_sensors:
-			if sensor not in all_power_sensors:
-				entity = entity_registry.async_get(sensor)
-				friendly_name = entity.name if entity and entity.name else sensor
-				
-				# Get device name if available
-				device_name = None
-				if entity and entity.device_id:
-					device = device_registry.async_get(entity.device_id)
-					if device and device.name:
-						device_name = device.name
-				
-				# Create comprehensive display name
-				if device_name and friendly_name and device_name != friendly_name:
-					# Check if friendly name already contains device name to avoid redundancy
-					if device_name.lower() in friendly_name.lower():
-						display_name = friendly_name
-					else:
-						# Show both device and sensor name if they're different
-						display_name = f"{device_name} - {friendly_name}"
-				elif device_name:
-					# Use device name if sensor name is generic or missing
-					display_name = device_name
-				else:
-					# Fallback to friendly name or entity ID
-					display_name = friendly_name
-				
-				# Always add entity ID suffix for clear identification
-				# This helps distinguish between similar devices (e.g., multiple smart plugs)
-				sensor_id_short = sensor.replace("sensor.", "")
-				display_name = f"{display_name} — {sensor_id_short}"
-				
-				all_power_sensors[sensor] = display_name
-		
-		if user_input is not None:
-			# Get selected sensors from multi-select
-			selected_sensors = user_input.get("selected_power_sensors", [])
-			
-			# Add custom sensor if provided
-			custom_sensor = user_input.get("custom_power_sensor", "")
-			if custom_sensor and custom_sensor not in selected_sensors:
-				selected_sensors.append(custom_sensor)
-			
-			if user_input.get("configure_constant_devices"):
-				self._user_defaults.update(user_input)
-				self._user_defaults.pop("configure_constant_devices", None)
-				self._constant_devices_return_step = "init"
-				return await self.async_step_constant_devices()
-			
-			if user_input.get("configure_price_adjustments"):
-				self._user_defaults.update(user_input)
-				self._user_defaults.pop("configure_price_adjustments", None)
-				self._price_adjust_return_step = "init"
-				return await self.async_step_price_adjustments()
-			
-			# Get period sensor options - parse from multi-select
-			period_sensors = user_input.get("period_sensors", ["daily", "monthly", "weekly", "annual"])
-			create_daily = "daily" in period_sensors
-			create_monthly = "monthly" in period_sensors
-			create_weekly = "weekly" in period_sensors
-			create_annual = "annual" in period_sensors
-			
-			# Advanced options (only if advanced is shown)
-			sample_interval = user_input.get("sample_interval", 60)
-			debug_logging = user_input.get(CONF_DEBUG_LOGGING, False)
-			use_statistical = user_input.get(CONF_USE_STATISTICAL, True)
-			synthetic_grid_total = user_input.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
-			force_statistical_only = user_input.get(CONF_FORCE_STATISTICAL_ONLY, False)
-			stat_lookback = user_input.get(CONF_STAT_LOOKBACK_MINUTES, 60)
-			
-			if not self._errors:
-				# Create the configuration entry first
-				result = self.async_create_entry(
-					title="Power Sensors", 
-					data={
-						"selected_power_sensors": selected_sensors,
-						"create_daily_sensors": create_daily,
-						"create_monthly_sensors": create_monthly,
-						"create_weekly_sensors": create_weekly,
-						"create_annual_sensors": create_annual,
-						"sample_interval": sample_interval,
-						CONF_DEBUG_LOGGING: debug_logging,
-						CONF_USE_STATISTICAL: use_statistical,
-						CONF_CREATE_SYNTHETIC_GRID_TOTAL: synthetic_grid_total,
-						CONF_FORCE_STATISTICAL_ONLY: force_statistical_only,
-						CONF_STAT_LOOKBACK_MINUTES: stat_lookback,
-						CONF_CONSTANT_POWER_DEVICES: self._get_constant_devices(),
-						CONF_PRICE_ADJUST_SENSORS: self._get_price_adjustments()
-					}
-				)
+				if device:
+					device_name = device.name_by_user or device.name
 
-				# Automatically generate sensors for the new configuration
-				hass = self.hass
-				hass.async_create_task(self._async_generate_sensors_after_config())
-				
-				return result
+			devices[entity_id] = device_name
+			labels[entity_id] = short_sensor_label(entity_id, friendly_name, device_name)
 
-		# Create schema for sensor selection
-		schema = {}
-		
-		# Use MultiSelectSelector for better display of sensor names
-		sensor_options = []
-		for sensor_id, display_name in all_power_sensors.items():
-			sensor_options.append({
-				"value": sensor_id,
-				"label": display_name
-			})
-		
-		schema[vol.Optional("selected_power_sensors", default=validated_current_sensors)] = SelectSelector(
-			SelectSelectorConfig(
-				options=sensor_options,
-				multiple=True,
-				mode=SelectSelectorMode.DROPDOWN
-			)
-		)
-		
-		# Add custom sensor field
-		schema[vol.Optional("custom_power_sensor")] = EntitySelector(
-			EntitySelectorConfig(domain="sensor", multiple=False)
-		)
-		
-		schema[vol.Optional("configure_constant_devices", default=False)] = BooleanSelector()
-		schema[vol.Optional("configure_price_adjustments", default=False)] = BooleanSelector()
-		
-		# Create period sensors multi-select
-		default_periods = []
-		if create_daily:
-			default_periods.append("daily")
-		if create_monthly:
-			default_periods.append("monthly")
-		if create_weekly:
-			default_periods.append("weekly")
-		if create_annual:
-			default_periods.append("annual")
-		
-		schema[vol.Optional("period_sensors", default=default_periods)] = SelectSelector(
-			SelectSelectorConfig(
-				options=[
-					{"value": "daily", "label": "Daily"},
-					{"value": "weekly", "label": "Weekly"},
-					{"value": "monthly", "label": "Monthly"},
-					{"value": "annual", "label": "Annual"}
-				],
-				multiple=True,
-				mode=SelectSelectorMode.DROPDOWN
-			)
-		)
-		
-		
-		# Show advanced (navigates to next step)
-		schema[vol.Optional("show_advanced", default=False)] = BooleanSelector()
-		
-		# Note: Advanced fields moved to dedicated step
-		
-		return self.async_show_form(
+		labels = uniquify_labels(labels)
+		return [(entity_id, labels[entity_id], devices[entity_id]) for entity_id in entity_ids]
+
+	def _available_power_sensors(self) -> list[str]:
+		"""Auto-detected sensors plus any previously selected entities that still exist."""
+		discovered = list(self._discovered_power_sensors())
+		seen = set(discovered)
+		for entity_id in self._defaults().get("selected_power_sensors", []) or []:
+			if entity_id in seen:
+				continue
+			if self.hass.states.get(entity_id) is not None:
+				discovered.append(entity_id)
+				seen.add(entity_id)
+		return discovered
+
+	async def async_step_init(self, user_input=None):
+		"""Landing menu with a one-line summary instead of a wall of text."""
+		self._errors = {}
+		return self.async_show_menu(
 			step_id="init",
+			menu_options=[
+				"sensors",
+				"constant_devices",
+				"price_adjustments",
+				"advanced",
+				"save",
+			],
+			description_placeholders=self._overview_placeholders(),
+		)
+
+	async def async_step_sensors(self, user_input=None):
+		"""Pick power sensors as a grouped checkbox list, plus period sensors."""
+		self._errors = {}
+		available = self._available_power_sensors()
+		defaults = self._defaults()
+		current_selected = [
+			entity_id for entity_id in (defaults.get("selected_power_sensors", []) or [])
+			if entity_id in available
+		]
+
+		if user_input is not None:
+			selected = list(user_input.get("selected_power_sensors", []) or [])
+			custom_sensor = user_input.get("custom_power_sensor") or ""
+			if custom_sensor and custom_sensor not in selected:
+				selected.append(custom_sensor)
+			self._user_defaults["selected_power_sensors"] = selected
+			self._user_defaults.update(period_flags_from_selection(user_input.get("period_sensors")))
+			return await self.async_step_init()
+
+		selector_options = grouped_selector_options(self._sensor_choice_items(available))
+		schema = {
+			vol.Optional("selected_power_sensors", default=current_selected): SelectSelector(
+				SelectSelectorConfig(
+					options=selector_options,
+					multiple=True,
+					mode=SelectSelectorMode.LIST,
+				)
+			),
+			vol.Optional("custom_power_sensor"): EntitySelector(
+				EntitySelectorConfig(domain="sensor", multiple=False)
+			),
+			vol.Optional(
+				"period_sensors",
+				default=period_selection_from_flags(defaults),
+			): SelectSelector(
+				SelectSelectorConfig(
+					options=PERIOD_OPTIONS,
+					multiple=True,
+					mode=SelectSelectorMode.LIST,
+				)
+			),
+		}
+		return self.async_show_form(
+			step_id="sensors",
 			data_schema=vol.Schema(schema),
 			errors=self._errors,
 			description_placeholders={
-				"count": len(all_power_sensors),
-				"constant_hint": "switch.boiler_element = 3 kW | Hot Water Boost",
-				"constant_summary": constant_devices_summary,
-				"price_adjust_summary": price_adjust_summary
-			}
-		) 
+				"count": str(len(available)),
+			},
+		)
 
 	async def async_step_advanced(self, user_input=None):
-		"""Advanced settings step."""
+		"""Advanced calculation and diagnostic settings."""
 		self._errors = {}
-		defaults = {**self.config_entry.options, **self._user_defaults}
-		sample_interval = defaults.get("sample_interval", 60)
-		debug_logging = defaults.get(CONF_DEBUG_LOGGING, False)
-		use_statistical = defaults.get(CONF_USE_STATISTICAL, True)
-		synthetic_grid_total = defaults.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
-		force_statistical_only = defaults.get(CONF_FORCE_STATISTICAL_ONLY, False)
-		stat_lookback = defaults.get(CONF_STAT_LOOKBACK_MINUTES, 30)
-		max_energy_per_hour = defaults.get(CONF_MAX_ENERGY_PER_HOUR, 0)  # 0 = disabled by default
-		constant_devices_summary = format_constant_power_devices_text(
-			defaults.get(CONF_CONSTANT_POWER_DEVICES, [])
-		) or "— None configured —"
-		price_adjust_summary = "— None configured —"
-		try:
-			if defaults.get(CONF_PRICE_ADJUST_SENSORS, []):
-				price_adjust_summary = "\n".join([
-					f"{item.get('name') or item.get('source_entity_id')} (+{item.get('add_amount')})"
-					for item in defaults.get(CONF_PRICE_ADJUST_SENSORS, []) or []
-					if item.get("source_entity_id")
-				]) or "— None configured —"
-		except Exception:
-			price_adjust_summary = "— None configured —"
-		
+		defaults = self._defaults()
 		if user_input is not None:
-			# Update defaults with advanced settings
 			self._user_defaults.update(user_input)
-			
-			if user_input.get("configure_constant_devices"):
-				self._user_defaults.pop("configure_constant_devices", None)
-				self._constant_devices_return_step = "advanced"
-				return await self.async_step_constant_devices()
-			
-			if user_input.get("configure_price_adjustments"):
-				self._user_defaults.pop("configure_price_adjustments", None)
-				self._price_adjust_return_step = "advanced"
-				return await self.async_step_price_adjustments()
-			
-			# Process all the data and save
-			all_data = {**self._user_defaults}
-			
-			# Get selected sensors from user defaults
-			selected_sensors = all_data.get("selected_power_sensors", [])
-			
-			# Add custom sensor if provided
-			custom_sensor = all_data.get("custom_power_sensor", "")
-			if custom_sensor and custom_sensor not in selected_sensors:
-				selected_sensors.append(custom_sensor)
-			
-			# Get period sensor options
-			period_sensors = all_data.get("period_sensors", ["daily", "monthly", "weekly", "annual"])
-			create_daily = "daily" in period_sensors
-			create_monthly = "monthly" in period_sensors
-			create_weekly = "weekly" in period_sensors
-			create_annual = "annual" in period_sensors
-			
-			# Get other options
-			synthetic_grid_total = all_data.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)
-			sample_interval = user_input.get("sample_interval", 60)
-			debug_logging = user_input.get(CONF_DEBUG_LOGGING, False)
-			use_statistical = user_input.get(CONF_USE_STATISTICAL, True)
-			force_statistical_only = user_input.get(CONF_FORCE_STATISTICAL_ONLY, False)
-			stat_lookback = user_input.get(CONF_STAT_LOOKBACK_MINUTES, 60)
-			max_energy_per_hour = user_input.get(CONF_MAX_ENERGY_PER_HOUR, 0)  # 0 = disabled by default
-			# Create the configuration entry
-			result = self.async_create_entry(
-				title="Power Sensors",
-				data={
-					"selected_power_sensors": selected_sensors,
-					"create_daily_sensors": create_daily,
-					"create_monthly_sensors": create_monthly,
-					"create_weekly_sensors": create_weekly,
-					"create_annual_sensors": create_annual,
-					"sample_interval": sample_interval,
-					CONF_DEBUG_LOGGING: debug_logging,
-					CONF_USE_STATISTICAL: use_statistical,
-					CONF_CREATE_SYNTHETIC_GRID_TOTAL: synthetic_grid_total,
-					CONF_FORCE_STATISTICAL_ONLY: force_statistical_only,
-					CONF_STAT_LOOKBACK_MINUTES: stat_lookback,
-					CONF_MAX_ENERGY_PER_HOUR: max_energy_per_hour,
-					CONF_CONSTANT_POWER_DEVICES: self._get_constant_devices(),
-					CONF_PRICE_ADJUST_SENSORS: self._get_price_adjustments()
-				}
-			)
-			
-			# Automatically generate sensors for the new configuration
-			hass = self.hass
-			hass.async_create_task(self._async_generate_sensors_after_config())
-			
-			return result
+			return await self.async_step_init()
 
-		schema = {}
-		schema[vol.Optional("sample_interval", default=sample_interval)] = NumberSelector(
-			NumberSelectorConfig(
-				min=5,
-				max=300,
-				step=5,
-				unit_of_measurement="seconds",
-				mode=NumberSelectorMode.SLIDER
-			)
-		)
-		schema[vol.Optional(CONF_DEBUG_LOGGING, default=debug_logging)] = BooleanSelector()
-		schema[vol.Optional(CONF_USE_STATISTICAL, default=use_statistical)] = BooleanSelector()
-		schema[vol.Optional(CONF_FORCE_STATISTICAL_ONLY, default=force_statistical_only)] = BooleanSelector()
-		schema[vol.Optional(CONF_STAT_LOOKBACK_MINUTES, default=stat_lookback)] = NumberSelector(
-			NumberSelectorConfig(
-				min=5,
-				max=120,
-				step=5,
-				unit_of_measurement="minutes",
-				mode=NumberSelectorMode.SLIDER
-			)
-		)
-		schema[vol.Optional(CONF_MAX_ENERGY_PER_HOUR, default=max_energy_per_hour)] = NumberSelector(
-			NumberSelectorConfig(
-				min=0,
-				max=100.0,
-				step=0.5,
-				unit_of_measurement="kWh/hour (0=disabled)",
-				mode=NumberSelectorMode.BOX
-			)
-		)
-		# Option to create synthetic grid total
-		schema[vol.Optional(CONF_CREATE_SYNTHETIC_GRID_TOTAL, default=synthetic_grid_total)] = BooleanSelector()
-		schema[vol.Optional("configure_constant_devices", default=False)] = BooleanSelector()
-		schema[vol.Optional("configure_price_adjustments", default=False)] = BooleanSelector()
-		
+		schema = {
+			vol.Optional(
+				"sample_interval",
+				default=defaults.get("sample_interval", 60),
+			): NumberSelector(
+				NumberSelectorConfig(
+					min=5,
+					max=300,
+					step=5,
+					unit_of_measurement="seconds",
+					mode=NumberSelectorMode.SLIDER,
+				)
+			),
+			vol.Optional(
+				CONF_DEBUG_LOGGING,
+				default=defaults.get(CONF_DEBUG_LOGGING, False),
+			): BooleanSelector(),
+			vol.Optional(
+				CONF_USE_STATISTICAL,
+				default=defaults.get(CONF_USE_STATISTICAL, True),
+			): BooleanSelector(),
+			vol.Optional(
+				CONF_FORCE_STATISTICAL_ONLY,
+				default=defaults.get(CONF_FORCE_STATISTICAL_ONLY, False),
+			): BooleanSelector(),
+			vol.Optional(
+				CONF_STAT_LOOKBACK_MINUTES,
+				default=defaults.get(CONF_STAT_LOOKBACK_MINUTES, 30),
+			): NumberSelector(
+				NumberSelectorConfig(
+					min=5,
+					max=120,
+					step=5,
+					unit_of_measurement="minutes",
+					mode=NumberSelectorMode.SLIDER,
+				)
+			),
+			vol.Optional(
+				CONF_MAX_ENERGY_PER_HOUR,
+				default=defaults.get(CONF_MAX_ENERGY_PER_HOUR, 0),
+			): NumberSelector(
+				NumberSelectorConfig(
+					min=0,
+					max=100.0,
+					step=0.5,
+					unit_of_measurement="kWh/hour (0=disabled)",
+					mode=NumberSelectorMode.BOX,
+				)
+			),
+			vol.Optional(
+				CONF_CREATE_SYNTHETIC_GRID_TOTAL,
+				default=defaults.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False),
+			): BooleanSelector(),
+		}
 		return self.async_show_form(
 			step_id="advanced",
 			data_schema=vol.Schema(schema),
 			errors=self._errors,
-			description_placeholders={
-				"constant_summary": constant_devices_summary,
-				"price_adjust_summary": price_adjust_summary
-			}
 		)
+
+	async def async_step_save(self, user_input=None):
+		"""Persist the merged options and generate sensors."""
+		result = self.async_create_entry(title="Power Sensors", data=self._build_options())
+		self.hass.async_create_task(self._async_generate_sensors_after_config())
+		return result
 
 	async def async_step_price_adjustments(self, user_input=None):
 		"""Manage electricity price add-ons (source sensor + fixed add amount)."""
 		self._errors = {}
 		items = self._get_price_adjustments()
 		status_message = self._user_defaults.pop("_price_adjust_status", None)
-		
+
 		summary_lines = []
 		for item in items:
 			source = item.get("source_entity_id")
@@ -478,9 +295,9 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				continue
 			name = (item.get("name") or source).strip()
 			add_amount = item.get("add_amount", 0)
-			summary_lines.append(f"{name} — {source} — add {add_amount}")
-		price_adjust_summary = "\n".join(summary_lines) or "— None configured —"
-		
+			summary_lines.append(f"{name} — add {add_amount}")
+		price_adjust_summary = "\n".join(summary_lines) or "None configured"
+
 		remove_options = []
 		for item in items:
 			item_id = item.get("id")
@@ -489,22 +306,18 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				continue
 			label = (item.get("name") or source).strip()
 			remove_options.append({"value": str(item_id), "label": f"{label} — {source}"})
-		
+
 		if user_input is not None:
 			action = user_input.get("price_adjust_action", "finish")
-			
+
 			if action == "finish":
-				next_step = self._price_adjust_return_step or "init"
-				self._price_adjust_return_step = "init"
-				if next_step == "advanced":
-					return await self.async_step_advanced()
 				return await self.async_step_init()
-			
+
 			if action == "add":
 				source_entity = user_input.get("price_adjust_source")
 				add_amount = user_input.get("price_adjust_add_amount")
 				friendly_name = user_input.get("price_adjust_name")
-				
+
 				if not source_entity or add_amount is None:
 					self._errors["base"] = "price_adjust_missing_fields"
 				else:
@@ -513,14 +326,12 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 					except (TypeError, ValueError):
 						self._errors["base"] = "price_adjust_invalid_amount"
 					else:
-						# Update existing entry for this source if present (keep stable id)
-						existing = next((x for x in items if x.get("source_entity_id") == source_entity), None)
-						if existing and existing.get("id"):
-							config_id = str(existing["id"])
-						else:
-							config_id = uuid.uuid4().hex
-						
-						items = [x for x in items if x.get("id") != config_id and x.get("source_entity_id") != source_entity]
+						existing = next((item for item in items if item.get("source_entity_id") == source_entity), None)
+						config_id = str(existing["id"]) if existing and existing.get("id") else uuid.uuid4().hex
+						items = [
+							item for item in items
+							if item.get("id") != config_id and item.get("source_entity_id") != source_entity
+						]
 						entry = {
 							"id": config_id,
 							"source_entity_id": source_entity,
@@ -532,7 +343,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 						self._set_price_adjustments(items)
 						self._user_defaults["_price_adjust_status"] = f"Added {source_entity}"
 						return await self.async_step_price_adjustments()
-			
+
 			if action == "remove":
 				target_id = user_input.get("price_adjust_remove")
 				if not items:
@@ -540,50 +351,50 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				elif not target_id:
 					self._errors["price_adjust_remove"] = "price_adjust_missing_fields"
 				else:
-					items = [x for x in items if str(x.get("id")) != str(target_id)]
+					items = [item for item in items if str(item.get("id")) != str(target_id)]
 					self._set_price_adjustments(items)
 					self._user_defaults["_price_adjust_status"] = "Removed entry"
 					return await self.async_step_price_adjustments()
-			
+
 			if action == "clear":
 				if items:
-					items = []
-					self._set_price_adjustments(items)
+					self._set_price_adjustments([])
 					self._user_defaults["_price_adjust_status"] = "Cleared all entries"
 					return await self.async_step_price_adjustments()
 				self._errors["base"] = "no_price_adjustments"
-		
-		schema = {}
-		schema[vol.Optional("price_adjust_action", default="add")] = SelectSelector(
-			SelectSelectorConfig(
-				options=[
-					{"value": "add", "label": "Add / update adjustment"},
-					{"value": "remove", "label": "Remove adjustment"},
-					{"value": "clear", "label": "Remove all"},
-					{"value": "finish", "label": "Done"},
-				],
-				multiple=False,
-				mode=SelectSelectorMode.DROPDOWN,
-			)
-		)
-		schema[vol.Optional("price_adjust_source")] = EntitySelector(
-			EntitySelectorConfig(domain="sensor", multiple=False)
-		)
-		schema[vol.Optional("price_adjust_add_amount", default=0.0)] = NumberSelector(
-			NumberSelectorConfig(
-				min=-10.0,
-				max=10.0,
-				step=0.001,
-				unit_of_measurement="(same as source)",
-				mode=NumberSelectorMode.BOX,
-			)
-		)
-		schema[vol.Optional("price_adjust_name")] = TextSelector(TextSelectorConfig(multiline=False))
+
+		schema = {
+			vol.Optional("price_adjust_action", default="add"): SelectSelector(
+				SelectSelectorConfig(
+					options=[
+						{"value": "add", "label": "Add / update adjustment"},
+						{"value": "remove", "label": "Remove adjustment"},
+						{"value": "clear", "label": "Remove all"},
+						{"value": "finish", "label": "Done"},
+					],
+					multiple=False,
+					mode=SelectSelectorMode.DROPDOWN,
+				)
+			),
+			vol.Optional("price_adjust_source"): EntitySelector(
+				EntitySelectorConfig(domain="sensor", multiple=False)
+			),
+			vol.Optional("price_adjust_add_amount", default=0.0): NumberSelector(
+				NumberSelectorConfig(
+					min=-10.0,
+					max=10.0,
+					step=0.001,
+					unit_of_measurement="(same as source)",
+					mode=NumberSelectorMode.BOX,
+				)
+			),
+			vol.Optional("price_adjust_name"): TextSelector(TextSelectorConfig(multiline=False)),
+		}
 		if remove_options:
 			schema[vol.Optional("price_adjust_remove")] = SelectSelector(
 				SelectSelectorConfig(options=remove_options, multiple=False, mode=SelectSelectorMode.DROPDOWN)
 			)
-		
+
 		return self.async_show_form(
 			step_id="price_adjustments",
 			data_schema=vol.Schema(schema),
@@ -599,8 +410,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		self._errors = {}
 		devices = self._get_constant_devices()
 		status_message = self._user_defaults.pop("_constant_devices_status", None)
-		constant_summary = format_constant_power_devices_text(devices) or "— None configured —"
-		
+		constant_summary = format_constant_power_devices_text(devices) or "None configured"
+
 		remove_options = []
 		for device in devices:
 			switch_id = device.get("switch_entity_id")
@@ -611,29 +422,22 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				power_display = f"{float(power_w):g}"
 			except (TypeError, ValueError):
 				power_display = str(power_w)
-			remove_options.append(
-				{
-					"value": switch_id,
-					"label": f"{device.get('name') or switch_id} — {power_display} W"
-				}
-			)
-		
+			remove_options.append({
+				"value": switch_id,
+				"label": f"{device.get('name') or switch_id} — {power_display} W",
+			})
+
 		if user_input is not None:
 			action = user_input.get("constant_device_action", "finish")
-			
+
 			if action == "finish":
-				self._constant_devices_return_step = self._constant_devices_return_step or "init"
-				next_step = self._constant_devices_return_step
-				self._constant_devices_return_step = "init"
-				if next_step == "advanced":
-					return await self.async_step_advanced()
 				return await self.async_step_init()
-			
+
 			if action == "add":
 				switch_entity = user_input.get("constant_device_switch")
 				power_value = user_input.get("constant_device_power")
 				friendly_name = user_input.get("constant_device_name")
-				
+
 				if not switch_entity or power_value is None:
 					self._errors["base"] = "constant_device_missing_fields"
 				else:
@@ -645,18 +449,15 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 						if power_w <= 0:
 							self._errors["base"] = "constant_device_invalid_power"
 						else:
-							devices = [d for d in devices if d.get("switch_entity_id") != switch_entity]
-							entry = {
-								"switch_entity_id": switch_entity,
-								"power_w": power_w
-							}
+							devices = [device for device in devices if device.get("switch_entity_id") != switch_entity]
+							entry = {"switch_entity_id": switch_entity, "power_w": power_w}
 							if friendly_name:
 								entry["name"] = friendly_name
 							devices.append(entry)
 							self._set_constant_devices(devices)
 							self._user_defaults["_constant_devices_status"] = f"Added {switch_entity}"
 							return await self.async_step_constant_devices()
-			
+
 			elif action == "remove":
 				target_switch = user_input.get("constant_device_remove")
 				if not devices:
@@ -664,114 +465,96 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				elif not target_switch:
 					self._errors["constant_device_remove"] = "constant_device_missing_fields"
 				else:
-					devices = [d for d in devices if d.get("switch_entity_id") != target_switch]
+					devices = [device for device in devices if device.get("switch_entity_id") != target_switch]
 					self._set_constant_devices(devices)
 					self._user_defaults["_constant_devices_status"] = f"Removed {target_switch}"
 					return await self.async_step_constant_devices()
-			
+
 			elif action == "clear":
 				if devices:
-					devices = []
-					self._set_constant_devices(devices)
+					self._set_constant_devices([])
 					self._user_defaults["_constant_devices_status"] = "Cleared all entries"
 					return await self.async_step_constant_devices()
 				self._errors["base"] = "no_constant_devices"
 			else:
 				self._errors["base"] = "constant_device_unknown_action"
-		
-		schema = {}
-		schema[vol.Optional("constant_device_action", default="add")] = SelectSelector(
-			SelectSelectorConfig(
-				options=[
-					{"value": "add", "label": "Add / update device"},
-					{"value": "remove", "label": "Remove device"},
-					{"value": "clear", "label": "Remove all"},
-					{"value": "finish", "label": "Done"}
-				],
-				multiple=False,
-				mode=SelectSelectorMode.DROPDOWN
-			)
-		)
-		schema[vol.Optional("constant_device_switch")] = EntitySelector(
-			EntitySelectorConfig(
-				domain=["switch", "input_boolean"],
-				multiple=False
-			)
-		)
-		schema[vol.Optional("constant_device_power", default=3000)] = NumberSelector(
-			NumberSelectorConfig(
-				min=1,
-				max=20000,
-				step=10,
-				unit_of_measurement="Watts",
-				mode=NumberSelectorMode.BOX
-			)
-		)
-		schema[vol.Optional("constant_device_name")] = TextSelector(
-			TextSelectorConfig(multiline=False)
-		)
+
+		schema = {
+			vol.Optional("constant_device_action", default="add"): SelectSelector(
+				SelectSelectorConfig(
+					options=[
+						{"value": "add", "label": "Add / update device"},
+						{"value": "remove", "label": "Remove device"},
+						{"value": "clear", "label": "Remove all"},
+						{"value": "finish", "label": "Done"},
+					],
+					multiple=False,
+					mode=SelectSelectorMode.DROPDOWN,
+				)
+			),
+			vol.Optional("constant_device_switch"): EntitySelector(
+				EntitySelectorConfig(domain=["switch", "input_boolean"], multiple=False)
+			),
+			vol.Optional("constant_device_power", default=3000): NumberSelector(
+				NumberSelectorConfig(
+					min=1,
+					max=20000,
+					step=10,
+					unit_of_measurement="Watts",
+					mode=NumberSelectorMode.BOX,
+				)
+			),
+			vol.Optional("constant_device_name"): TextSelector(TextSelectorConfig(multiline=False)),
+		}
 		if remove_options:
 			schema[vol.Optional("constant_device_remove")] = SelectSelector(
 				SelectSelectorConfig(
 					options=remove_options,
 					multiple=False,
-					mode=SelectSelectorMode.DROPDOWN
+					mode=SelectSelectorMode.DROPDOWN,
 				)
 			)
-		
+
 		return self.async_show_form(
 			step_id="constant_devices",
 			data_schema=vol.Schema(schema),
 			errors=self._errors,
 			description_placeholders={
 				"constant_summary": constant_summary,
-				"constant_status": status_message or ""
-			}
+				"constant_status": status_message or "",
+			},
 		)
-	
+
 	async def _async_generate_sensors_after_config(self):
 		"""Generate sensors automatically after configuration is saved."""
 		import asyncio
-		import logging
-		_LOGGER = logging.getLogger(__name__)
-		
-		# Wait a short time for the config entry to be fully processed
+
 		await asyncio.sleep(2)
-		
 		try:
-			# Import the generate_sensors_service function
 			from .__init__ import generate_sensors_service
-			
+
 			_LOGGER.info("Auto-generating energy sensors after configuration update...")
-			
-			# Call the service to generate sensors
 			await generate_sensors_service(self.hass, None, self.config_entry)
-			
 			_LOGGER.info("Energy sensors generated successfully after configuration update")
-			
-			# Send a persistent notification to the user (use services API; components attribute is no longer available)
 			await self.hass.services.async_call(
 				"persistent_notification",
 				"create",
 				{
 					"message": "Energy sensors have been created automatically based on your new configuration. Check the Entities page to see your new sensors.",
 					"title": "Energy Sensor Generator",
-					"notification_id": "energy_sensor_generator_created"
+					"notification_id": "energy_sensor_generator_created",
 				},
-				blocking=False
+				blocking=False,
 			)
-			
-		except Exception as e:
-			_LOGGER.error(f"Failed to auto-generate sensors after configuration: {e}")
-			
-			# Send error notification to user
+		except Exception as err:
+			_LOGGER.error("Failed to auto-generate sensors after configuration: %s", err)
 			await self.hass.services.async_call(
 				"persistent_notification",
 				"create",
 				{
-					"message": f"Failed to automatically create energy sensors: {str(e)}. You may need to manually reload the integration.",
+					"message": f"Failed to automatically create energy sensors: {err}. You may need to manually reload the integration.",
 					"title": "Energy Sensor Generator - Error",
-					"notification_id": "energy_sensor_generator_error"
+					"notification_id": "energy_sensor_generator_error",
 				},
-				blocking=False
+				blocking=False,
 			)

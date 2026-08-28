@@ -115,3 +115,49 @@ def left_riemann_energy(
 		"min_power": min_power if min_power != float("inf") else 0.0,
 		"avg_power": avg_power,
 	}
+
+
+KW_UNITS = {"kw", "kilowatt", "kilowatts"}
+WATT_UNITS = {"w", "watt", "watts"}
+
+
+def conversion_factor_from_unit(unit: str | None) -> int:
+	"""Return the factor that converts a power reading into kW.
+
+	kW sources use 1; Watts (and unknown/missing units, for backwards
+	compatibility) use 1000.
+	"""
+	if not unit:
+		return 1000
+	normalised = str(unit).strip().lower()
+	if normalised in KW_UNITS:
+		return 1
+	return 1000
+
+
+def point_sampling_window_energy_kwh(
+	pending_kwh: float,
+	last_power: float | None,
+	delta_seconds: float,
+	conversion_factor: float,
+	max_gap_seconds: float,
+) -> float | None:
+	"""Energy for one interval tick: pending segments plus the held-power tail.
+
+	``pending_kwh`` is energy already accumulated from source state changes
+	since the last interval. ``delta_seconds`` must be the time from the
+	*current* last-update anchor to now, so a state change that lands during
+	an in-flight interval calculation cannot double-count the same window.
+
+	Returns None when there is no last power reading, or when the gap is too
+	large to bridge safely.
+	"""
+	assert conversion_factor > 0, "conversion_factor must be positive"
+	if last_power is None:
+		return None
+	if delta_seconds > max_gap_seconds:
+		return None
+	if delta_seconds <= 0:
+		return max(0.0, pending_kwh)
+	tail = held_power_energy_kwh(last_power, delta_seconds, conversion_factor)
+	return max(0.0, pending_kwh + tail)
