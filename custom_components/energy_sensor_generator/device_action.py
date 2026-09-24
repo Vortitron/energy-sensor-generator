@@ -21,6 +21,10 @@ ACTION_TYPES = {
 ACTION_SCHEMA = cv.DEVICE_ACTION_BASE_SCHEMA.extend(
 	{
 		vol.Required(CONF_TYPE): vol.In(ACTION_TYPES),
+		vol.Optional("reset_factor"): vol.Coerce(float),
+		vol.Optional("reset_to_zero"): bool,
+		vol.Optional("sensor_name"): str,
+		vol.Optional("target_path"): str,
 	}
 )
 
@@ -77,6 +81,14 @@ async def async_get_actions(
 	return actions
 
 
+# Extra fields each action forwards to its service (see async_get_action_capabilities)
+ACTION_FIELDS = {
+	"reset_energy_sensors": ("reset_factor", "reset_to_zero"),
+	"diagnose_sensor": ("sensor_name",),
+	"export_energy_data": ("target_path",),
+}
+
+
 async def async_call_action_from_config(
 	hass: HomeAssistant,
 	config: dict,
@@ -85,57 +97,18 @@ async def async_call_action_from_config(
 ) -> None:
 	"""Execute a device action."""
 	action_type = config[CONF_TYPE]
-	
-	service_data = {}
-	
-	if action_type == "generate_sensors":
-		await hass.services.async_call(
-			DOMAIN,
-			"generate_sensors",
-			service_data,
-			blocking=True,
-			context=context,
-		)
-	elif action_type == "reset_energy_sensors":
-		await hass.services.async_call(
-			DOMAIN,
-			"reset_energy_sensors",
-			service_data,
-			blocking=True,
-			context=context,
-		)
-	elif action_type == "debug_sensor_detection":
-		await hass.services.async_call(
-			DOMAIN,
-			"debug_sensor_detection",
-			service_data,
-			blocking=True,
-			context=context,
-		)
-	elif action_type == "diagnose_sensor":
-		await hass.services.async_call(
-			DOMAIN,
-			"diagnose_sensor",
-			service_data,
-			blocking=True,
-			context=context,
-		)
-	elif action_type == "list_sensors":
-		await hass.services.async_call(
-			DOMAIN,
-			"list_sensors",
-			service_data,
-			blocking=True,
-			context=context,
-		)
-	elif action_type == "export_energy_data":
-		await hass.services.async_call(
-			DOMAIN,
-			"export_energy_data",
-			service_data,
-			blocking=True,
-			context=context,
-		)
+	service_data = {
+		key: config[key]
+		for key in ACTION_FIELDS.get(action_type, ())
+		if key in config
+	}
+	await hass.services.async_call(
+		DOMAIN,
+		action_type,
+		service_data,
+		blocking=True,
+		context=context,
+	)
 
 
 async def async_get_action_capabilities(

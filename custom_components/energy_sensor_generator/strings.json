@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Energy Sensor Generator",
-        "description": "Creates kWh energy sensors from your power sensors. You can pick which devices to track after setup.",
+        "description": "Creates kWh energy sensors from your power sensors. After setup, open **Configure** to pick which sensors to track.",
         "data": {
           "sample_interval": "Sampling interval",
           "debug_logging": "Enable debug logging"
@@ -15,20 +15,21 @@
       }
     },
     "abort": {
-      "already_configured": "Energy Sensor Generator is already configured"
+      "already_configured": "Energy Sensor Generator is already configured",
+      "single_instance_allowed": "Energy Sensor Generator is already configured. Use Configure on the existing entry."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Energy Sensor Generator",
-        "description": "{overview}\n\nChoose a section to edit, then Save when you are done.",
+        "description": "{overview}{pending}\n\nChoose a section to edit, then Save when you are done.",
         "menu_options": {
           "sensors": "Power sensors",
           "constant_devices": "Constant power devices",
           "price_adjustments": "Electricity price add-ons",
           "advanced": "Advanced",
-          "save": "Save"
+          "save": "Save and apply"
         }
       },
       "save": {
@@ -43,7 +44,7 @@
           "period_sensors": "Also create period totals"
         },
         "data_description": {
-          "selected_power_sensors": "Grouped by device. Multi-phase meters show L1/L2/L3 under the meter name.",
+          "selected_power_sensors": "Sorted by device. Meters with several sensors show as Device › L1, Device › L2.",
           "custom_power_sensor": "Use this for a power entity that was not listed above.",
           "period_sensors": "Daily / weekly / monthly / annual sensors that reset automatically."
         }
@@ -67,12 +68,12 @@
           "force_statistical_only": "Skip point sampling even when history is briefly unavailable.",
           "stat_initial_lookback_minutes": "How far back to look the first time a new sensor is created.",
           "max_energy_per_hour": "Reject a reading larger than this (0 disables the limit).",
-          "create_synthetic_grid_total": "Optional sum of all generated energy sensors. Requires a reload."
+          "create_synthetic_grid_total": "Optional sum of all generated main energy sensors."
         }
       },
       "constant_devices": {
         "title": "Constant power devices",
-        "description": "Pair an on/off switch with a fixed wattage. Current entries:\n{constant_summary}\n{constant_status}",
+        "description": "Pair an on/off switch with a fixed wattage.\n\nCurrent entries:\n{constant_summary}\n\n{constant_status}",
         "data": {
           "constant_device_action": "Action",
           "constant_device_switch": "Switch or helper",
@@ -81,7 +82,7 @@
           "constant_device_remove": "Device to remove"
         },
         "data_description": {
-          "constant_device_action": "Add or update a device, then choose Done to return to the menu.",
+          "constant_device_action": "Pick a switch and wattage and submit to add it. Submit without a switch to go back to the menu.",
           "constant_device_switch": "The switch or input boolean that turns the load on.",
           "constant_device_power": "Rated wattage while the switch is on (enter 3000 for 3 kW).",
           "constant_device_name": "Override the name shown on the generated energy sensor.",
@@ -90,7 +91,7 @@
       },
       "price_adjustments": {
         "title": "Electricity price add-ons",
-        "description": "Mirror a price sensor (for example Nordpool) and add a fixed amount. Current entries:\n{price_adjust_summary}\n{price_adjust_status}",
+        "description": "Mirror a price sensor (for example Nordpool) and add a fixed amount.\n\nCurrent entries:\n{price_adjust_summary}\n\n{price_adjust_status}",
         "data": {
           "price_adjust_action": "Action",
           "price_adjust_source": "Source price sensor",
@@ -99,7 +100,7 @@
           "price_adjust_remove": "Entry to remove"
         },
         "data_description": {
-          "price_adjust_action": "Add or update an add-on, then choose Done to return to the menu.",
+          "price_adjust_action": "Pick a source sensor and amount and submit to add it. Submit without a source to go back to the menu.",
           "price_adjust_source": "The sensor that reports the spot or base price.",
           "price_adjust_add_amount": "Transmission, tax, or other adder in the same unit as the source.",
           "price_adjust_name": "Override the name shown on the adjusted price sensor.",
@@ -108,14 +109,14 @@
       }
     },
     "error": {
-      "invalid_entity_format": "Invalid entity format. All entities must start with 'sensor.'",
       "constant_device_missing_fields": "Select a switch and watt value before adding a constant device.",
       "constant_device_invalid_power": "Enter a positive watt value.",
       "no_constant_devices": "No constant power devices available to modify.",
       "constant_device_unknown_action": "Unknown constant device action.",
       "price_adjust_missing_fields": "Select a source sensor and add-on amount before adding an entry.",
       "price_adjust_invalid_amount": "Enter a valid number for the add-on amount.",
-      "no_price_adjustments": "No electricity price add-ons available to modify."
+      "no_price_adjustments": "No electricity price add-ons available to modify.",
+      "select_entry_to_remove": "Choose the entry to remove."
     }
   }
 }

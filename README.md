@@ -32,7 +32,7 @@ Or use the badge above.
 
 Copy `custom_components/energy_sensor_generator` into your Home Assistant `config/custom_components/` folder and restart.
 
-**Requirements:** Home Assistant 2024.4 or later. No extra Python packages.
+**Requirements:** Home Assistant 2024.11 or later. No extra Python packages.
 
 ## Configuration
 
@@ -40,15 +40,17 @@ After adding the integration, open **Configure**. The options dialog is a short 
 
 | Section | Purpose |
 | --- | --- |
-| **Power sensors** | Checkbox list grouped by device. Tick the power entities that should get kWh sensors. Period totals (daily / weekly / monthly / annual) are on the same page. |
+| **Power sensors** | Checkbox list sorted by device (multi-sensor meters show as `Meter › L1`). Tick the power entities that should get kWh sensors. Period totals (daily / weekly / monthly / annual) are on the same page. |
 | **Constant power devices** | Pair a switch or `input_boolean` with a rated wattage. |
 | **Electricity price add-ons** | Source price sensor + fixed adder. |
 | **Advanced** | Sampling interval, statistical calculation, debug logging, spike cap, synthetic grid total. |
-| **Save** | Writes the options and generates sensors. |
+| **Save and apply** | Writes the options and reloads the integration so the sensors match. |
 
 The menu header is a one-line summary, for example: `12 of 64 power sensors selected · 3 constant loads · 1 price add-on`.
 
-Changes in each section are kept until you choose **Save**. Closing the dialog without saving discards in-progress edits.
+Changes in each section are kept until you choose **Save and apply**; the menu says when there are unsaved changes. Closing the dialog without saving discards in-progress edits.
+
+Sensors that are ticked but currently offline stay in the list, marked *(unavailable)*, so saving never drops them by accident. Unticking a sensor removes its entities, but its stored total is kept and comes back if you tick it again.
 
 Then add the generated `*_energy` / `*_daily_energy` sensors under **Settings → Dashboards → Energy**.
 
@@ -65,17 +67,18 @@ Constant-power devices use the switch state (`on` / `open` → rated watts, othe
 
 Useful calls from Developer Tools → Services:
 
-- `energy_sensor_generator.generate_sensors` — create or refresh sensors after a config change.
+- `energy_sensor_generator.generate_sensors` — rebuild the sensors from the saved configuration (same as reloading).
 - `energy_sensor_generator.debug_sensor_detection` — log which power sensors were detected.
 - `energy_sensor_generator.copy_from_previous_hour` — copy a known-good hour if an hour looks wrong after a long restart.
 - `energy_sensor_generator.reset_energy_sensors` — scale or zero stored totals if you need a fresh start.
+- `energy_sensor_generator.adjust_energy` — add to, set, or copy one sensor's total (e.g. to remove a spike).
+- `energy_sensor_generator.export_energy_data` / `import_energy_data` — back up and restore stored totals.
 
 See `custom_components/energy_sensor_generator/services.yaml` for the full list.
 
 ## Troubleshooting
 
 - **No power sensors listed:** the entity must have unit `W`/`kW` or `device_class: power`. Use the debug detection service.
-- **Device already has energy sensors:** auto-generation skips those devices, but an explicit tick in **Power sensors** still creates kWh sensors.
 - **Negative bars on the Energy dashboard:** the generated sensors only increase. Negative “untracked” usually means a child device is nested under the wrong parent in the Energy dashboard (`included_in_stat`).
 - **Values look low/high:** enable debug logging under Advanced, reload, then check Logs for `energy_sensor_generator`.
 
@@ -85,7 +88,7 @@ This repository is set up for HACS:
 
 - `hacs.json` in the repo root
 - `issue_tracker` in `manifest.json`
-- Brand icon in `brand/icon.png`
+- Brand icon in `custom_components/energy_sensor_generator/brand/icon.png`
 - Hassfest and HACS GitHub Actions in `.github/workflows/validate.yml`
 
 After CI is green on a tagged GitHub **release**, the remaining listing steps (repo description, topics, then a PR to [hacs/default](https://github.com/hacs/default)) are documented in `project_outline.md`.

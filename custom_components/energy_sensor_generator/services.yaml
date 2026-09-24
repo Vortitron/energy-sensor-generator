@@ -1,27 +1,33 @@
 generate_sensors:
   name: Generate Energy Sensors
-  description: Manually trigger energy sensor generation from configured power sensors
+  description: Rebuild the generated sensors from the saved configuration (same as reloading the integration).
 
 reset_energy_sensors:
   name: Reset Energy Sensors
-  description: Reset energy sensor values (useful for correcting doubled values or starting fresh)
+  description: Scale or zero stored energy totals (useful for correcting doubled values or starting fresh).
   fields:
-    selected_sensors:
-      name: Selected Sensors
-      description: List of sensor base names to reset (leave empty to reset all)
+    sensors:
+      name: Sensors
+      description: Comma-separated base names to reset (e.g. the "smart_plug" in sensor.smart_plug_energy). Leave empty to reset every sensor.
       example: "smart_plug,smart_plug_4"
       selector:
         text:
     reset_factor:
       name: Reset Factor
-      description: Factor to multiply current values by (0.5 = halve, 0 = reset to zero)
-      default: 0
+      description: Multiply current totals by this factor (0.5 = halve, 0 = zero).
+      default: 0.5
       example: 0.5
       selector:
         number:
           min: 0
           max: 1
-          step: 0.1
+          step: 0.05
+    reset_to_zero:
+      name: Reset To Zero
+      description: Set totals to zero, ignoring the reset factor.
+      default: false
+      selector:
+        boolean:
 
 debug_sensor_detection:
   name: Debug Sensor Detection
@@ -46,6 +52,48 @@ migrate_entity_ids:
 list_sensors:
   name: List Sensors
   description: List all energy sensors created by this integration
+
+export_energy_data:
+  name: Export Energy Data
+  description: Save all stored energy totals to a JSON file in the config directory.
+  fields:
+    target_path:
+      name: Target Path
+      description: File path relative to the config directory. Defaults to energy_backup_<timestamp>.json.
+      example: "backups/energy_backup.json"
+      selector:
+        text:
+
+import_energy_data:
+  name: Import Energy Data
+  description: Load energy totals from a JSON file created by Export Energy Data.
+  fields:
+    source_path:
+      name: Source Path
+      description: File path relative to the config directory.
+      required: true
+      example: "backups/energy_backup.json"
+      selector:
+        text:
+    mode:
+      name: Mode
+      description: Merge into the current data, or replace it entirely.
+      default: merge
+      selector:
+        select:
+          options:
+            - merge
+            - replace
+    reassign_from:
+      name: Reassign From
+      description: Base names in the file to rename (paired with Reassign To).
+      selector:
+        object:
+    reassign_to:
+      name: Reassign To
+      description: New base names, in the same order as Reassign From.
+      selector:
+        object:
 
 adjust_energy:
   name: Adjust Energy Value

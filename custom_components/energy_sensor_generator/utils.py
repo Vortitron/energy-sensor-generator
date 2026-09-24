@@ -54,7 +54,10 @@ class StorageManager:
             data = {}
 
         async with self._lock:
-            self._cache = data or {}
+            # Concurrent first loads share one task; only the first to finish
+            # may seed the cache, or it would wipe writes made in between.
+            if self._cache is None:
+                self._cache = data or {}
             self._load_task = None
             return dict(self._cache)
 
@@ -108,33 +111,40 @@ class StorageManager:
             if remaining > 0:
                 await asyncio.sleep(remaining)
 
-            async with self._lock:
-                to_save = dict(self._cache or {})
-
-            try:
-                await self._store.async_save(to_save)
-                self._last_save_ts = time.time()
-            except Exception as e:
-                # Rate-limit error logging to once per 30s
-                now2 = time.time()
-                if now2 - self._last_err_ts > 30:
-                    _LOGGER.error("Failed to save storage: %s", e)
-                    self._last_err_ts = now2
+            await self._write()
+        except asyncio.CancelledError:
+            raise
         except Exception:
             # Swallow exceptions to avoid task storms
             pass
 
-    async def async_flush(self) -> None:
-        """Flush any pending save by awaiting the in-flight task."""
-        task = None
+    async def _write(self) -> None:
         async with self._lock:
-            if self._save_task and not self._save_task.done():
-                task = self._save_task
-        if task:
-            try:
-                await task
-            except Exception:
-                pass
+            to_save = dict(self._cache or {})
+
+        try:
+            await self._store.async_save(to_save)
+            self._last_save_ts = time.time()
+        except Exception as e:
+            # Rate-limit error logging to once per 30s
+            now2 = time.time()
+            if now2 - self._last_err_ts > 30:
+                _LOGGER.error("Failed to save storage: %s", e)
+                self._last_err_ts = now2
+
+    async def async_flush(self) -> None:
+        """Write any pending changes now instead of waiting for the debounce."""
+        async with self._lock:
+            task = self._save_task
+            self._save_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        await self._write()
 
 
 def _slugify_fragment(value: str) -> str:

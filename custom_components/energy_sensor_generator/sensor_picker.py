@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Iterable, Mapping, Sequence
 
-OTHER_SENSORS_GROUP = "Other sensors"
+GROUP_SEPARATOR = "›"
 
 # UI-only keys that must never be written into the config entry options.
 OPTIONS_UI_KEYS = (
@@ -135,11 +135,13 @@ def uniquify_labels(entity_to_label: Mapping[str, str]) -> dict[str, str]:
 def grouped_selector_options(
 	items: Sequence[tuple[str, str, str | None]],
 ) -> list[dict]:
-	"""Build Home Assistant SelectSelector options grouped by device.
+	"""Build Home Assistant SelectSelector options ordered by device.
 
-	``items`` is ``(entity_id, label, device_name)``. Devices with a single
-	power sensor are shown as a flat row named after the device. Devices with
-	several power sensors (phases, channels) become a labelled group.
+	``items`` is ``(entity_id, label, device_name)``. The selector only
+	accepts flat ``{value, label}`` options, so grouping is expressed in the
+	label: devices with a single power sensor show just the device name,
+	devices with several sensors (phases, channels) show ``Device › Sensor``,
+	and sensors without a device come last under their own label.
 	"""
 	by_device: dict[str, list[dict]] = {}
 	ungrouped: list[dict] = []
@@ -156,14 +158,11 @@ def grouped_selector_options(
 		entries = sorted(by_device[device_name], key=lambda item: item["label"].lower())
 		if len(entries) == 1:
 			options.append({"value": entries[0]["value"], "label": device_name})
-		else:
-			options.append({"label": device_name, "options": entries})
+			continue
+		for entry in entries:
+			options.append({"value": entry["value"], "label": f"{device_name} {GROUP_SEPARATOR} {entry['label']}"})
 
-	if ungrouped:
-		options.append({
-			"label": OTHER_SENSORS_GROUP,
-			"options": sorted(ungrouped, key=lambda item: item["label"].lower()),
-		})
+	options.extend(sorted(ungrouped, key=lambda item: item["label"].lower()))
 	return options
 
 
