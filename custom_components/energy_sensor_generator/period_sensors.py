@@ -12,18 +12,20 @@ from homeassistant.components.sensor import (
 	SensorStateClass
 )
 from homeassistant.const import UnitOfEnergy
+from homeassistant.core import callback
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.restore_state import RestoreEntity
 
+from .const import DOMAIN
 from .entity_helpers import (
 	debug_log,
 	get_friendly_name_from_base,
 	get_unique_entity_name,
 	persist_storage_key,
 )
+from .naming import period_start, period_unique_id
 from .utils import StorageManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,19 +35,23 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 	"""Base class for period energy sensors (daily/weekly/monthly/annual).
 
 	Tracks the increase of a generated main energy sensor and resets at the
-	period boundary. Subclasses define the period label, unique_id suffix and
-	reset condition.
+	period boundary. Subclasses define the period label and unique_id suffix.
+
+	The main sensor is found through its unique ID in the entity registry, so
+	tracking survives entity ID renames and does not depend on how Home
+	Assistant slugified the main sensor's name.
 	"""
 
 	PERIOD_LABEL = ""  # e.g. "Daily" - used in the friendly name
 	PERIOD_SUFFIX = ""  # e.g. "daily" - used in unique_id and storage key
 
-	def __init__(self, hass, base_name, source_sensor, storage_path, device_identifiers=None):
+	def __init__(self, hass, base_name, main_unique_id, storage_path, device_identifiers=None):
 		"""Initialize the sensor."""
 		assert self.PERIOD_LABEL and self.PERIOD_SUFFIX, "Subclasses must define period metadata"
 		self._hass = hass
 		self._base_name = base_name
-		self._source_sensor = source_sensor
+		self._main_unique_id = main_unique_id
+		self._source_sensor = None  # main sensor entity_id, resolved once added
 		# Prefer StorageManager if provided
 		self._storage_manager: StorageManager | None = storage_path if isinstance(storage_path, StorageManager) else None
 		self._storage_path = storage_path
@@ -55,36 +61,39 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 		friendly_name = get_friendly_name_from_base(hass, base_name)
 		proposed_name = f"{friendly_name} {self.PERIOD_LABEL} Energy"
 		self._attr_name = get_unique_entity_name(hass, proposed_name)
-		self._attr_unique_id = f"{base_name}_{self.PERIOD_SUFFIX}_energy"
+		self._attr_unique_id = period_unique_id(base_name, self.PERIOD_SUFFIX)
 		self._attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
 		self._attr_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
 		self._attr_device_class = SensorDeviceClass.ENERGY
 		self._attr_state_class = SensorStateClass.TOTAL_INCREASING
 		self._attr_entity_registry_enabled_default = True
 
-		# Set device info directly if provided, otherwise link to the source sensor's device
-		if device_identifiers:
-			self._attr_device_info = DeviceInfo(identifiers=device_identifiers)
-		else:
-			entity_registry = er.async_get(hass)
-			source_entity = entity_registry.async_get(source_sensor)
-			if source_entity and source_entity.device_id:
-				device_registry = dr.async_get(hass)
-				device = device_registry.async_get(source_entity.device_id)
-				if device:
-					self._attr_device_info = DeviceInfo(identifiers=device.identifiers)
+		# Same device as the main sensor; sources without a device share the
+		# fallback device the main sensor creates for this base name.
+		self._attr_device_info = DeviceInfo(
+			identifiers=device_identifiers or {(DOMAIN, base_name)}
+		)
 
 		self._state = 0.0
 		self._last_energy = 0.0
 		self._last_reset = None
-		self._storage_key = f"{base_name}_{self.PERIOD_SUFFIX}_energy"
+		self._storage_key = self._attr_unique_id
 		self._unsub_state = None
-		self._unsub_reset = None
 		# State will be loaded in async_added_to_hass
 
+	@property
+	def total(self) -> float:
+		"""Unrounded running total in kWh."""
+		return float(self._state)
+
+	@property
+	def storage_key(self) -> str:
+		return self._storage_key
+
 	def _should_reset(self, now) -> bool:
-		"""Return True when the period boundary has been reached (checked at midnight)."""
-		raise NotImplementedError
+		"""Return True when ``now`` (local midnight) starts a new period."""
+		midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+		return period_start(self.PERIOD_SUFFIX, now) == midnight
 
 	async def _load_state(self):
 		"""Load state from storage."""
@@ -119,20 +128,73 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 			except (ValueError, TypeError):
 				pass
 
-		# Track state changes to the source energy sensor
-		self._unsub_state = async_track_state_change_event(
-			self._hass, [self._source_sensor], self._handle_state_change
+		# A reset is missed when Home Assistant is not running at midnight;
+		# catch up now so the period does not carry the previous one's total.
+		await self._async_catch_up_missed_reset()
+
+		self._async_track_main_sensor()
+		self.async_on_remove(self._async_untrack_main_sensor)
+		self.async_on_remove(
+			self._hass.bus.async_listen(
+				er.EVENT_ENTITY_REGISTRY_UPDATED, self._handle_registry_updated
+			)
 		)
 
 		# Check the period boundary at midnight each day
-		self._unsub_reset = async_track_time_change(
-			self._hass,
-			self._handle_period_reset,
-			hour=0,
-			minute=0,
-			second=0
+		self.async_on_remove(
+			async_track_time_change(
+				self._hass,
+				self._handle_period_reset,
+				hour=0,
+				minute=0,
+				second=0
+			)
 		)
 		self.safe_write_ha_state()
+
+	@callback
+	def _async_track_main_sensor(self) -> None:
+		"""Follow the main sensor's current entity_id (it can be renamed)."""
+		entity_id = er.async_get(self._hass).async_get_entity_id("sensor", DOMAIN, self._main_unique_id)
+		if entity_id == self._source_sensor:
+			return
+		self._async_untrack_main_sensor()
+		self._source_sensor = entity_id
+		if entity_id:
+			self._unsub_state = async_track_state_change_event(
+				self._hass, [entity_id], self._handle_state_change
+			)
+
+	@callback
+	def _async_untrack_main_sensor(self) -> None:
+		if self._unsub_state:
+			self._unsub_state()
+			self._unsub_state = None
+
+	@callback
+	def _handle_registry_updated(self, event) -> None:
+		if event.data.get("action") in ("create", "update"):
+			self._async_track_main_sensor()
+
+	async def _async_catch_up_missed_reset(self) -> None:
+		last_reset = dt_util.parse_datetime(self._last_reset) if isinstance(self._last_reset, str) else None
+		if last_reset is None:
+			return
+		if last_reset.tzinfo is None:
+			last_reset = dt_util.as_utc(last_reset)
+		start = period_start(self.PERIOD_SUFFIX, dt_util.now())
+		if last_reset >= start:
+			return
+		_LOGGER.info(
+			"%s reset for %s was missed while Home Assistant was offline (last reset %s); resetting now",
+			self.PERIOD_LABEL,
+			self._attr_name,
+			self._last_reset,
+		)
+		# _last_energy is kept: energy after this point belongs to the new period.
+		self._state = 0.0
+		self._last_reset = start.isoformat()
+		await self._save_state()
 
 	async def _handle_period_reset(self, now):
 		"""Reset the counter when the period boundary is reached."""
@@ -141,28 +203,28 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 		_LOGGER.info(f"{self.PERIOD_LABEL} reset for {self._attr_name}")
 		self._state = 0.0
 		self._last_reset = now.isoformat()
-		# Re-anchor tracking to the source sensor's current value
-		state = self._hass.states.get(self._source_sensor)
+		# Re-anchor tracking to the main sensor's current value. If it is
+		# unavailable, keep the previous anchor rather than zeroing it, which
+		# would make the next reading look like a first reading.
+		state = self._hass.states.get(self._source_sensor) if self._source_sensor else None
 		if state and state.state not in ("unknown", "unavailable"):
 			try:
 				self._last_energy = float(state.state)
 			except (ValueError, TypeError):
-				self._last_energy = 0.0
-		else:
-			self._last_energy = 0.0
+				pass
 		await self._save_state()
 		self.safe_write_ha_state()
 
-	async def async_will_remove_from_hass(self):
-		"""Clean up resources when entity is removed."""
-		for unsub in (self._unsub_state, self._unsub_reset):
-			try:
-				if unsub:
-					unsub()
-			except Exception:
-				pass
-		self._unsub_state = None
-		self._unsub_reset = None
+	async def async_set_total(self, value: float) -> None:
+		"""Set this period's total (used by the adjustment services)."""
+		self._state = float(value)
+		await self._save_state()
+		self.safe_write_ha_state()
+
+	async def async_reload_from_storage(self) -> None:
+		"""Re-read state after storage was replaced (import service)."""
+		await self._load_state()
+		self.safe_write_ha_state()
 
 	async def _handle_state_change(self, event):
 		"""Accumulate the source energy sensor's increase."""
@@ -171,7 +233,7 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 			return
 		try:
 			energy = float(new_state.state)
-		except ValueError:
+		except (TypeError, ValueError):
 			_LOGGER.warning(f"Invalid energy value: {new_state.state}")
 			return
 
@@ -237,18 +299,12 @@ class DailyEnergySensor(PeriodEnergySensor):
 	PERIOD_LABEL = "Daily"
 	PERIOD_SUFFIX = "daily"
 
-	def _should_reset(self, now) -> bool:
-		return True
-
 
 class MonthlyEnergySensor(PeriodEnergySensor):
 	"""Monthly energy tracking; resets on the first day of the month."""
 
 	PERIOD_LABEL = "Monthly"
 	PERIOD_SUFFIX = "monthly"
-
-	def _should_reset(self, now) -> bool:
-		return now.day == 1
 
 
 class WeeklyEnergySensor(PeriodEnergySensor):
@@ -257,9 +313,6 @@ class WeeklyEnergySensor(PeriodEnergySensor):
 	PERIOD_LABEL = "Weekly"
 	PERIOD_SUFFIX = "weekly"
 
-	def _should_reset(self, now) -> bool:
-		return now.weekday() == 0
-
 
 class AnnualEnergySensor(PeriodEnergySensor):
 	"""Annual energy tracking; resets on 1 January."""
@@ -267,5 +320,8 @@ class AnnualEnergySensor(PeriodEnergySensor):
 	PERIOD_LABEL = "Annual"
 	PERIOD_SUFFIX = "annual"
 
-	def _should_reset(self, now) -> bool:
-		return now.month == 1 and now.day == 1
+
+PERIOD_SENSOR_CLASSES = {
+	cls.PERIOD_SUFFIX: cls
+	for cls in (DailyEnergySensor, WeeklyEnergySensor, MonthlyEnergySensor, AnnualEnergySensor)
+}

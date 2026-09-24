@@ -122,3 +122,29 @@ async def test_async_set_key_is_atomic(monkeypatch):
 	assert store._data["sensor_c"] == {"value": 3.0}
 
 
+
+
+@pytest.mark.asyncio
+async def test_flush_writes_immediately_despite_rate_limit(monkeypatch):
+	"""Unload used to wait out the debounce (up to a minute), racing the next load on reload."""
+	from custom_components.energy_sensor_generator import utils
+
+	fake_store_ref = {"store": None}
+
+	def _fake_store_ctor(hass, version, key):
+		fake = FakeStore(hass, version, key)
+		fake_store_ref["store"] = fake
+		return fake
+
+	monkeypatch.setattr(utils.ha_storage, "Store", _fake_store_ctor)
+
+	manager = utils.StorageManager(MagicMock(), debounce_seconds=30, min_interval_seconds=60)
+	await manager.async_set_key("sensor_a", {"value": 1.0})
+	await asyncio.wait_for(manager.async_flush(), timeout=1)
+
+	store = fake_store_ref["store"]
+	assert store.saved == [{"sensor_a": {"value": 1.0}}]
+
+	# Nothing pending: a second flush does not write again
+	await manager.async_flush()
+	assert len(store.saved) == 1

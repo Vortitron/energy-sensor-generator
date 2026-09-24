@@ -11,7 +11,7 @@ Energy Sensor Generator is a Home Assistant custom integration (`custom_componen
 - `sensor.py` / `period_sensors.py` — live entities and interval updates.
 - `utils.py` — debounced Store persistence.
 - `brand/icon.png` — HACS brand asset.
-- `hacs.json` — HACS manifest (name, min HA 2024.4, render README).
+- `hacs.json` — HACS manifest (name, min HA 2024.11, render README).
 
 ## Configure UI
 

@@ -86,20 +86,20 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 
 	def _overview_placeholders(self) -> dict[str, str]:
 		defaults = self._defaults()
-		found = self._discovered_power_sensors()
-		selected = defaults.get("selected_power_sensors", []) or []
-		selected_valid = [entity_id for entity_id in selected if entity_id in found or self.hass.states.get(entity_id)]
+		saved = merge_saved_options(self.config_entry.data, self.config_entry.options)
+		pending = self._build_options() != saved
 		return {
 			"overview": options_overview(
-				selected_count=len(selected_valid),
-				found_count=len(found),
+				selected_count=len(defaults.get("selected_power_sensors", []) or []),
+				found_count=len(self._available_power_sensors()),
 				constant_count=len(self._get_constant_devices()),
 				price_count=len(self._get_price_adjustments()),
-			)
+			),
+			"pending": "\n\n**You have unsaved changes.** Choose Save to apply them." if pending else "",
 		}
 
 	def _discovered_power_sensors(self) -> list[str]:
-		from .__init__ import detect_power_sensors
+		from . import detect_power_sensors
 		return detect_power_sensors(self.hass)
 
 	def _sensor_choice_items(self, entity_ids: list[str]) -> list[tuple[str, str, str | None]]:
@@ -128,16 +128,22 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			labels[entity_id] = short_sensor_label(entity_id, friendly_name, device_name)
 
 		labels = uniquify_labels(labels)
+		for entity_id in entity_ids:
+			if self.hass.states.get(entity_id) is None:
+				labels[entity_id] = f"{labels[entity_id]} (unavailable)"
 		return [(entity_id, labels[entity_id], devices[entity_id]) for entity_id in entity_ids]
 
 	def _available_power_sensors(self) -> list[str]:
-		"""Auto-detected sensors plus any previously selected entities that still exist."""
+		"""Auto-detected sensors plus every previously selected entity.
+
+		Selected entities are listed even while their source is offline, so
+		saving this page never silently drops them (which would delete their
+		energy sensors).
+		"""
 		discovered = list(self._discovered_power_sensors())
 		seen = set(discovered)
 		for entity_id in self._defaults().get("selected_power_sensors", []) or []:
-			if entity_id in seen:
-				continue
-			if self.hass.states.get(entity_id) is not None:
+			if entity_id not in seen:
 				discovered.append(entity_id)
 				seen.add(entity_id)
 		return discovered
@@ -277,10 +283,8 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		)
 
 	async def async_step_save(self, user_input=None):
-		"""Persist the merged options and generate sensors."""
-		result = self.async_create_entry(title="Power Sensors", data=self._build_options())
-		self.hass.async_create_task(self._async_generate_sensors_after_config())
-		return result
+		"""Persist the merged options; the entry's update listener rebuilds the sensors."""
+		return self.async_create_entry(title="", data=self._build_options())
 
 	async def async_step_price_adjustments(self, user_input=None):
 		"""Manage electricity price add-ons (source sensor + fixed add amount)."""
@@ -310,7 +314,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		if user_input is not None:
 			action = user_input.get("price_adjust_action", "finish")
 
-			if action == "finish":
+			if action == "finish" or (action == "add" and not user_input.get("price_adjust_source")):
 				return await self.async_step_init()
 
 			if action == "add":
@@ -318,7 +322,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				add_amount = user_input.get("price_adjust_add_amount")
 				friendly_name = user_input.get("price_adjust_name")
 
-				if not source_entity or add_amount is None:
+				if add_amount is None:
 					self._errors["base"] = "price_adjust_missing_fields"
 				else:
 					try:
@@ -341,7 +345,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 							entry["name"] = friendly_name
 						items.append(entry)
 						self._set_price_adjustments(items)
-						self._user_defaults["_price_adjust_status"] = f"Added {source_entity}"
+						self._user_defaults["_price_adjust_status"] = f"Saved {friendly_name or source_entity}"
 						return await self.async_step_price_adjustments()
 
 			if action == "remove":
@@ -349,7 +353,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				if not items:
 					self._errors["base"] = "no_price_adjustments"
 				elif not target_id:
-					self._errors["price_adjust_remove"] = "price_adjust_missing_fields"
+					self._errors["price_adjust_remove"] = "select_entry_to_remove"
 				else:
 					items = [item for item in items if str(item.get("id")) != str(target_id)]
 					self._set_price_adjustments(items)
@@ -363,6 +367,9 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 					return await self.async_step_price_adjustments()
 				self._errors["base"] = "no_price_adjustments"
 
+		if status_message:
+			status_message = f"**{status_message}.** Add another, or go back to the menu and choose Save to apply."
+
 		schema = {
 			vol.Optional("price_adjust_action", default="add"): SelectSelector(
 				SelectSelectorConfig(
@@ -370,7 +377,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 						{"value": "add", "label": "Add / update adjustment"},
 						{"value": "remove", "label": "Remove adjustment"},
 						{"value": "clear", "label": "Remove all"},
-						{"value": "finish", "label": "Done"},
+						{"value": "finish", "label": "Back to menu"},
 					],
 					multiple=False,
 					mode=SelectSelectorMode.DROPDOWN,
@@ -430,7 +437,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 		if user_input is not None:
 			action = user_input.get("constant_device_action", "finish")
 
-			if action == "finish":
+			if action == "finish" or (action == "add" and not user_input.get("constant_device_switch")):
 				return await self.async_step_init()
 
 			if action == "add":
@@ -438,7 +445,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				power_value = user_input.get("constant_device_power")
 				friendly_name = user_input.get("constant_device_name")
 
-				if not switch_entity or power_value is None:
+				if power_value is None:
 					self._errors["base"] = "constant_device_missing_fields"
 				else:
 					try:
@@ -455,7 +462,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 								entry["name"] = friendly_name
 							devices.append(entry)
 							self._set_constant_devices(devices)
-							self._user_defaults["_constant_devices_status"] = f"Added {switch_entity}"
+							self._user_defaults["_constant_devices_status"] = f"Saved {friendly_name or switch_entity}"
 							return await self.async_step_constant_devices()
 
 			elif action == "remove":
@@ -463,7 +470,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				if not devices:
 					self._errors["base"] = "no_constant_devices"
 				elif not target_switch:
-					self._errors["constant_device_remove"] = "constant_device_missing_fields"
+					self._errors["constant_device_remove"] = "select_entry_to_remove"
 				else:
 					devices = [device for device in devices if device.get("switch_entity_id") != target_switch]
 					self._set_constant_devices(devices)
@@ -479,6 +486,9 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 			else:
 				self._errors["base"] = "constant_device_unknown_action"
 
+		if status_message:
+			status_message = f"**{status_message}.** Add another, or go back to the menu and choose Save to apply."
+
 		schema = {
 			vol.Optional("constant_device_action", default="add"): SelectSelector(
 				SelectSelectorConfig(
@@ -486,7 +496,7 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 						{"value": "add", "label": "Add / update device"},
 						{"value": "remove", "label": "Remove device"},
 						{"value": "clear", "label": "Remove all"},
-						{"value": "finish", "label": "Done"},
+						{"value": "finish", "label": "Back to menu"},
 					],
 					multiple=False,
 					mode=SelectSelectorMode.DROPDOWN,
@@ -524,37 +534,3 @@ class EnergySensorGeneratorOptionsFlow(config_entries.OptionsFlow):
 				"constant_status": status_message or "",
 			},
 		)
-
-	async def _async_generate_sensors_after_config(self):
-		"""Generate sensors automatically after configuration is saved."""
-		import asyncio
-
-		await asyncio.sleep(2)
-		try:
-			from .__init__ import generate_sensors_service
-
-			_LOGGER.info("Auto-generating energy sensors after configuration update...")
-			await generate_sensors_service(self.hass, None, self.config_entry)
-			_LOGGER.info("Energy sensors generated successfully after configuration update")
-			await self.hass.services.async_call(
-				"persistent_notification",
-				"create",
-				{
-					"message": "Energy sensors have been created automatically based on your new configuration. Check the Entities page to see your new sensors.",
-					"title": "Energy Sensor Generator",
-					"notification_id": "energy_sensor_generator_created",
-				},
-				blocking=False,
-			)
-		except Exception as err:
-			_LOGGER.error("Failed to auto-generate sensors after configuration: %s", err)
-			await self.hass.services.async_call(
-				"persistent_notification",
-				"create",
-				{
-					"message": f"Failed to automatically create energy sensors: {err}. You may need to manually reload the integration.",
-					"title": "Energy Sensor Generator - Error",
-					"notification_id": "energy_sensor_generator_error",
-				},
-				blocking=False,
-			)

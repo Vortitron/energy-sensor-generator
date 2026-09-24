@@ -6,17 +6,15 @@ from datetime import datetime, timedelta
 from typing import Iterable, Mapping, Tuple
 
 try:
-	from homeassistant.config_entries import ConfigEntry
 	from homeassistant.core import HomeAssistant, ServiceCall, State
-	from homeassistant.helpers import entity_registry as er
+	from homeassistant.exceptions import ServiceValidationError
 	from homeassistant.util import dt as dt_util
 except ImportError:  # pragma: no cover
 	# Allow importing this module in unit tests without Home Assistant installed.
-	ConfigEntry = object  # type: ignore
 	HomeAssistant = object  # type: ignore
 	ServiceCall = object  # type: ignore
 	State = object  # type: ignore
-	er = None  # type: ignore
+	ServiceValidationError = ValueError  # type: ignore
 	from datetime import timezone
 	
 	class _DtUtilFallback:
@@ -41,11 +39,6 @@ except ImportError:  # pragma: no cover
 			return _DtUtilFallback.as_utc(value)
 	
 	dt_util = _DtUtilFallback()
-
-try:
-	from .const import DOMAIN
-except ImportError:  # pragma: no cover
-	DOMAIN = "energy_sensor_generator"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -196,43 +189,23 @@ async def _fetch_state_near(
 	return None
 
 
-def _iter_energy_sensors(hass: HomeAssistant) -> Iterable[str]:
-	"""Yield main energy sensor entity_ids for this integration."""
-	entity_registry = er.async_get(hass)
-	for entity_id, entry in entity_registry.entities.items():
-		if entry.platform != DOMAIN or not entity_id.startswith("sensor."):
-			continue
-		if any(period in entity_id for period in ["_daily_", "_monthly_", "_weekly_", "_annual_"]):
-			continue
-		yield entity_id
-
-
 async def copy_from_previous_hour_service(
 	hass: HomeAssistant,
 	call: ServiceCall,
-	entry: ConfigEntry | None = None,
+	energy_sensors: list,
 ) -> None:
-	"""Copy all generated energy sensors to a previous hour's values."""
-	if entry is None:
-		entries = hass.config_entries.async_entries(DOMAIN)
-		if not entries:
-			_LOGGER.error("No config entry found for copy_from_previous_hour.")
-			return
-		entry = entries[0]
+	"""Set every main energy sensor back to its recorded value at a previous hour.
 
+	``energy_sensors`` are the live main energy entities; their totals are
+	set through the entity so the in-memory value and storage stay in sync.
+	"""
 	try:
 		request = _resolve_copy_request(call.data)
 	except ValueError as err:
-		_LOGGER.error(str(err))
-		return
-
-	storage_manager = hass.data[DOMAIN][entry.entry_id]["storage_manager"]
-	entity_registry = er.async_get(hass)
-	energy_sensors = list(_iter_energy_sensors(hass))
+		raise ServiceValidationError(str(err)) from err
 
 	if not energy_sensors:
-		_LOGGER.error("No energy sensors found to copy")
-		return
+		raise ServiceValidationError("No energy sensors are loaded")
 
 	source_label = _format_local(request.source_utc)
 	target_label = _format_local(request.hour_to_fix_utc)
@@ -243,44 +216,20 @@ async def copy_from_previous_hour_service(
 		f" to patch {target_label}" if request.hour_to_fix_utc else " (current values)",
 	)
 
-	storage = await storage_manager.async_load()
 	sensors_updated: list[tuple[str, float, float, datetime]] = []
 	errors: list[str] = []
 
-	for entity_id in energy_sensors:
+	for entity in energy_sensors:
+		entity_id = entity.entity_id
 		state_tuple = await _fetch_state_near(hass, entity_id, request.source_utc)
 		if not state_tuple:
 			errors.append(f"{entity_id}: no recorder data near {source_label}")
 			continue
 
 		historical_value, historical_time = state_tuple
-		entity_entry = entity_registry.async_get(entity_id)
-		if not entity_entry:
-			errors.append(f"{entity_id}: missing entity registry entry")
-			continue
-
-		storage_key = entity_entry.unique_id
-		if storage_key not in storage:
-			errors.append(f"{entity_id}: storage key '{storage_key}' not found")
-			continue
-
-		existing = storage[storage_key]
-		if isinstance(existing, dict):
-			old_value = existing.get("value", 0.0)
-			existing["value"] = historical_value
-		else:
-			old_value = existing
-			storage[storage_key] = historical_value
-
+		old_value = entity.total
+		await entity.async_set_total(historical_value)
 		sensors_updated.append((entity_id, old_value, historical_value, historical_time))
-
-	if sensors_updated:
-		await storage_manager.async_save(storage)
-		for entity_id, *_ in sensors_updated:
-			try:
-				await hass.helpers.entity_component.async_update_entity(entity_id)
-			except Exception:
-				pass
 
 	success_count = len(sensors_updated)
 	error_count = len(errors)
@@ -307,13 +256,12 @@ async def copy_from_previous_hour_service(
 	parts.append(f"Errors: {error_count}")
 	notification_msg = "\n".join(parts)
 
-	await hass.services.async_call(
-		"persistent_notification",
-		"create",
-		{
-			"title": "Hourly Data Copy Complete",
-			"message": notification_msg,
-			"notification_id": "energy_hourly_copy",
-		},
+	from homeassistant.components import persistent_notification
+
+	persistent_notification.async_create(
+		hass,
+		notification_msg,
+		title="Hourly Data Copy Complete",
+		notification_id="energy_hourly_copy",
 	)
 

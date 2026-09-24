@@ -67,19 +67,19 @@ def test_uniquify_labels_only_suffixes_collisions():
 def test_grouped_options_flatten_single_sensor_devices():
 	options = grouped_selector_options([
 		("sensor.plug_8_power", "Power", "smart plug 8"),
-		("sensor.p1ib_l1", "L1", "P1IB"),
 		("sensor.p1ib_l2", "L2", "P1IB"),
+		("sensor.p1ib_l1", "L1", "P1IB"),
 		("sensor.orphan_power", "Orphan", None),
 	])
-	flat_labels = [item.get("label") for item in options]
-	assert "smart plug 8" in flat_labels
-
-	p1ib = next(item for item in options if item.get("label") == "P1IB")
-	assert "options" in p1ib
-	assert {entry["label"] for entry in p1ib["options"]} == {"L1", "L2"}
-
-	other = next(item for item in options if item.get("label") == "Other sensors")
-	assert other["options"][0]["value"] == "sensor.orphan_power"
+	# Home Assistant's SelectSelector only accepts flat {value, label} options
+	assert all(set(item) == {"value", "label"} for item in options)
+	assert [item["label"] for item in options] == [
+		"P1IB › L1",
+		"P1IB › L2",
+		"smart plug 8",
+		"Orphan",
+	]
+	assert options[-1]["value"] == "sensor.orphan_power"
 
 
 def test_options_overview_is_a_single_compact_line():

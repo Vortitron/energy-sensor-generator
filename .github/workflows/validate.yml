@@ -30,6 +30,7 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install test dependencies
-        run: pip install pytest pytest-asyncio
-      - name: Run unit tests
-        run: pytest tests -q --ignore=tests/test_storage_manager.py
+        # Pulls in Home Assistant core so the integration tests run against the real thing
+        run: pip install pytest-homeassistant-custom-component
+      - name: Run tests
+        run: pytest tests -q
