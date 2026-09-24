@@ -19,6 +19,7 @@ Bug sweep and UX polish.
 - Device actions now pass their fields (e.g. the sensor name for Diagnose).
 - Power sensor detection no longer picks up `%`, data, or water "usage" sensors by name.
 - Minimum Home Assistant version corrected to 2024.11 (the Configure dialog needs it).
+- HACS/hassfest validation: brand icon moved to `custom_components/energy_sensor_generator/brand/`, and `recorder` declared as an after-dependency.
 
 **Behaviour changes**
 

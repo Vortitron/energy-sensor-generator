@@ -10,7 +10,7 @@ Energy Sensor Generator is a Home Assistant custom integration (`custom_componen
 - `energy_math.py` — left Riemann / held-power / point-sampling maths (unit tested).
 - `sensor.py` / `period_sensors.py` — live entities and interval updates.
 - `utils.py` — debounced Store persistence.
-- `brand/icon.png` — HACS brand asset.
+- `custom_components/energy_sensor_generator/brand/icon.png` — HACS brand asset.
 - `hacs.json` — HACS manifest (name, min HA 2024.11, render README).
 
 ## Configure UI
@@ -34,6 +34,6 @@ Repo-side files are in place. After pushing 0.0.86 and CI is green:
 2. Publish a GitHub **release** (not just a tag) for `0.0.86` once hassfest and HACS actions pass.
 3. Confirm the repo is public, issues enabled, and not archived.
 4. Open a PR against [hacs/default](https://github.com/hacs/default) adding `vortitron/energy-sensor-generator` alphabetically to `integration`. The submitter must be the owner. Review often takes months.
-5. Optional: add the domain to [home-assistant/brands](https://github.com/home-assistant/brands) so the icon also appears in Settings → Devices & Services. HACS itself is satisfied by `brand/icon.png`.
+5. Optional: add the domain to [home-assistant/brands](https://github.com/home-assistant/brands) so the icon also appears in Settings → Devices & Services. HACS itself is satisfied by `custom_components/energy_sensor_generator/brand/icon.png`.
 
 Users can already install it as a **custom repository** without that PR.

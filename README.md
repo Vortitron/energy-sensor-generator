@@ -88,7 +88,7 @@ This repository is set up for HACS:
 
 - `hacs.json` in the repo root
 - `issue_tracker` in `manifest.json`
-- Brand icon in `brand/icon.png`
+- Brand icon in `custom_components/energy_sensor_generator/brand/icon.png`
 - Hassfest and HACS GitHub Actions in `.github/workflows/validate.yml`
 
 After CI is green on a tagged GitHub **release**, the remaining listing steps (repo description, topics, then a PR to [hacs/default](https://github.com/hacs/default)) are documented in `project_outline.md`.
