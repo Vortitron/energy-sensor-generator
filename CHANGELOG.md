@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.88
+
+- **Back on the Integrations page.** 0.0.86 marked the integration as a *helper*, so Home Assistant listed it under Settings → Devices & services → Helpers instead of Integrations. It is now a regular integration again. Existing setups and sensors are unchanged.
+
 ## 0.0.87
 
 Bug sweep and UX polish.
