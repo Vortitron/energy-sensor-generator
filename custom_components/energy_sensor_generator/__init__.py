@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
 
+import attr
 import voluptuous as vol
 
 from homeassistant.components import persistent_notification
@@ -26,6 +27,7 @@ from .naming import (
 	legacy_subentries,
 	plan_price_adjustments,
 	plan_sources,
+	source_device_key,
 	strip_legacy_options,
 )
 from .utils import StorageManager, derive_constant_base_name
@@ -128,15 +130,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 	hass.data.setdefault(DOMAIN, {})
 	storage_manager = StorageManager(hass)
 
-	_async_remove_legacy_main_device(hass, entry)
-
 	hass.data[DOMAIN][entry.entry_id] = {
 		"storage_manager": storage_manager,
 		"entities": {},
 	}
 
 	_async_remove_stale_entities(hass, entry)
+	known_device_ids = {
+		device.id for device in dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+	}
 	await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+	_async_tidy_devices(hass, entry, known_device_ids)
 
 	# Options changes (including Save in the Configure dialog) rebuild the entities
 	entry.async_on_unload(entry.add_update_listener(_async_options_updated))
@@ -149,20 +153,68 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 	return True
 
 
-def _async_remove_legacy_main_device(hass: HomeAssistant, entry: ConfigEntry) -> None:
-	"""Remove the empty "Integration" device older versions created.
+def _async_tidy_devices(hass: HomeAssistant, entry: ConfigEntry, known_device_ids: set[str]) -> None:
+	"""Drop devices left without entities and give new source devices an area.
 
-	It never held entities, and on the integration page it showed up as a
-	separate "devices that don't belong to a sub-entry" box.
+	Older versions put entities on the source's own device (or a shared
+	fallback device) and created an empty "Integration" device. Each source
+	now has a device of its own, so those are left empty after an upgrade.
+	A newly created source device takes the area of its source entity, as
+	the entities used to inherit it from the source's device.
 	"""
 	device_registry = dr.async_get(hass)
 	entity_registry = er.async_get(hass)
+	sources = {
+		source_device_key(plan.subentry_id, plan.base_name): plan.source_entity_id
+		for plan in source_plans(entry)
+	}
+	sources.update({
+		source_device_key(plan.subentry_id, plan.unique_id): plan.source_entity_id
+		for plan in price_plans(entry)
+	})
+
 	for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
-		if (DOMAIN, "main") not in device.identifiers:
+		has_entities = any(
+			reg_entry.config_entry_id == entry.entry_id
+			for reg_entry in er.async_entries_for_device(entity_registry, device.id, include_disabled_entities=True)
+		)
+		if not has_entities:
+			_async_release_device(device_registry, device, entry.entry_id)
 			continue
-		if er.async_entries_for_device(entity_registry, device.id, include_disabled_entities=True):
+		if device.id in known_device_ids or device.area_id:
 			continue
+		source = next(
+			(sources[key] for domain, key in device.identifiers if domain == DOMAIN and key in sources),
+			None,
+		)
+		area_id = _source_area_id(hass, source)
+		if area_id:
+			device_registry.async_update_device(device.id, area_id=area_id)
+
+
+def _async_release_device(device_registry: dr.DeviceRegistry, device: dr.DeviceEntry, entry_id: str) -> None:
+	"""Remove this entry from a device, deleting it when nothing else uses it."""
+	if "config_entry_id" in attr.fields_dict(type(device)):
+		# 2026.10+: a device belongs to one config entry, so this one is ours alone
 		device_registry.async_remove_device(device.id)
+	elif len(device.config_entries) > 1:
+		device_registry.async_update_device(device.id, remove_config_entry_id=entry_id)
+	else:
+		device_registry.async_remove_device(device.id)
+
+
+def _source_area_id(hass: HomeAssistant, entity_id: str | None) -> str | None:
+	"""Area of a source entity, or of the device it belongs to."""
+	if not entity_id:
+		return None
+	reg_entry = er.async_get(hass).async_get(entity_id)
+	if reg_entry is None:
+		return None
+	if reg_entry.area_id:
+		return reg_entry.area_id
+	if reg_entry.device_id and (device := dr.async_get(hass).async_get(reg_entry.device_id)):
+		return device.area_id
+	return None
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:

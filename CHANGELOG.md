@@ -12,8 +12,8 @@ Configuration rewrite. The old Configure dialog with one long checkbox list of e
 - **Period totals per source.** Daily / weekly / monthly / annual can now differ per sensor.
 - **Settings** (the gear icon) is a single form for the calculation and diagnostic options.
 - Price add-on picker offers sensors priced per kWh or MWh, falling back to all sensors.
-- Constant-load devices and sources without a device of their own are named after the source, not their internal ID.
-- The empty "Integration" device is removed.
+- **Each source has a device of its own**, named after the source and placed in the source's area. Home Assistant 2026.10 lets a device belong to one source only, so sources that shared a meter's device (for example the three phases of a P1 meter) kept deleting each other's entities.
+- Devices left empty by older versions, including the "Integration" device, are removed.
 
 **Fixes**
 

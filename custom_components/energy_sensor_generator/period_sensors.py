@@ -45,7 +45,7 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 	PERIOD_LABEL = ""  # e.g. "Daily" - used in the friendly name
 	PERIOD_SUFFIX = ""  # e.g. "daily" - used in unique_id and storage key
 
-	def __init__(self, hass, base_name, main_unique_id, storage_path, device_identifiers=None, friendly_name=None):
+	def __init__(self, hass, base_name, main_unique_id, storage_path, device_info=None, friendly_name=None):
 		"""Initialize the sensor."""
 		assert self.PERIOD_LABEL and self.PERIOD_SUFFIX, "Subclasses must define period metadata"
 		self._hass = hass
@@ -68,11 +68,8 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 		self._attr_state_class = SensorStateClass.TOTAL_INCREASING
 		self._attr_entity_registry_enabled_default = True
 
-		# Same device as the main sensor; sources without a device share the
-		# fallback device the main sensor creates for this base name.
-		self._attr_device_info = DeviceInfo(
-			identifiers=device_identifiers or {(DOMAIN, base_name)}
-		)
+		# Same device as the main sensor of this source.
+		self._attr_device_info = device_info or DeviceInfo(identifiers={(DOMAIN, base_name)})
 
 		self._state = 0.0
 		# Main sensor value at the last update; None until the first reading

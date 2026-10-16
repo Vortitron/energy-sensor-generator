@@ -11,6 +11,7 @@ from homeassistant.helpers.event import async_track_state_change_event, async_tr
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
@@ -60,6 +61,7 @@ from .naming import (
 	main_unique_id,
 	plan_price_adjustments,
 	plan_sources,
+	source_device_key,
 	SYNTHETIC_GRID_UNIQUE_ID,
 )
 
@@ -110,13 +112,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 				)
 				continue
 
-		device_identifiers = _get_device_identifiers_for_entity(hass, plan.source_entity_id)
+		device_info = source_device_info(
+			source_device_key(plan.subentry_id, plan.base_name),
+			plan.name_override or get_friendly_name(hass, plan.source_entity_id),
+			"Constant load" if plan.constant_config else "Energy sensor",
+		)
 		main_sensor = EnergySensor(
 			hass,
 			plan.base_name,
 			plan.source_entity_id,
 			storage_manager,
-			device_identifiers,
+			device_info,
 			plan.name_override,
 			plan.constant_config,
 		)
@@ -124,13 +130,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 		for period in plan.periods:
 			batch.append(
 				PERIOD_SENSOR_CLASSES[period](
-					hass, plan.base_name, main_sensor.unique_id, storage_manager, device_identifiers, plan.name_override
+					hass, plan.base_name, main_sensor.unique_id, storage_manager, device_info, plan.name_override
 				)
 			)
 		batches.append((batch, plan.subentry_id))
 
 	for price in price_plans:
-		batches.append(([PriceAdjustedSensor(hass, price)], price.subentry_id))
+		device_info = source_device_info(
+			source_device_key(price.subentry_id, price.unique_id),
+			price.name or f"{get_friendly_name(hass, price.source_entity_id)} (Adjusted)",
+			"Price add-on",
+		)
+		batches.append(([PriceAdjustedSensor(hass, price, device_info)], price.subentry_id))
 
 	if options.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False):
 		batches.append(([SyntheticGridTotalEnergySensor(hass)], None))
@@ -151,26 +162,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 		async_add_entities(batch, config_subentry_id=subentry_id)
 
 
-def _get_device_identifiers_for_entity(hass: HomeAssistant, entity_id: str):
-	"""Return device identifiers for a given entity, if it belongs to a device."""
-	try:
-		entity_registry = er.async_get(hass)
-		entry = entity_registry.async_get(entity_id)
-		if not entry or not entry.device_id:
-			return None
-		device_registry = dr.async_get(hass)
-		device = device_registry.async_get(entry.device_id)
-		if not device:
-			return None
-		return device.identifiers
-	except Exception:
-		return None
+def source_device_info(key: str, name: str, model: str) -> DeviceInfo:
+	"""Device holding one source's entities (see naming.source_device_key)."""
+	return DeviceInfo(
+		identifiers={(DOMAIN, key)},
+		name=name,
+		manufacturer="Energy Sensor Generator",
+		model=model,
+		entry_type=DeviceEntryType.SERVICE,
+	)
 
 
 class PriceAdjustedSensor(SensorEntity):
 	"""Sensor that mirrors another sensor and adds a fixed amount."""
 
-	def __init__(self, hass: HomeAssistant, plan: PricePlan):
+	def __init__(self, hass: HomeAssistant, plan: PricePlan, device_info: DeviceInfo):
 		self._hass = hass
 		self._source_entity_id = plan.source_entity_id
 		self._add_amount = float(plan.add_amount)
@@ -184,16 +190,7 @@ class PriceAdjustedSensor(SensorEntity):
 		self._attr_icon = "mdi:cash-plus"
 		self._attr_entity_registry_enabled_default = True
 
-		device_identifiers = _get_device_identifiers_for_entity(hass, self._source_entity_id)
-		if device_identifiers:
-			self._attr_device_info = DeviceInfo(identifiers=device_identifiers)
-		else:
-			self._attr_device_info = DeviceInfo(
-				identifiers={(DOMAIN, "price_adjustments")},
-				name="Price Adjustments",
-				manufacturer="Energy Sensor Generator",
-				model="Adjusted price sensor",
-			)
+		self._attr_device_info = device_info
 
 		self._native_value = None
 		self._unit = None
@@ -278,7 +275,7 @@ class PriceAdjustedSensor(SensorEntity):
 class EnergySensor(SensorEntity, RestoreEntity):
 	"""Custom sensor to calculate kWh from power (Watts)."""
 
-	def __init__(self, hass, base_name, source_sensor, storage_path, device_identifiers=None, friendly_name_override=None, constant_config=None):
+	def __init__(self, hass, base_name, source_sensor, storage_path, device_info=None, friendly_name_override=None, constant_config=None):
 		"""Initialize the sensor."""
 		self._hass = hass
 		self._base_name = base_name
@@ -286,7 +283,6 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		# Backwards compat: storage_path param may be Path; but prefer StorageManager
 		self._storage_manager: StorageManager | None = storage_path if isinstance(storage_path, StorageManager) else None
 		self._storage_path = storage_path  # kept for type compatibility
-		self._device_identifiers = device_identifiers
 		self._constant_power_w = None
 		self._constant_config = None
 		if constant_config:
@@ -331,19 +327,12 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		self._attr_icon = "mdi:flash"
 		self._attr_entity_registry_enabled_default = True  # Ensure sensors are enabled by default
 		
-		# Device info for grouping
-		if device_identifiers:
-			self._attr_device_info = DeviceInfo(
-				identifiers=device_identifiers,
-			)
-		else:
-			# Sources without a device get one of their own, named like the source
-			self._attr_device_info = DeviceInfo(
-				identifiers={(DOMAIN, base_name)},
-				name=friendly_name,
-				manufacturer="Energy Sensor Generator",
-				model="Constant load" if self._constant_power_w is not None else "Energy sensor",
-			)
+		# Each source has a device of its own (built by the platform setup)
+		self._attr_device_info = device_info or source_device_info(
+			base_name,
+			friendly_name,
+			"Constant load" if self._constant_power_w is not None else "Energy sensor",
+		)
 		
 		# Conversion factor for power units (will be detected at runtime)
 		self._power_to_kw_factor = 1000 if self._constant_power_w is not None else None

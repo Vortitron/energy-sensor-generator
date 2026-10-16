@@ -629,9 +629,74 @@ async def test_sources_without_a_device_get_a_readable_device_name(hass: HomeAss
 		unique_id=subentry_unique_id(SUBENTRY_CONSTANT_LOAD, "switch.boilercontrol_boiler_relay_1"),
 		data={"switch_entity_id": "switch.boilercontrol_boiler_relay_1", "power_w": 3000, "name": "BoilerControl", "periods": []},
 	)])
+	subentry = _subentry(entry, SUBENTRY_CONSTANT_LOAD, "switch.boilercontrol_boiler_relay_1")
 	device = next(
 		d for d in dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
-		if (DOMAIN, "boilercontrol_boiler_relay_1_constant") in d.identifiers
+		if (DOMAIN, f"source_{subentry.subentry_id}") in d.identifiers
 	)
 	assert device.name == "BoilerControl"
 	assert device.model == "Constant load"
+
+
+async def test_sources_sharing_a_meter_device_keep_their_entities(hass: HomeAssistant, caplog) -> None:
+	"""Three phases of one meter used to share the meter's device.
+
+	Home Assistant 2026.10 lets a device belong to one subentry only, so
+	sharing it moved the device between subentries and deleted the previous
+	phases' registry entries. Each source now has a device of its own.
+	"""
+	from homeassistant.helpers import area_registry as ar
+	from homeassistant.helpers import device_registry as dr
+
+	meter_entry = MockConfigEntry(domain="esphome", title="P1 meter")
+	meter_entry.add_to_hass(hass)
+	area = ar.async_get(hass).async_create("Utility room")
+	meter = dr.async_get(hass).async_get_or_create(
+		config_entry_id=meter_entry.entry_id, identifiers={("esphome", "p1ib")}, name="P1ib"
+	)
+	dr.async_get(hass).async_update_device(meter.id, area_id=area.id)
+	registry = er.async_get(hass)
+	for phase in ("l1", "l2", "l3"):
+		registry.async_get_or_create(
+			"sensor", "esphome", f"p1ib_{phase}", suggested_object_id=f"p1ib_power_{phase}",
+			config_entry=meter_entry, device_id=meter.id,
+		)
+		_power(hass, f"sensor.p1ib_power_{phase}", 100, f"P1ib Power {phase.upper()}")
+
+	# Version 1 entry whose entities sit on (a copy of) the meter device
+	entry = MockConfigEntry(
+		domain=DOMAIN, unique_id=DOMAIN, version=1, data={},
+		options={
+			"selected_power_sensors": ["sensor.p1ib_power_l1", "sensor.p1ib_power_l2", "sensor.p1ib_power_l3"],
+			"create_daily_sensors": False, "create_weekly_sensors": True,
+			"create_monthly_sensors": False, "create_annual_sensors": False,
+		},
+	)
+	entry.add_to_hass(hass)
+	old_device = dr.async_get(hass).async_get_or_create(
+		config_entry_id=entry.entry_id, identifiers={("esphome", "p1ib")}, name="P1ib"
+	)
+	for phase in ("l1", "l2", "l3"):
+		registry.async_get_or_create(
+			"sensor", DOMAIN, f"p1ib_{phase}_energy", suggested_object_id=f"meter_{phase}_total",
+			config_entry=entry, device_id=old_device.id,
+		)
+
+	assert await hass.config_entries.async_setup(entry.entry_id)
+	await hass.async_block_till_done()
+
+	for phase in ("l1", "l2", "l3"):
+		reg_entry = registry.async_get(f"sensor.meter_{phase}_total")
+		assert reg_entry is not None, phase  # entity ID kept, so Energy dashboard history is kept
+		assert reg_entry.config_subentry_id == _subentry(entry, SUBENTRY_POWER_SENSOR, f"sensor.p1ib_power_{phase}").subentry_id
+		assert _entity_id(hass, f"p1ib_{phase}_weekly_energy") is not None
+		device = dr.async_get(hass).async_get(reg_entry.device_id)
+		assert device.area_id == area.id
+	assert len({registry.async_get(f"sensor.meter_{p}_total").device_id for p in ("l1", "l2", "l3")}) == 3
+	# The meter's own entities and device are untouched; our old copy is gone
+	assert registry.async_get("sensor.p1ib_power_l1").device_id == meter.id
+	assert dr.async_get(hass).async_get(meter.id) is not None
+	ours = dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+	assert all(("esphome", "p1ib") not in device.identifiers for device in ours)
+	assert "different config subentry" not in caplog.text
+	assert "deprecated" not in caplog.text.lower()

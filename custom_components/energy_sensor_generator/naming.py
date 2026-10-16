@@ -109,6 +109,17 @@ def enabled_periods(options: Mapping[str, object]) -> list[str]:
 	return [period for period in PERIODS if options.get(f"create_{period}_sensors", True)]
 
 
+def source_device_key(subentry_id: str | None, fallback: str) -> str:
+	"""Identifier of the device that holds one source's entities.
+
+	Each subentry gets a device of its own: Home Assistant 2026.10+ lets a
+	device belong to a single subentry, so sources sharing a device (e.g.
+	three phases of one meter) would keep moving it and deleting each
+	other's registry entries.
+	"""
+	return f"source_{subentry_id}" if subentry_id else fallback
+
+
 def subentry_unique_id(subentry_type: str, entity_id: str) -> str:
 	"""Unique ID of a subentry; one subentry per source entity and type."""
 	return f"{subentry_type}:{entity_id}"
