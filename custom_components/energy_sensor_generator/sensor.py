@@ -11,6 +11,7 @@ from homeassistant.helpers.event import async_track_state_change_event, async_tr
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
@@ -26,15 +27,12 @@ except ImportError:
 	_LOGGER.warning("Statistics module not available, using point sampling only")
 from .utils import StorageManager, derive_constant_base_name
 from .const import (
-	DOMAIN, 
-	CONF_DEBUG_LOGGING, 
+	DOMAIN,
 	CONF_CREATE_SYNTHETIC_GRID_TOTAL,
 	CONF_USE_STATISTICAL,
 	CONF_FORCE_STATISTICAL_ONLY,
 	CONF_STAT_LOOKBACK_MINUTES,
 	CONF_MAX_ENERGY_PER_HOUR,
-	CONF_CONSTANT_POWER_DEVICES,
-	CONF_PRICE_ADJUST_SENSORS,
 	POINT_SAMPLING_MAX_GAP_SECONDS,
 )
 import time
@@ -57,11 +55,13 @@ from .entity_helpers import (
 )
 from .period_sensors import PERIOD_SENSOR_CLASSES
 from .naming import (
-	enabled_periods,
+	PricePlan,
 	is_main_energy_unique_id,
 	main_storage_key,
 	main_unique_id,
+	plan_price_adjustments,
 	plan_sources,
+	source_device_key,
 	SYNTHETIC_GRID_UNIQUE_ID,
 )
 
@@ -86,162 +86,117 @@ def _is_energy_source(state) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
-	"""Create every entity the saved options describe.
+	"""Create every entity the subentries describe.
 
-	Stale registry entries are removed before this runs (see __init__), so
-	the platform only has to build what the configuration asks for.
+	Entities are added per subentry so the integration page lists them under
+	the source they belong to and removes them when the subentry is deleted.
+	Stale registry entries are removed before this runs (see __init__).
 	"""
 	entry_data = hass.data[DOMAIN][entry.entry_id]
 	storage_manager = entry_data["storage_manager"]
 	options = entry.options
 
-	plans = plan_sources(
-		options.get("selected_power_sensors"),
-		options.get(CONF_CONSTANT_POWER_DEVICES),
-		derive_constant_base_name,
-	)
-	periods = enabled_periods(options)
+	plans = plan_sources(entry.subentries.values(), derive_constant_base_name)
+	price_plans = plan_price_adjustments(entry.subentries.values())
+	all_entities = []
+	batches: list[tuple[list, str | None]] = []
 
-	entities = []
 	for plan in plans:
 		if not plan.constant_config:
 			source_state = hass.states.get(plan.source_entity_id)
 			if source_state and _is_energy_source(source_state):
 				_LOGGER.error(
 					"Skipping %s: it is an energy (kWh) sensor, not a power sensor. "
-					"Untick it under Configure > Power sensors.",
+					"Delete it from the integration page and add a power sensor instead.",
 					plan.source_entity_id,
 				)
 				continue
 
-		device_identifiers = _get_device_identifiers_for_entity(hass, plan.source_entity_id)
+		device_info = source_device_info(
+			source_device_key(plan.subentry_id, plan.base_name),
+			plan.name_override or get_friendly_name(hass, plan.source_entity_id),
+			"Constant load" if plan.constant_config else "Energy sensor",
+		)
 		main_sensor = EnergySensor(
 			hass,
 			plan.base_name,
 			plan.source_entity_id,
 			storage_manager,
-			device_identifiers,
+			device_info,
 			plan.name_override,
 			plan.constant_config,
 		)
-		entities.append(main_sensor)
-		for period in periods:
-			entities.append(
+		batch = [main_sensor]
+		for period in plan.periods:
+			batch.append(
 				PERIOD_SENSOR_CLASSES[period](
-					hass, plan.base_name, main_sensor.unique_id, storage_manager, device_identifiers
+					hass, plan.base_name, main_sensor.unique_id, storage_manager, device_info, plan.name_override
 				)
 			)
+		batches.append((batch, plan.subentry_id))
+
+	for price in price_plans:
+		device_info = source_device_info(
+			source_device_key(price.subentry_id, price.unique_id),
+			price.name or f"{get_friendly_name(hass, price.source_entity_id)} (Adjusted)",
+			"Price add-on",
+		)
+		batches.append(([PriceAdjustedSensor(hass, price, device_info)], price.subentry_id))
 
 	if options.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False):
-		entities.append(SyntheticGridTotalEnergySensor(hass))
+		batches.append(([SyntheticGridTotalEnergySensor(hass)], None))
 
-	for item in options.get(CONF_PRICE_ADJUST_SENSORS, []) or []:
-		try:
-			entities.append(PriceAdjustedSensor(hass, entry.entry_id, dict(item)))
-		except ValueError as err:
-			_LOGGER.error("Skipping price adjustment %s: %s", item, err)
+	for batch, _ in batches:
+		all_entities.extend(batch)
 
 	# Services act on live entities so their in-memory state and storage stay in sync
-	entry_data["entities"] = {entity.unique_id: entity for entity in entities}
+	entry_data["entities"] = {entity.unique_id: entity for entity in all_entities}
 
 	_LOGGER.info(
-		"Setting up %d entities (%d sources, periods: %s)",
-		len(entities),
+		"Setting up %d entities (%d sources, %d price add-ons)",
+		len(all_entities),
 		len(plans),
-		", ".join(periods) or "none",
+		len(price_plans),
 	)
-	if entities:
-		async_add_entities(entities)
+	for batch, subentry_id in batches:
+		async_add_entities(batch, config_subentry_id=subentry_id)
 
 
-def _get_device_identifiers_for_entity(hass: HomeAssistant, entity_id: str):
-	"""Return device identifiers for a given entity, if it belongs to a device."""
-	try:
-		entity_registry = er.async_get(hass)
-		entry = entity_registry.async_get(entity_id)
-		if not entry or not entry.device_id:
-			return None
-		device_registry = dr.async_get(hass)
-		device = device_registry.async_get(entry.device_id)
-		if not device:
-			return None
-		return device.identifiers
-	except Exception:
-		return None
-
-
-def _get_config_entry_for_id(hass: HomeAssistant, entry_id: str) -> ConfigEntry | None:
-	"""Find a config entry by entry_id for this domain."""
-	try:
-		for cfg in hass.config_entries.async_entries(DOMAIN):
-			if cfg.entry_id == entry_id:
-				return cfg
-	except Exception:
-		return None
-	return None
+def source_device_info(key: str, name: str, model: str) -> DeviceInfo:
+	"""Device holding one source's entities (see naming.source_device_key)."""
+	return DeviceInfo(
+		identifiers={(DOMAIN, key)},
+		name=name,
+		manufacturer="Energy Sensor Generator",
+		model=model,
+		entry_type=DeviceEntryType.SERVICE,
+	)
 
 
 class PriceAdjustedSensor(SensorEntity):
 	"""Sensor that mirrors another sensor and adds a fixed amount."""
 
-	def __init__(self, hass: HomeAssistant, entry_id: str, config: dict):
+	def __init__(self, hass: HomeAssistant, plan: PricePlan, device_info: DeviceInfo):
 		self._hass = hass
-		self._entry_id = entry_id
-
-		self._config_id = str(config.get("id") or "").strip()
-		self._source_entity_id = str(config.get("source_entity_id") or "").strip()
-		self._name_override = (config.get("name") or "").strip()
-
-		try:
-			self._default_add_amount = float(config.get("add_amount", 0))
-		except (TypeError, ValueError):
-			self._default_add_amount = 0.0
-
-		if not self._config_id:
-			raise ValueError("Missing price adjustment config id")
-		if not self._source_entity_id:
-			raise ValueError("Missing source_entity_id")
-
-		self._attr_unique_id = f"price_adjust_{self._config_id}"
+		self._source_entity_id = plan.source_entity_id
+		self._add_amount = float(plan.add_amount)
+		self._attr_unique_id = plan.unique_id
 
 		source_name = get_friendly_name(hass, self._source_entity_id)
-		proposed_name = self._name_override or f"{source_name} (Adjusted)"
+		proposed_name = plan.name or f"{source_name} (Adjusted)"
 		self._attr_name = get_unique_entity_name(hass, proposed_name)
 
 		self._attr_state_class = SensorStateClass.MEASUREMENT
 		self._attr_icon = "mdi:cash-plus"
 		self._attr_entity_registry_enabled_default = True
 
-		device_identifiers = _get_device_identifiers_for_entity(hass, self._source_entity_id)
-		if device_identifiers:
-			self._attr_device_info = DeviceInfo(identifiers=device_identifiers)
-		else:
-			self._attr_device_info = DeviceInfo(
-				identifiers={(DOMAIN, "price_adjustments")},
-				name="Price Adjustments",
-				manufacturer="Energy Sensor Generator",
-				model="Adjusted price sensor",
-			)
+		self._attr_device_info = device_info
 
 		self._native_value = None
 		self._unit = None
 		self._available = True
 		self._copied_attributes = {}
 		self._unsub_state_change = None
-
-	def _get_current_add_amount(self) -> float:
-		"""Read current add_amount from the latest config entry options."""
-		entry = _get_config_entry_for_id(self._hass, self._entry_id)
-		if not entry:
-			return self._default_add_amount
-		items = entry.options.get(CONF_PRICE_ADJUST_SENSORS, []) or []
-		for item in items:
-			if str(item.get("id") or "") == self._config_id:
-				try:
-					return float(item.get("add_amount", self._default_add_amount))
-				except (TypeError, ValueError):
-					return self._default_add_amount
-		return self._default_add_amount
 
 	def _recalculate_from_source(self):
 		state = self._hass.states.get(self._source_entity_id)
@@ -252,7 +207,7 @@ class PriceAdjustedSensor(SensorEntity):
 			return
 		self._available = True
 		self._unit = state.attributes.get("unit_of_measurement")
-		add_amount = self._get_current_add_amount()
+		add_amount = self._add_amount
 		self._native_value = compute_adjusted_value(state.state, add_amount)
 		
 		# Copy all attributes, adjusting only price-like ones (except raw*)
@@ -320,7 +275,7 @@ class PriceAdjustedSensor(SensorEntity):
 class EnergySensor(SensorEntity, RestoreEntity):
 	"""Custom sensor to calculate kWh from power (Watts)."""
 
-	def __init__(self, hass, base_name, source_sensor, storage_path, device_identifiers=None, friendly_name_override=None, constant_config=None):
+	def __init__(self, hass, base_name, source_sensor, storage_path, device_info=None, friendly_name_override=None, constant_config=None):
 		"""Initialize the sensor."""
 		self._hass = hass
 		self._base_name = base_name
@@ -328,7 +283,6 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		# Backwards compat: storage_path param may be Path; but prefer StorageManager
 		self._storage_manager: StorageManager | None = storage_path if isinstance(storage_path, StorageManager) else None
 		self._storage_path = storage_path  # kept for type compatibility
-		self._device_identifiers = device_identifiers
 		self._constant_power_w = None
 		self._constant_config = None
 		if constant_config:
@@ -373,19 +327,12 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		self._attr_icon = "mdi:flash"
 		self._attr_entity_registry_enabled_default = True  # Ensure sensors are enabled by default
 		
-		# Device info for grouping
-		if device_identifiers:
-			self._attr_device_info = DeviceInfo(
-				identifiers=device_identifiers,
-			)
-		else:
-			# Fallback device info
-			self._attr_device_info = DeviceInfo(
-				identifiers={(DOMAIN, base_name)},
-				name=f"{base_name.replace('_', ' ').title()}",
-				manufacturer="Energy Sensor Generator",
-				model="Generated Energy Sensor",
-			)
+		# Each source has a device of its own (built by the platform setup)
+		self._attr_device_info = device_info or source_device_info(
+			base_name,
+			friendly_name,
+			"Constant load" if self._constant_power_w is not None else "Energy sensor",
+		)
 		
 		# Conversion factor for power units (will be detected at runtime)
 		self._power_to_kw_factor = 1000 if self._constant_power_w is not None else None

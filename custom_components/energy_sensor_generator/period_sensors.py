@@ -45,7 +45,7 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 	PERIOD_LABEL = ""  # e.g. "Daily" - used in the friendly name
 	PERIOD_SUFFIX = ""  # e.g. "daily" - used in unique_id and storage key
 
-	def __init__(self, hass, base_name, main_unique_id, storage_path, device_identifiers=None):
+	def __init__(self, hass, base_name, main_unique_id, storage_path, device_info=None, friendly_name=None):
 		"""Initialize the sensor."""
 		assert self.PERIOD_LABEL and self.PERIOD_SUFFIX, "Subclasses must define period metadata"
 		self._hass = hass
@@ -58,7 +58,7 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 
 		# Derive friendly name from base_name since the source_sensor is the
 		# generated energy sensor, not the original power sensor.
-		friendly_name = get_friendly_name_from_base(hass, base_name)
+		friendly_name = friendly_name or get_friendly_name_from_base(hass, base_name)
 		proposed_name = f"{friendly_name} {self.PERIOD_LABEL} Energy"
 		self._attr_name = get_unique_entity_name(hass, proposed_name)
 		self._attr_unique_id = period_unique_id(base_name, self.PERIOD_SUFFIX)
@@ -68,14 +68,13 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 		self._attr_state_class = SensorStateClass.TOTAL_INCREASING
 		self._attr_entity_registry_enabled_default = True
 
-		# Same device as the main sensor; sources without a device share the
-		# fallback device the main sensor creates for this base name.
-		self._attr_device_info = DeviceInfo(
-			identifiers=device_identifiers or {(DOMAIN, base_name)}
-		)
+		# Same device as the main sensor of this source.
+		self._attr_device_info = device_info or DeviceInfo(identifiers={(DOMAIN, base_name)})
 
 		self._state = 0.0
-		self._last_energy = 0.0
+		# Main sensor value at the last update; None until the first reading
+		# so a genuine 0 kWh anchor is not mistaken for "not yet initialised".
+		self._last_energy = None
 		self._last_reset = None
 		self._storage_key = self._attr_unique_id
 		self._unsub_state = None
@@ -106,7 +105,7 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 		state_data = storage.get(self._storage_key, {})
 		self._state = state_data.get("value", 0.0)
 		self._last_reset = state_data.get("last_reset", dt_util.utcnow().isoformat())
-		self._last_energy = state_data.get("last_energy", 0.0)
+		self._last_energy = state_data.get("last_energy")
 
 	async def _save_state(self):
 		"""Save state to storage."""
@@ -133,6 +132,7 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 		await self._async_catch_up_missed_reset()
 
 		self._async_track_main_sensor()
+		self._anchor_to_main_sensor()
 		self.async_on_remove(self._async_untrack_main_sensor)
 		self.async_on_remove(
 			self._hass.bus.async_listen(
@@ -164,6 +164,23 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 			self._unsub_state = async_track_state_change_event(
 				self._hass, [entity_id], self._handle_state_change
 			)
+
+	@callback
+	def _anchor_to_main_sensor(self) -> None:
+		"""Take the main sensor's current value as the baseline if there is none yet.
+
+		Without this, the first increase after a (re)load would only set the
+		baseline and that tick's energy would be lost from the period total.
+		"""
+		if self._last_energy is not None or not self._source_sensor:
+			return
+		state = self._hass.states.get(self._source_sensor)
+		if not state or state.state in ("unknown", "unavailable"):
+			return
+		try:
+			self._last_energy = float(state.state)
+		except (TypeError, ValueError):
+			return
 
 	@callback
 	def _async_untrack_main_sensor(self) -> None:
@@ -238,7 +255,7 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 			return
 
 		# If this is the first valid reading, initialise tracking
-		if self._last_energy == 0.0:
+		if self._last_energy is None:
 			debug_log(self.hass, f"Source energy sensor {self._source_sensor} became available, initialising {self.PERIOD_SUFFIX} tracking for {self._attr_name}")
 			self._last_energy = energy
 			await self._save_state()

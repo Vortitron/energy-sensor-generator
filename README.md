@@ -32,25 +32,27 @@ Or use the badge above.
 
 Copy `custom_components/energy_sensor_generator` into your Home Assistant `config/custom_components/` folder and restart.
 
-**Requirements:** Home Assistant 2024.11 or later. No extra Python packages.
+**Requirements:** Home Assistant 2025.3 or later. No extra Python packages.
 
 ## Configuration
 
-After adding the integration, open **Configure**. The options dialog is a short menu, not one long form:
+Setup asks one question: which power sensors to track. The picker is searchable and only lists sensors that report power (W / kW).
 
-| Section | Purpose |
+After that, everything lives on the integration page (Settings → Devices & services → Energy Sensor Generator):
+
+| Button | What it adds |
 | --- | --- |
-| **Power sensors** | Checkbox list sorted by device (multi-sensor meters show as `Meter › L1`). Tick the power entities that should get kWh sensors. Period totals (daily / weekly / monthly / annual) are on the same page. |
-| **Constant power devices** | Pair a switch or `input_boolean` with a rated wattage. |
-| **Electricity price add-ons** | Source price sensor + fixed adder. |
-| **Advanced** | Sampling interval, statistical calculation, debug logging, spike cap, synthetic grid total. |
-| **Save and apply** | Writes the options and reloads the integration so the sensors match. |
+| **Add energy sensor** | A kWh sensor for one power sensor, with optional daily / weekly / monthly / annual totals. Only untracked power sensors are offered. |
+| **Add constant load** | A switch or `input_boolean` plus a rated wattage, for devices without a power meter. |
+| **Add price add-on** | Mirrors a price sensor (for example Nordpool) and adds a fixed amount. Sensors priced per kWh are offered first. |
 
-The menu header is a one-line summary, for example: `12 of 64 power sensors selected · 3 constant loads · 1 price add-on`.
+Each source is listed on the page with its own entities. Use its gear icon to rename it or change its period totals, or its menu to delete it. Deleting a source removes its entities; its stored total is kept and comes back if you add the same source again.
 
-Changes in each section are kept until you choose **Save and apply**; the menu says when there are unsaved changes. Closing the dialog without saving discards in-progress edits.
+The integration's own gear icon opens **Settings**: sampling interval, recorder-history calculation, spike cap, a synthetic grid total, and debug logging.
 
-Sensors that are ticked but currently offline stay in the list, marked *(unavailable)*, so saving never drops them by accident. Unticking a sensor removes its entities, but its stored total is kept and comes back if you tick it again.
+### Upgrading from 0.0.x
+
+The first start after upgrading moves your existing selections into this layout automatically. Unique IDs and storage keys do not change, so totals and Energy dashboard history are kept. The old global period setting is applied to every migrated source.
 
 Then add the generated `*_energy` / `*_daily_energy` sensors under **Settings → Dashboards → Energy**.
 
@@ -80,7 +82,7 @@ See `custom_components/energy_sensor_generator/services.yaml` for the full list.
 
 - **No power sensors listed:** the entity must have unit `W`/`kW` or `device_class: power`. Use the debug detection service.
 - **Negative bars on the Energy dashboard:** the generated sensors only increase. Negative “untracked” usually means a child device is nested under the wrong parent in the Energy dashboard (`included_in_stat`).
-- **Values look low/high:** enable debug logging under Advanced, reload, then check Logs for `energy_sensor_generator`.
+- **Values look low/high:** enable debug logging in Settings, then check Logs for `energy_sensor_generator`.
 
 ## HACS default listing
 

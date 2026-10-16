@@ -24,13 +24,26 @@ jobs:
 
   tests:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Oldest supported Home Assistant (hacs.json). Its pinned aiohttp was
+          # later yanked from PyPI, so it has to be requested explicitly.
+          - name: minimum (2025.3)
+            python: "3.13"
+            packages: pytest-homeassistant-custom-component==0.13.221 aiohttp==3.11.13
+          - name: latest
+            python: "3.14"
+            packages: pytest-homeassistant-custom-component
+    name: tests (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ matrix.python }}
       - name: Install test dependencies
         # Pulls in Home Assistant core so the integration tests run against the real thing
-        run: pip install pytest-homeassistant-custom-component
+        run: pip install ${{ matrix.packages }}
       - name: Run tests
         run: pytest tests -q
