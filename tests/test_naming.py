@@ -1,5 +1,6 @@
 import sys
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
@@ -51,33 +52,60 @@ def test_unique_id_classification():
 	assert not naming.is_main_energy_unique_id(naming.SYNTHETIC_GRID_UNIQUE_ID)
 
 
-def test_plan_sources_drops_duplicates_and_invalid_constants():
+def _sub(subentry_type, data, subentry_id="id", title="t"):
+	return SimpleNamespace(subentry_id=subentry_id, subentry_type=subentry_type, title=title, data=data)
+
+
+def test_plan_sources_drops_duplicates_and_invalid_subentries():
 	plans = naming.plan_sources(
-		["sensor.kettle_power", "sensor.kettle", "", "sensor.oven_power"],
 		[
-			{"switch_entity_id": "switch.heater", "power_w": 2000, "name": "Heater"},
-			{"switch_entity_id": "switch.broken"},
-			{"power_w": 100},
+			_sub(naming.SUBENTRY_POWER_SENSOR, {"source_entity_id": "sensor.kettle_power", "periods": ["annual", "daily", "bogus"]}, "s1"),
+			_sub(naming.SUBENTRY_POWER_SENSOR, {"source_entity_id": "sensor.kettle"}, "s2"),  # same base name
+			_sub(naming.SUBENTRY_POWER_SENSOR, {"source_entity_id": ""}, "s3"),
+			_sub(naming.SUBENTRY_POWER_SENSOR, {"source_entity_id": "sensor.oven_power", "name": " Oven "}, "s4"),
+			_sub(naming.SUBENTRY_CONSTANT_LOAD, {"switch_entity_id": "switch.heater", "power_w": 2000, "name": "Heater"}, "s5"),
+			_sub(naming.SUBENTRY_CONSTANT_LOAD, {"switch_entity_id": "switch.broken"}, "s6"),
+			_sub(naming.SUBENTRY_PRICE_ADJUST, {"source_entity_id": "sensor.price", "add_amount": 1}, "s7"),
+			_sub("unknown", {"source_entity_id": "sensor.x_power"}, "s8"),
 		],
 		_constant_base,
 	)
-	assert [(plan.base_name, plan.source_entity_id) for plan in plans] == [
-		("kettle", "sensor.kettle_power"),
-		("oven", "sensor.oven_power"),
-		("heater_constant", "switch.heater"),
+	assert [(plan.base_name, plan.source_entity_id, plan.subentry_id) for plan in plans] == [
+		("kettle", "sensor.kettle_power", "s1"),
+		("oven", "sensor.oven_power", "s4"),
+		("heater_constant", "switch.heater", "s5"),
 	]
+	# Unknown periods are dropped and the rest keep canonical order; missing means all
+	assert plans[0].periods == ("daily", "annual")
+	assert plans[1].periods == naming.PERIODS
 	assert plans[0].name_override is None
+	assert plans[1].name_override == "Oven"
 	assert plans[2].name_override == "Heater"
+	assert plans[2].constant_config == {"switch_entity_id": "switch.heater", "power_w": 2000, "name": "Heater"}
+
+
+def test_plan_price_adjustments_uses_stored_id_or_subentry_id():
+	plans = naming.plan_price_adjustments([
+		_sub(naming.SUBENTRY_PRICE_ADJUST, {"id": "abc", "source_entity_id": "sensor.a", "add_amount": "0.5"}, "s1"),
+		_sub(naming.SUBENTRY_PRICE_ADJUST, {"source_entity_id": "sensor.b", "add_amount": None, "name": "B"}, "s2"),
+		_sub(naming.SUBENTRY_PRICE_ADJUST, {"source_entity_id": ""}, "s3"),
+		_sub(naming.SUBENTRY_POWER_SENSOR, {"source_entity_id": "sensor.c_power"}, "s4"),
+	])
+	assert [(plan.unique_id, plan.source_entity_id, plan.add_amount, plan.name) for plan in plans] == [
+		("price_adjust_abc", "sensor.a", 0.5, None),
+		("price_adjust_s2", "sensor.b", 0.0, "B"),
+	]
 
 
 def test_desired_unique_ids_covers_every_entity_kind():
-	plans = naming.plan_sources(["sensor.kettle_power"], [], _constant_base)
-	wanted = naming.desired_unique_ids(
-		plans,
-		naming.enabled_periods({"create_weekly_sensors": False, "create_monthly_sensors": False}),
-		[{"id": "abc"}, {"id": ""}],
-		synthetic_grid=True,
+	plans = naming.plan_sources(
+		[_sub(naming.SUBENTRY_POWER_SENSOR, {"source_entity_id": "sensor.kettle_power", "periods": ["daily", "annual"]})],
+		_constant_base,
 	)
+	prices = naming.plan_price_adjustments([
+		_sub(naming.SUBENTRY_PRICE_ADJUST, {"id": "abc", "source_entity_id": "sensor.p", "add_amount": 0}),
+	])
+	wanted = naming.desired_unique_ids(plans, prices, synthetic_grid=True)
 	assert wanted == {
 		"kettle_energy",
 		"kettle_daily_energy",
@@ -85,6 +113,45 @@ def test_desired_unique_ids_covers_every_entity_kind():
 		"price_adjust_abc",
 		naming.SYNTHETIC_GRID_UNIQUE_ID,
 	}
+
+
+def test_legacy_subentries_keep_ids_and_apply_global_periods():
+	options = {
+		"selected_power_sensors": ["sensor.kettle_power", "", "sensor.kettle_power", "sensor.oven_power"],
+		"constant_power_devices": [
+			{"switch_entity_id": "switch.heater", "power_w": "2000", "name": "Heater"},
+			{"switch_entity_id": "switch.broken"},
+		],
+		"price_adjust_sensors": [
+			{"id": "abc", "source_entity_id": "sensor.price", "add_amount": 0.25},
+			{"source_entity_id": "sensor.price2", "add_amount": -0.1, "name": "Minus"},
+			{"source_entity_id": "sensor.price"},  # duplicate source
+		],
+		"create_weekly_sensors": False,
+		"sample_interval": 30,
+	}
+	result = naming.legacy_subentries(options, lambda entity_id: entity_id.split(".")[1].title())
+
+	assert [(item["subentry_type"], item["unique_id"], item["title"]) for item in result] == [
+		("power_sensor", "power_sensor:sensor.kettle_power", "Kettle_Power"),
+		("power_sensor", "power_sensor:sensor.oven_power", "Oven_Power"),
+		("constant_load", "constant_load:switch.heater", "Heater"),
+		("price_adjust", "price_adjust:sensor.price", "Price + 0.25"),
+		("price_adjust", "price_adjust:sensor.price2", "Minus"),
+	]
+	assert result[0]["data"] == {"source_entity_id": "sensor.kettle_power", "periods": ["daily", "monthly", "annual"]}
+	assert result[2]["data"] == {
+		"switch_entity_id": "switch.heater", "power_w": 2000.0, "periods": ["daily", "monthly", "annual"], "name": "Heater",
+	}
+	assert result[3]["data"]["id"] == "abc"
+	assert len(result[4]["data"]["id"]) == 32  # generated
+	assert naming.strip_legacy_options(options) == {"sample_interval": 30}
+
+
+def test_price_title_formats_sign():
+	assert naming.price_title("Nordpool", 0.25) == "Nordpool + 0.25"
+	assert naming.price_title("Nordpool", -0.5) == "Nordpool - 0.5"
+	assert naming.price_title("Nordpool", 0) == "Nordpool + 0"
 
 
 @pytest.mark.parametrize(

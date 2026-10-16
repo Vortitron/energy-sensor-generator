@@ -3,120 +3,192 @@
     "step": {
       "user": {
         "title": "Energy Sensor Generator",
-        "description": "Creates kWh energy sensors from your power sensors. After setup, open **Configure** to pick which sensors to track.",
+        "description": "Creates kWh energy sensors from power sensors. {count} power sensors (W / kW) were found. Pick the ones to track now; you can add more, plus constant loads and price add-ons, from the integration page later.",
         "data": {
-          "sample_interval": "Sampling interval",
-          "debug_logging": "Enable debug logging"
+          "power_sensors": "Power sensors",
+          "periods": "Period totals"
         },
         "data_description": {
-          "sample_interval": "How often energy is calculated. 60 seconds is a good default.",
-          "debug_logging": "Writes detailed calculation logs. Turn this off once you are done troubleshooting."
+          "power_sensors": "Search by name. Only sensors that report power are listed.",
+          "periods": "Daily / weekly / monthly / annual sensors that reset automatically."
         }
       }
     },
     "abort": {
       "already_configured": "Energy Sensor Generator is already configured",
-      "single_instance_allowed": "Energy Sensor Generator is already configured. Use Configure on the existing entry."
+      "single_instance_allowed": "Energy Sensor Generator is already configured. Use Add energy sensor on the existing entry.",
+      "already_in_progress": "Setup is already open in another window. Finish or close it first."
+    }
+  },
+  "config_subentries": {
+    "power_sensor": {
+      "entry_type": "Energy sensor",
+      "initiate_flow": {
+        "user": "Add energy sensor",
+        "reconfigure": "Edit energy sensor"
+      },
+      "step": {
+        "user": {
+          "title": "Add energy sensor",
+          "description": "Builds a kWh sensor from a power sensor. {count} power sensors are not tracked yet.",
+          "data": {
+            "source_entity_id": "Power sensor",
+            "periods": "Period totals"
+          },
+          "data_description": {
+            "source_entity_id": "Search by name. Only sensors that report power (W / kW) and are not already tracked are listed.",
+            "periods": "Daily / weekly / monthly / annual sensors that reset automatically."
+          }
+        },
+        "reconfigure": {
+          "title": "Edit energy sensor",
+          "description": "Source: {source}. To track a different sensor, delete this one and add a new one; its total is kept.",
+          "data": {
+            "name": "Name",
+            "periods": "Period totals"
+          },
+          "data_description": {
+            "name": "Leave empty to use the power sensor's name.",
+            "periods": "Unticking a period removes that sensor; its stored total comes back if you tick it again."
+          }
+        }
+      },
+      "error": {
+        "no_sensor_selected": "Pick a power sensor.",
+        "already_configured": "That sensor is already tracked."
+      },
+      "abort": {
+        "no_power_sensors": "No untracked power sensors were found. A sensor must report power in W or kW to be listed.",
+        "already_configured": "That sensor is already tracked.",
+        "reconfigure_successful": "Saved."
+      }
+    },
+    "constant_load": {
+      "entry_type": "Constant load",
+      "initiate_flow": {
+        "user": "Add constant load",
+        "reconfigure": "Edit constant load"
+      },
+      "step": {
+        "user": {
+          "title": "Add constant load",
+          "description": "For a device without a power meter: energy is counted at the rated wattage while the switch is on.",
+          "data": {
+            "switch_entity_id": "Switch",
+            "power_w": "Rated power",
+            "name": "Name",
+            "periods": "Period totals"
+          },
+          "data_description": {
+            "switch_entity_id": "The switch or input boolean that turns the load on.",
+            "power_w": "Wattage while the switch is on (enter 3000 for 3 kW).",
+            "name": "Optional. Leave empty to use the switch's name.",
+            "periods": "Daily / weekly / monthly / annual sensors that reset automatically."
+          }
+        },
+        "reconfigure": {
+          "title": "Edit constant load",
+          "description": "Switch: {source}",
+          "data": {
+            "power_w": "Rated power",
+            "name": "Name",
+            "periods": "Period totals"
+          },
+          "data_description": {
+            "power_w": "Wattage while the switch is on.",
+            "name": "Leave empty to use the switch's name.",
+            "periods": "Unticking a period removes that sensor; its stored total comes back if you tick it again."
+          }
+        }
+      },
+      "error": {
+        "no_switch_selected": "Pick a switch.",
+        "already_configured": "That switch already has a constant load.",
+        "invalid_power": "Enter a positive wattage."
+      },
+      "abort": {
+        "already_configured": "That switch already has a constant load.",
+        "reconfigure_successful": "Saved."
+      }
+    },
+    "price_adjust": {
+      "entry_type": "Price add-on",
+      "initiate_flow": {
+        "user": "Add price add-on",
+        "reconfigure": "Edit price add-on"
+      },
+      "step": {
+        "user": {
+          "title": "Add price add-on",
+          "description": "Mirrors a price sensor (for example Nordpool) and adds a fixed amount, such as transmission fees or tax.",
+          "data": {
+            "source_entity_id": "Price sensor",
+            "add_amount": "Amount to add",
+            "name": "Name"
+          },
+          "data_description": {
+            "source_entity_id": "Sensors priced per kWh or MWh are listed. If none are found, every sensor is listed.",
+            "add_amount": "In the same unit as the source sensor. Negative values subtract.",
+            "name": "Optional. Leave empty to name it after the source and amount, for example \"Nordpool + 0.25\"."
+          }
+        },
+        "reconfigure": {
+          "title": "Edit price add-on",
+          "description": "Source: {source}",
+          "data": {
+            "add_amount": "Amount to add",
+            "name": "Name"
+          },
+          "data_description": {
+            "add_amount": "In the same unit as the source sensor. Negative values subtract.",
+            "name": "Leave empty to name it after the source and amount."
+          }
+        }
+      },
+      "error": {
+        "no_sensor_selected": "Pick a price sensor.",
+        "already_configured": "That sensor already has a price add-on."
+      },
+      "abort": {
+        "already_configured": "That sensor already has a price add-on.",
+        "reconfigure_successful": "Saved."
+      }
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Energy Sensor Generator",
-        "description": "{overview}{pending}\n\nChoose a section to edit, then Save when you are done.",
-        "menu_options": {
-          "sensors": "Power sensors",
-          "constant_devices": "Constant power devices",
-          "price_adjustments": "Electricity price add-ons",
-          "advanced": "Advanced",
-          "save": "Save and apply"
-        }
-      },
-      "save": {
-        "title": "Save"
-      },
-      "sensors": {
-        "title": "Power sensors",
-        "description": "{count} power sensors found. Tick the ones that should get kWh energy sensors.",
-        "data": {
-          "selected_power_sensors": "Power sensors",
-          "custom_power_sensor": "Add a sensor that was not detected",
-          "period_sensors": "Also create period totals"
-        },
-        "data_description": {
-          "selected_power_sensors": "Sorted by device. Meters with several sensors show as Device › L1, Device › L2.",
-          "custom_power_sensor": "Use this for a power entity that was not listed above.",
-          "period_sensors": "Daily / weekly / monthly / annual sensors that reset automatically."
-        }
-      },
-      "advanced": {
-        "title": "Advanced",
-        "description": "Calculation and diagnostic settings. Defaults are suitable for most installs.",
+        "title": "Settings",
+        "description": "Calculation and diagnostic settings for every generated sensor. Defaults suit most installs. Sensors are added from the integration page, not here.",
         "data": {
           "sample_interval": "Sampling interval",
-          "debug_logging": "Enable debug logging",
-          "use_statistical_calculation": "Use statistical calculation",
-          "force_statistical_only": "Statistical calculation only",
-          "stat_initial_lookback_minutes": "Initial statistical lookback",
+          "use_statistical_calculation": "Use recorder history",
+          "force_statistical_only": "Recorder history only",
+          "stat_initial_lookback_minutes": "Initial lookback",
           "max_energy_per_hour": "Maximum energy per hour",
-          "create_synthetic_grid_total": "Create synthetic grid total"
+          "create_synthetic_grid_total": "Create a grid total sensor",
+          "debug_logging": "Debug logging"
         },
         "data_description": {
-          "sample_interval": "How often energy is calculated. Shorter is slightly more accurate and uses more resources.",
-          "debug_logging": "Writes detailed calculation logs. Turn off afterwards to avoid log spam.",
-          "use_statistical_calculation": "Uses recorder history (same approach as the Energy dashboard) instead of point sampling.",
-          "force_statistical_only": "Skip point sampling even when history is briefly unavailable.",
+          "sample_interval": "How often energy is calculated. 60 seconds suits most installs.",
+          "use_statistical_calculation": "Integrate recorder history (the same approach as the Energy dashboard) instead of sampling live values.",
+          "force_statistical_only": "Never fall back to live sampling, even while history is briefly unavailable.",
           "stat_initial_lookback_minutes": "How far back to look the first time a new sensor is created.",
-          "max_energy_per_hour": "Reject a reading larger than this (0 disables the limit).",
-          "create_synthetic_grid_total": "Optional sum of all generated main energy sensors."
-        }
-      },
-      "constant_devices": {
-        "title": "Constant power devices",
-        "description": "Pair an on/off switch with a fixed wattage.\n\nCurrent entries:\n{constant_summary}\n\n{constant_status}",
-        "data": {
-          "constant_device_action": "Action",
-          "constant_device_switch": "Switch or helper",
-          "constant_device_power": "Rated power",
-          "constant_device_name": "Friendly name (optional)",
-          "constant_device_remove": "Device to remove"
-        },
-        "data_description": {
-          "constant_device_action": "Pick a switch and wattage and submit to add it. Submit without a switch to go back to the menu.",
-          "constant_device_switch": "The switch or input boolean that turns the load on.",
-          "constant_device_power": "Rated wattage while the switch is on (enter 3000 for 3 kW).",
-          "constant_device_name": "Override the name shown on the generated energy sensor.",
-          "constant_device_remove": "Only needed when Action is Remove device."
-        }
-      },
-      "price_adjustments": {
-        "title": "Electricity price add-ons",
-        "description": "Mirror a price sensor (for example Nordpool) and add a fixed amount.\n\nCurrent entries:\n{price_adjust_summary}\n\n{price_adjust_status}",
-        "data": {
-          "price_adjust_action": "Action",
-          "price_adjust_source": "Source price sensor",
-          "price_adjust_add_amount": "Fixed add-on amount",
-          "price_adjust_name": "Friendly name (optional)",
-          "price_adjust_remove": "Entry to remove"
-        },
-        "data_description": {
-          "price_adjust_action": "Pick a source sensor and amount and submit to add it. Submit without a source to go back to the menu.",
-          "price_adjust_source": "The sensor that reports the spot or base price.",
-          "price_adjust_add_amount": "Transmission, tax, or other adder in the same unit as the source.",
-          "price_adjust_name": "Override the name shown on the adjusted price sensor.",
-          "price_adjust_remove": "Only needed when Action is Remove adjustment."
+          "max_energy_per_hour": "Reject any reading larger than this. 0 disables the limit.",
+          "create_synthetic_grid_total": "One sensor that sums every generated main energy sensor.",
+          "debug_logging": "Writes detailed calculation logs. Turn off afterwards to avoid log spam."
         }
       }
-    },
-    "error": {
-      "constant_device_missing_fields": "Select a switch and watt value before adding a constant device.",
-      "constant_device_invalid_power": "Enter a positive watt value.",
-      "no_constant_devices": "No constant power devices available to modify.",
-      "constant_device_unknown_action": "Unknown constant device action.",
-      "price_adjust_missing_fields": "Select a source sensor and add-on amount before adding an entry.",
-      "price_adjust_invalid_amount": "Enter a valid number for the add-on amount.",
-      "no_price_adjustments": "No electricity price add-ons available to modify.",
-      "select_entry_to_remove": "Choose the entry to remove."
+    }
+  },
+  "selector": {
+    "periods": {
+      "options": {
+        "daily": "Daily",
+        "weekly": "Weekly",
+        "monthly": "Monthly",
+        "annual": "Annual"
+      }
     }
   }
 }

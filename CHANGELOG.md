@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.0
+
+Configuration rewrite. The old Configure dialog with one long checkbox list of every power sensor is gone.
+
+**New layout**
+
+- **Each source is its own entry** on the integration page, added with **Add energy sensor**, **Add constant load** or **Add price add-on**. Each one can be edited or deleted on its own.
+- **Searchable picker.** The power sensor field only lists sensors that report W or kW and are not tracked yet. Battery, percent, voltage and already-tracked sensors no longer appear.
+- **Setup picks sensors straight away**, instead of creating an empty entry you then have to configure.
+- **Period totals per source.** Daily / weekly / monthly / annual can now differ per sensor.
+- **Settings** (the gear icon) is a single form for the calculation and diagnostic options.
+- Price add-on picker offers sensors priced per kWh or MWh, falling back to all sensors.
+- Constant-load devices and sources without a device of their own are named after the source, not their internal ID.
+- The empty "Integration" device is removed.
+
+**Fixes**
+
+- **Period totals missed the first reading** after every restart or reload, and stayed at 0 for a source whose total was exactly 0 kWh. They now start from the main sensor's current value.
+- Period sensors use the source's custom name.
+
+**Upgrading**
+
+Existing selections migrate automatically on first start. Unique IDs and storage keys are unchanged, so totals and Energy dashboard history are kept. Requires Home Assistant 2025.3 or later.
+
 ## 0.0.88
 
 - **Back on the Integrations page.** 0.0.86 marked the integration as a *helper*, so Home Assistant listed it under Settings → Devices & services → Helpers instead of Integrations. It is now a regular integration again. Existing setups and sensors are unchanged.

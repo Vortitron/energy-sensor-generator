@@ -4,20 +4,21 @@ Energy Sensor Generator is a Home Assistant custom integration (`custom_componen
 
 ## Layout
 
-- `config_flow.py` — first-time setup (sample interval + debug logging).
-- `options_flow.py` — menu-based configure UI (sensors, constant loads, price add-ons, advanced, save).
-- `sensor_picker.py` — compact labels, device grouping, option merging (no Home Assistant imports).
+- `config_flow.py` — setup (pick power sensors), one subentry flow per source type (power sensor, constant load, price add-on), and the Settings options flow.
+- `naming.py` — subentry → base name / unique ID planning and the version 1 → 2 migration mapping (no Home Assistant imports).
 - `energy_math.py` — left Riemann / held-power / point-sampling maths (unit tested).
 - `sensor.py` / `period_sensors.py` — live entities and interval updates.
 - `utils.py` — debounced Store persistence.
 - `custom_components/energy_sensor_generator/brand/icon.png` — HACS brand asset.
-- `hacs.json` — HACS manifest (name, min HA 2024.11, render README).
+- `hacs.json` — HACS manifest (name, min HA 2025.3, render README).
 
 ## Configure UI
 
-Home Assistant config flows cannot host a custom Lovelace card, so the picker is the native Select selector in **list** mode, grouped by device. Help text lives on each field (`data_description`) rather than a paragraph at the top of the dialog.
+Each source is a config subentry (`power_sensor`, `constant_load`, `price_adjust`), so Home Assistant renders the add buttons and per-source edit/delete on the integration page. Entities are added with `config_subentry_id`, so deleting a subentry removes them. Subentry changes fire the entry's update listener, which reloads the integration.
 
-Edits are held in memory until **Save**. Closing without Save discards them.
+Global settings (sampling, statistical options, spike cap, synthetic grid total, debug logging) are the entry's options.
+
+Config entry version 2 stores sources as subentries. `async_migrate_entry` converts version 1 option lists without changing unique IDs or storage keys.
 
 ## Calculations (checked in 0.0.86)
 

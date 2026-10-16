@@ -3,11 +3,12 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
+from types import MappingProxyType
 
 import voluptuous as vol
 
 from homeassistant.components import persistent_notification
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import EVENT_HOMEASSISTANT_FINAL_WRITE
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -15,15 +16,18 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
-from .const import (
-	CONF_CONSTANT_POWER_DEVICES,
-	CONF_CREATE_SYNTHETIC_GRID_TOTAL,
-	CONF_PRICE_ADJUST_SENSORS,
-	DOMAIN,
-)
-from .entity_helpers import debug_log as _debug_log
+from .const import CONF_CREATE_SYNTHETIC_GRID_TOTAL, DOMAIN
+from .entity_helpers import debug_log as _debug_log, get_friendly_name
 from .hourly_copy_service import copy_from_previous_hour_service
-from .naming import desired_unique_ids, enabled_periods, plan_sources
+from .naming import (
+	PricePlan,
+	SourcePlan,
+	desired_unique_ids,
+	legacy_subentries,
+	plan_price_adjustments,
+	plan_sources,
+	strip_legacy_options,
+)
 from .utils import StorageManager, derive_constant_base_name
 
 _LOGGER = logging.getLogger(__name__)
@@ -76,6 +80,42 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
 	return power_sensors
 
 
+def source_plans(entry: ConfigEntry) -> list[SourcePlan]:
+	"""Power-sensor and constant-load sources configured as subentries."""
+	return plan_sources(entry.subentries.values(), derive_constant_base_name)
+
+
+def price_plans(entry: ConfigEntry) -> list[PricePlan]:
+	"""Price add-ons configured as subentries."""
+	return plan_price_adjustments(entry.subentries.values())
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+	"""Move version 1 option lists (sensors, constant loads, price add-ons) into subentries.
+
+	Entity unique IDs and storage keys do not change, so totals and Energy
+	dashboard history are kept.
+	"""
+	if entry.version > 2:
+		return False
+	if entry.version == 1:
+		legacy = {**entry.data, **entry.options}
+		created = legacy_subentries(legacy, lambda entity_id: get_friendly_name(hass, entity_id))
+		for item in created:
+			hass.config_entries.async_add_subentry(
+				entry,
+				ConfigSubentry(
+					data=MappingProxyType(item["data"]),
+					subentry_type=item["subentry_type"],
+					title=item["title"],
+					unique_id=item["unique_id"],
+				),
+			)
+		hass.config_entries.async_update_entry(entry, options=strip_legacy_options(entry.options), version=2)
+		_LOGGER.info("Migrated %d configured sources to subentries", len(created))
+	return True
+
+
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 	"""Register services once for the integration."""
 	hass.data.setdefault(DOMAIN, {})
@@ -88,17 +128,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 	hass.data.setdefault(DOMAIN, {})
 	storage_manager = StorageManager(hass)
 
-	# Main integration device; sw_version comes from the manifest so it never goes stale
-	from homeassistant.loader import async_get_integration
-	integration = await async_get_integration(hass, DOMAIN)
-	dr.async_get(hass).async_get_or_create(
-		config_entry_id=entry.entry_id,
-		identifiers={(DOMAIN, "main")},
-		name="Energy Sensor Generator",
-		manufacturer="Energy Sensor Generator",
-		model="Integration",
-		sw_version=str(integration.version),
-	)
+	_async_remove_legacy_main_device(hass, entry)
 
 	hass.data[DOMAIN][entry.entry_id] = {
 		"storage_manager": storage_manager,
@@ -117,6 +147,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 	entry.async_on_unload(hass.bus.async_listen(EVENT_HOMEASSISTANT_FINAL_WRITE, _async_final_write))
 	return True
+
+
+def _async_remove_legacy_main_device(hass: HomeAssistant, entry: ConfigEntry) -> None:
+	"""Remove the empty "Integration" device older versions created.
+
+	It never held entities, and on the integration page it showed up as a
+	separate "devices that don't belong to a sub-entry" box.
+	"""
+	device_registry = dr.async_get(hass)
+	entity_registry = er.async_get(hass)
+	for device in dr.async_entries_for_config_entry(device_registry, entry.entry_id):
+		if (DOMAIN, "main") not in device.identifiers:
+			continue
+		if er.async_entries_for_device(entity_registry, device.id, include_disabled_entities=True):
+			continue
+		device_registry.async_remove_device(device.id)
 
 
 async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -154,17 +200,10 @@ def _async_remove_stale_entities(hass: HomeAssistant, entry: ConfigEntry) -> Non
 
 	Stored totals are kept, so re-selecting a sensor later restores its value.
 	"""
-	options = entry.options
-	plans = plan_sources(
-		options.get("selected_power_sensors"),
-		options.get(CONF_CONSTANT_POWER_DEVICES),
-		derive_constant_base_name,
-	)
 	wanted = desired_unique_ids(
-		plans,
-		enabled_periods(options),
-		options.get(CONF_PRICE_ADJUST_SENSORS),
-		bool(options.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)),
+		source_plans(entry),
+		price_plans(entry),
+		bool(entry.options.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False)),
 	)
 	entity_registry = er.async_get(hass)
 	stale = [
@@ -323,7 +362,8 @@ async def debug_sensor_detection_service(hass: HomeAssistant, call: ServiceCall)
 	_LOGGER.info("=== Energy Sensor Generator: sensor detection ===")
 	_LOGGER.info("Detected %d power sensors: %s", len(detected), detected)
 
-	for entity_id in entry.options.get("selected_power_sensors", []) or []:
+	for plan in source_plans(entry):
+		entity_id = plan.source_entity_id
 		state = hass.states.get(entity_id)
 		if state:
 			_LOGGER.info(
