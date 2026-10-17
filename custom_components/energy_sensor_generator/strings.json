@@ -33,11 +33,13 @@
           "description": "Builds a kWh sensor from a power sensor. {count} power sensors are not tracked yet.",
           "data": {
             "source_entity_id": "Power sensor",
-            "periods": "Period totals"
+            "periods": "Period totals",
+            "energy_counter": "Meter energy counter (optional)"
           },
           "data_description": {
             "source_entity_id": "Search by name. Only sensors that report power (W / kW) and are not already tracked are listed.",
-            "periods": "Daily / weekly / monthly / annual sensors that reset automatically."
+            "periods": "Daily / weekly / monthly / annual sensors that reset automatically.",
+            "energy_counter": "The meter's own kWh total, if it has one. Time the power sensor misses (offline, or Home Assistant restarting) is filled from this counter instead of being skipped. Sources sharing one meter, such as its three phases, split the filled energy by their power."
           }
         },
         "reconfigure": {
@@ -45,11 +47,13 @@
           "description": "Source: {source}. To track a different sensor, delete this one and add a new one; its total is kept.",
           "data": {
             "name": "Name",
-            "periods": "Period totals"
+            "periods": "Period totals",
+            "energy_counter": "Meter energy counter (optional)"
           },
           "data_description": {
             "name": "Leave empty to use the power sensor's name.",
-            "periods": "Unticking a period removes that sensor; its stored total comes back if you tick it again."
+            "periods": "Unticking a period removes that sensor; its stored total comes back if you tick it again.",
+            "energy_counter": "The meter's own kWh total, if it has one. Time the power sensor misses (offline, or Home Assistant restarting) is filled from this counter instead of being skipped. Sources sharing one meter, such as its three phases, split the filled energy by their power."
           }
         }
       },

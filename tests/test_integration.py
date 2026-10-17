@@ -772,3 +772,195 @@ async def test_settings_change_still_reloads_everything(hass: HomeAssistant) -> 
 	after = hass.data[DOMAIN][entry.entry_id]["entities"]["a_energy"]
 	assert after is not before
 	assert after.extra_state_attributes["sample_interval"] == 30
+
+
+# --- Gap fill from the meter's own energy counter -------------------------
+
+from homeassistant.core import State
+
+from custom_components.energy_sensor_generator.sensor import EnergySensor
+
+COUNTER = "sensor.meter_import"
+
+
+def _phase_subentry(entity_id: str, counter: str | None = COUNTER) -> ConfigSubentryData:
+	subentry = _power_subentry(entity_id, [])
+	if counter:
+		subentry["data"] = {**subentry["data"], "energy_counter": counter}
+	return subentry
+
+
+async def _setup_meter(hass: HomeAssistant, counter: str | None = COUNTER) -> MockConfigEntry:
+	for phase in ("l1", "l2", "l3"):
+		hass.states.async_set(
+			f"sensor.{phase}_power", "1.0",
+			{"unit_of_measurement": "kW", "device_class": "power", "friendly_name": f"{phase} Power"},
+		)
+	hass.states.async_set(
+		COUNTER, "140.0",
+		{"unit_of_measurement": "kWh", "device_class": "energy", "state_class": "total_increasing"},
+	)
+	return await _setup(hass, subentries=[_phase_subentry(f"sensor.{phase}_power", counter) for phase in ("l1", "l2", "l3")])
+
+
+def _main_sensor(hass: HomeAssistant, entry: MockConfigEntry, source: str) -> EnergySensor:
+	entities = hass.data[DOMAIN][entry.entry_id]["entities"].values()
+	return next(e for e in entities if isinstance(e, EnergySensor) and e._source_sensor == source)
+
+
+def _history(points: dict[str, list[tuple[str, object]]]):
+	"""Stub for EnergySensor._async_history from {entity_id: [(state, when), ...]}."""
+	async def _fake(self, entity_ids, start, end):
+		return {
+			entity_id: [State(entity_id, value, {"unit_of_measurement": "kWh"}, last_updated=when) for value, when in rows]
+			for entity_id, rows in points.items()
+			if entity_id in entity_ids
+		}
+	return _fake
+
+
+async def test_gap_fill_splits_a_shared_meter_counter_by_power(hass: HomeAssistant, monkeypatch) -> None:
+	entry = await _setup_meter(hass)
+	now = dt_util.utcnow()
+	gap_start, gap_end = now - timedelta(hours=20), now - timedelta(minutes=10)
+	before, after = gap_start - timedelta(minutes=1), gap_end + timedelta(minutes=1)
+	monkeypatch.setattr(EnergySensor, "_async_history", _history({
+		COUNTER: [("100.0", before), ("unavailable", gap_start + timedelta(minutes=5)), ("140.0", after)],
+		"sensor.l1_power": [("1.0", before), ("1.0", after)],
+		"sensor.l2_power": [("2.0", before), ("2.0", after)],
+		"sensor.l3_power": [("1.0", before), ("1.0", after)],
+	}))
+
+	filled = {}
+	for phase in ("l1", "l2", "l3"):
+		sensor = _main_sensor(hass, entry, f"sensor.{phase}_power")
+		assert sensor._energy_counter == COUNTER
+		start_total = sensor.total
+		sensor._gap_start, sensor._gap_end = gap_start, gap_end
+		await sensor._async_fill_gap(now, {})
+		filled[phase] = sensor.total - start_total
+		assert sensor._gap_start is None and sensor._gap_end is None
+		assert sensor.extra_state_attributes["last_gap_fill_kwh"] == pytest.approx(filled[phase])
+
+	# 40 kWh measured by the meter, split 1 : 2 : 1 by phase power
+	assert filled == pytest.approx({"l1": 10.0, "l2": 20.0, "l3": 10.0})
+
+
+async def test_gap_fill_waits_for_the_counter_to_settle(hass: HomeAssistant, monkeypatch) -> None:
+	entry = await _setup_meter(hass)
+	sensor = _main_sensor(hass, entry, "sensor.l1_power")
+	now = dt_util.utcnow()
+	gap_start, gap_end = now - timedelta(hours=2), now - timedelta(minutes=1)
+	monkeypatch.setattr(EnergySensor, "_async_history", _history({
+		COUNTER: [("100.0", gap_start - timedelta(minutes=1))],
+	}))
+	start_total = sensor.total
+	sensor._gap_start, sensor._gap_end = gap_start, gap_end
+
+	# Nothing recorded since the gap yet: keep waiting
+	await sensor._async_fill_gap(now, {})
+	assert sensor.total == start_total
+	assert sensor._gap_start == gap_start
+
+	# After the settle time the counter's current value (140) is trusted.
+	# Every phase reads 1 kW, so this one takes a third.
+	await sensor._async_fill_gap(now + timedelta(minutes=10), {})
+	assert sensor.total - start_total == pytest.approx(40.0 / 3)
+	assert sensor._gap_start is None
+
+
+async def test_gap_fill_skips_a_counter_that_went_backwards(hass: HomeAssistant, monkeypatch) -> None:
+	entry = await _setup_meter(hass)
+	sensor = _main_sensor(hass, entry, "sensor.l1_power")
+	now = dt_util.utcnow()
+	gap_start, gap_end = now - timedelta(hours=2), now - timedelta(minutes=10)
+	monkeypatch.setattr(EnergySensor, "_async_history", _history({
+		COUNTER: [("100.0", gap_start - timedelta(minutes=1)), ("3.0", gap_end + timedelta(minutes=1))],
+	}))
+	start_total = sensor.total
+	sensor._gap_start, sensor._gap_end = gap_start, gap_end
+	await sensor._async_fill_gap(now, {})
+	assert sensor.total == start_total
+	assert sensor._gap_start is None
+
+
+async def test_gap_fill_respects_the_spike_cap(hass: HomeAssistant, monkeypatch) -> None:
+	entry = await _setup_meter(hass)
+	sensor = _main_sensor(hass, entry, "sensor.l1_power")
+	now = dt_util.utcnow()
+	gap_start, gap_end = now - timedelta(hours=1), now - timedelta(minutes=10)
+	monkeypatch.setattr(EnergySensor, "_async_history", _history({
+		COUNTER: [("100.0", gap_start - timedelta(minutes=1)), ("400.0", gap_end + timedelta(minutes=1))],
+	}))
+	start_total = sensor.total
+	sensor._gap_start, sensor._gap_end = gap_start, gap_end
+	await sensor._async_fill_gap(now, {"max_energy_per_hour": 10})
+	assert sensor.total == start_total
+
+
+async def test_restart_gap_is_remembered_only_with_a_counter(hass: HomeAssistant) -> None:
+	entry = await _setup_meter(hass)
+	plain = await _setup_meter_plain_source(hass, entry)
+	now = dt_util.utcnow()
+	anchor = now - timedelta(hours=3)
+
+	for sensor in (_main_sensor(hass, entry, "sensor.l1_power"), plain):
+		start_total = sensor.total
+		sensor._last_statistical_calculation = anchor
+		sensor._last_update = anchor
+		sensor._last_power = 1.0
+		await sensor._handle_interval_update(now)
+		# The downtime itself is never bridged with held power
+		assert sensor.total == start_total
+
+	counted = _main_sensor(hass, entry, "sensor.l1_power")
+	assert counted._gap_start == anchor
+	assert counted._gap_end == now
+	assert plain._gap_start is None
+
+
+async def _setup_meter_plain_source(hass: HomeAssistant, entry: MockConfigEntry) -> EnergySensor:
+	"""Add a source without a counter to an existing entry and return its sensor."""
+	_power(hass, "sensor.plug_power", 50, "Plug Power")
+	hass.config_entries.async_add_subentry(entry, config_entries.ConfigSubentry(**_power_subentry("sensor.plug_power", [])))
+	await hass.async_block_till_done()
+	return _main_sensor(hass, entry, "sensor.plug_power")
+
+
+async def test_counter_is_set_and_cleared_from_the_edit_form(hass: HomeAssistant) -> None:
+	entry = await _setup_meter(hass, counter=None)
+	subentry = _subentry(entry, SUBENTRY_POWER_SENSOR, "sensor.l1_power")
+	assert _main_sensor(hass, entry, "sensor.l1_power")._energy_counter is None
+
+	async def _edit(values: dict) -> None:
+		result = await hass.config_entries.subentries.async_init(
+			(entry.entry_id, SUBENTRY_POWER_SENSOR),
+			context={"source": config_entries.SOURCE_RECONFIGURE, "subentry_id": subentry.subentry_id},
+		)
+		result = await hass.config_entries.subentries.async_configure(result["flow_id"], values)
+		assert result["reason"] == "reconfigure_successful"
+		await hass.async_block_till_done()
+
+	await _edit({"name": "", "periods": [], "energy_counter": COUNTER})
+	assert entry.subentries[subentry.subentry_id].data["energy_counter"] == COUNTER
+	assert _main_sensor(hass, entry, "sensor.l1_power")._energy_counter == COUNTER
+	# Only the edited source was rebuilt
+	assert _main_sensor(hass, entry, "sensor.l2_power")._energy_counter is None
+
+	await _edit({"name": "", "periods": []})
+	assert _main_sensor(hass, entry, "sensor.l1_power")._energy_counter is None
+
+
+async def test_add_flow_stores_the_counter(hass: HomeAssistant) -> None:
+	entry = await _setup_meter(hass)
+	_power(hass, "sensor.extra_power", 0, "Extra Power")
+	result = await hass.config_entries.subentries.async_init(
+		(entry.entry_id, SUBENTRY_POWER_SENSOR), context={"source": config_entries.SOURCE_USER}
+	)
+	result = await hass.config_entries.subentries.async_configure(
+		result["flow_id"], {"source_entity_id": "sensor.extra_power", "periods": [], "energy_counter": COUNTER}
+	)
+	assert result["type"] is FlowResultType.CREATE_ENTRY
+	await hass.async_block_till_done()
+	assert _subentry(entry, SUBENTRY_POWER_SENSOR, "sensor.extra_power").data["energy_counter"] == COUNTER
+	assert _main_sensor(hass, entry, "sensor.extra_power")._energy_counter == COUNTER

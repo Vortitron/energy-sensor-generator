@@ -44,6 +44,13 @@ from .energy_math import (
 	MIN_STATISTICAL_WINDOW_SECONDS,
 	conversion_factor_from_unit,
 	point_sampling_window_energy_kwh,
+	GAP_FILL_LOOKBACK_SECONDS,
+	GAP_FILL_GIVE_UP_SECONDS,
+	GAP_FILL_SETTLE_SECONDS,
+	last_value_at_or_before,
+	first_value_at_or_after,
+	power_share,
+	counter_gap_fill_kwh,
 )
 from .price_adjustment import compute_adjusted_value, is_price_attribute_key, adjust_attribute_value
 from .entity_helpers import (
@@ -86,6 +93,32 @@ def _is_energy_source(state) -> bool:
 	"""True when a state belongs to an energy (kWh) sensor rather than a power sensor."""
 	unit = state.attributes.get("unit_of_measurement") or ""
 	return unit.lower() == "kwh" or state.attributes.get("device_class") == "energy"
+
+
+def _parse_stored_datetime(value) -> datetime | None:
+	if not value:
+		return None
+	try:
+		return dt_util.as_utc(datetime.fromisoformat(value))
+	except (ValueError, TypeError):
+		return None
+
+
+def _energy_to_kwh_factor(state) -> float:
+	"""Multiplier taking an energy state's unit to kWh."""
+	unit = str(state.attributes.get("unit_of_measurement") or "").strip().lower()
+	return {"wh": 0.001, "mwh": 1000.0}.get(unit, 1.0)
+
+
+def _numeric_samples(states, factor_for) -> list[tuple[float, datetime]]:
+	"""(value, last_updated) for the numeric states, scaled by factor_for(state)."""
+	samples = []
+	for state in states:
+		try:
+			samples.append((float(state.state) * factor_for(state), state.last_updated))
+		except (ValueError, TypeError, AttributeError):
+			continue
+	return samples
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
@@ -192,6 +225,7 @@ def _build_batches(hass: HomeAssistant, entry: ConfigEntry, subentry_ids: set[st
 			device_info,
 			plan.name_override,
 			plan.constant_config,
+			energy_counter=plan.energy_counter,
 		)
 		batch = [main_sensor]
 		for period in plan.periods:
@@ -328,9 +362,16 @@ class PriceAdjustedSensor(SensorEntity):
 class EnergySensor(SensorEntity, RestoreEntity):
 	"""Custom sensor to calculate kWh from power (Watts)."""
 
-	def __init__(self, hass, base_name, source_sensor, storage_path, device_info=None, friendly_name_override=None, constant_config=None):
+	def __init__(self, hass, base_name, source_sensor, storage_path, device_info=None, friendly_name_override=None, constant_config=None, energy_counter=None):
 		"""Initialize the sensor."""
 		self._hass = hass
+		# The meter's own kWh counter; when set, time the power sensor missed
+		# (offline, or Home Assistant down) is filled from the counter's delta.
+		self._energy_counter = energy_counter if constant_config is None else None
+		self._gap_start = None  # last moment the total was known to be complete
+		self._gap_end = None  # where calculation resumed after the gap
+		self._last_gap_fill_kwh = None
+		self._last_gap_fill_at = None
 		self._base_name = base_name
 		self._source_sensor = source_sensor
 		# Backwards compat: storage_path param may be Path; but prefer StorageManager
@@ -626,6 +667,9 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			last_power = state_data.get("last_power")
 			last_update = state_data.get("last_update")
 			last_statistical_calculation = state_data.get("last_statistical_calculation")
+			if self._energy_counter:
+				self._gap_start = _parse_stored_datetime(state_data.get("gap_start"))
+				self._gap_end = _parse_stored_datetime(state_data.get("gap_end"))
 			stored_conversion_factor = state_data.get("conversion_factor")
 			
 			# Determine current conversion factor
@@ -673,7 +717,9 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			"last_power": self._last_power,
 			"last_update": self._last_update.isoformat() if self._last_update else None,
 			"last_statistical_calculation": self._last_statistical_calculation.isoformat() if self._last_statistical_calculation else None,
-			"conversion_factor": self._power_to_kw_factor
+			"conversion_factor": self._power_to_kw_factor,
+			"gap_start": self._gap_start.isoformat() if self._gap_start else None,
+			"gap_end": self._gap_end.isoformat() if self._gap_end else None,
 		}
 		await _persist_storage_key(self._hass, self._storage_manager, self._storage_key, payload, self._attr_name)
 
@@ -847,6 +893,7 @@ class EnergySensor(SensorEntity, RestoreEntity):
 								self._attr_name,
 								gap_seconds,
 							)
+							self._note_gap(anchor, now)
 							self._last_statistical_calculation = now
 						else:
 							_debug_log(self.hass, f"Incremental statistical calculation: {anchor} to {now}")
@@ -940,6 +987,7 @@ class EnergySensor(SensorEntity, RestoreEntity):
 				)
 				if sampled is None:
 					if self._last_power is not None and window_seconds > max_gap_seconds:
+						self._note_gap(self._last_update, now)
 						_LOGGER.info(
 							f"Skipping point sampling for {self._attr_name}: "
 							f"{window_seconds:.0f}s gap since last update (likely restart/offline). "
@@ -974,6 +1022,9 @@ class EnergySensor(SensorEntity, RestoreEntity):
 						self._first_calculation_logged = True
 					_debug_log(self.hass, f"{method}: {self._attr_name} | Energy added: {energy_kwh:.8f}kWh | Total: {self._state:.4f}kWh | Current power: {power:.2f}{unit_display}")
 			
+			if self._energy_counter and self._gap_start is not None and self._gap_end is not None:
+				await self._async_fill_gap(now, config_options)
+
 			# Always resync tracking and persist, regardless of method used.
 			self._last_power = power
 			self._last_update = now
@@ -984,6 +1035,130 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			_LOGGER.error(f"Unexpected error in interval update for {self._attr_name}: {e}", exc_info=True)
 		finally:
 			self._calculating_energy = False
+
+	def _note_gap(self, covered_until, resumed_at) -> None:
+		"""Remember time the total missed, so the meter counter can fill it later."""
+		if not self._energy_counter or covered_until is None:
+			return
+		if self._gap_start is None:
+			self._gap_start = dt_util.as_utc(covered_until)
+		self._gap_end = dt_util.as_utc(resumed_at)
+
+	def _counter_siblings(self) -> list["EnergySensor"]:
+		"""Sources (this one included) that share this sensor's meter counter."""
+		siblings = [self]
+		for entry_data in (self._hass.data.get(DOMAIN) or {}).values():
+			if not isinstance(entry_data, dict):
+				continue
+			for entity in (entry_data.get("entities") or {}).values():
+				if (
+					entity is not self
+					and isinstance(entity, EnergySensor)
+					and entity._energy_counter == self._energy_counter
+				):
+					siblings.append(entity)
+		return siblings
+
+	async def _async_history(self, entity_ids, start, end) -> dict | None:
+		"""Recorded states of entity_ids between start and end, or None if unavailable."""
+		if not STATISTICS_AVAILABLE:
+			return None
+
+		def _history():
+			from homeassistant.components.recorder import history
+			return history.get_significant_states(
+				self._hass, start, end, entity_ids=list(entity_ids),
+				minimal_response=False, significant_changes_only=False,
+			)
+
+		try:
+			recorder_instance = recorder.get_instance(self._hass)
+			return await recorder_instance.async_add_executor_job(_history) or {}
+		except Exception as err:
+			_debug_log(self._hass, f"History lookup failed for {self._attr_name}: {err}")
+			return None
+
+	async def _async_fill_gap(self, now, config_options) -> None:
+		"""Credit a missed period from the meter's own counter.
+
+		The counter's rise between the last reading before the gap and the
+		first reading after it is what the meter really measured. Sources
+		sharing one counter (e.g. the phases of a P1 meter) each take a share
+		in proportion to their power either side of the gap.
+		"""
+		gap_start, gap_end = self._gap_start, self._gap_end
+		if (now - gap_end).total_seconds() > GAP_FILL_GIVE_UP_SECONDS:
+			_LOGGER.warning(
+				"%s: no reading from %s after the gap that started %s; that period stays uncounted",
+				self._attr_name, self._energy_counter, gap_start.isoformat(),
+			)
+			self._gap_start = self._gap_end = None
+			return
+		siblings = self._counter_siblings()
+		entity_ids = [self._energy_counter, *(sibling._source_sensor for sibling in siblings)]
+		states = await self._async_history(
+			entity_ids, gap_start - timedelta(seconds=GAP_FILL_LOOKBACK_SECONDS), now
+		)
+		if states is None:
+			return
+
+		counter_samples = _numeric_samples((states or {}).get(self._energy_counter, []), _energy_to_kwh_factor)
+		counter_before = last_value_at_or_before(counter_samples, gap_start)
+		counter_after = first_value_at_or_after(counter_samples, gap_end)
+		if counter_after is None:
+			# Nothing recorded since the gap: the counter has either not caught
+			# up yet, or not changed. Give it a few minutes, then trust its
+			# current value.
+			if (now - gap_end).total_seconds() < GAP_FILL_SETTLE_SECONDS:
+				return
+			current = self._hass.states.get(self._energy_counter)
+			if current is None:
+				return
+			current_samples = _numeric_samples([current], _energy_to_kwh_factor)
+			if not current_samples:
+				return
+			counter_after = current_samples[0][0]
+
+		def _boundary_kw(sibling) -> float | None:
+			factor = sibling._power_to_kw_factor or 1000
+			samples = _numeric_samples((states or {}).get(sibling._source_sensor, []), lambda _state: 1.0 / factor)
+			readings = [
+				value for value in (
+					last_value_at_or_before(samples, gap_start),
+					first_value_at_or_after(samples, gap_end),
+				) if value is not None
+			]
+			return sum(readings) / len(readings) if readings else None
+
+		powers = [_boundary_kw(sibling) for sibling in siblings]
+		share = power_share(powers[0], powers)
+		fill_kwh = counter_gap_fill_kwh(counter_before, counter_after, share)
+		self._gap_start = self._gap_end = None
+
+		if fill_kwh is None:
+			_LOGGER.info(
+				"%s: could not fill the gap %s - %s from %s (missing or decreasing readings)",
+				self._attr_name, gap_start.isoformat(), gap_end.isoformat(), self._energy_counter,
+			)
+			return
+
+		gap_hours = max((gap_end - gap_start).total_seconds(), 1.0) / 3600
+		max_energy_per_hour = config_options.get(CONF_MAX_ENERGY_PER_HOUR, 0)
+		if max_energy_per_hour > 0 and fill_kwh > max_energy_per_hour * gap_hours:
+			_LOGGER.warning(
+				"SPIKE DETECTED in %s: gap fill of %.4f kWh over %.2f hours exceeds %s kWh/h and was REJECTED",
+				self._attr_name, fill_kwh, gap_hours, max_energy_per_hour,
+			)
+			return
+
+		self._state += fill_kwh
+		self._last_gap_fill_kwh = fill_kwh
+		self._last_gap_fill_at = now
+		_LOGGER.info(
+			"%s: filled %.4f kWh for %s - %s from %s (share %.2f of %d sources)",
+			self._attr_name, fill_kwh, gap_start.isoformat(), gap_end.isoformat(),
+			self._energy_counter, share, len(siblings),
+		)
 
 	async def _handle_midnight_update(self, now):
 		"""Handle midnight reset for daily energy tracking."""
@@ -1116,6 +1291,13 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			attrs["source_unit_of_measurement"] = source_state.attributes.get("unit_of_measurement", "")
 		
 		attrs["sample_interval"] = config_options.get("sample_interval")
+		if self._energy_counter:
+			attrs["energy_counter"] = self._energy_counter
+			if self._gap_start is not None:
+				attrs["gap_pending_since"] = self._gap_start.isoformat()
+			if self._last_gap_fill_kwh is not None:
+				attrs["last_gap_fill_kwh"] = round(self._last_gap_fill_kwh, 4)
+				attrs["last_gap_fill_at"] = self._last_gap_fill_at.isoformat()
 		return attrs
 
 	def safe_write_ha_state(self):

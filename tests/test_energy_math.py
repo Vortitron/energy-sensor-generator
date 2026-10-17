@@ -177,3 +177,49 @@ class TestPointSamplingWindow:
 	def test_kw_source(self):
 		result = point_sampling_window_energy_kwh(0.0, 2.0, 3600.0, 1.0, 7200.0)
 		assert result == pytest.approx(2.0)
+
+
+last_value_at_or_before = _energy_math.last_value_at_or_before
+first_value_at_or_after = _energy_math.first_value_at_or_after
+power_share = _energy_math.power_share
+counter_gap_fill_kwh = _energy_math.counter_gap_fill_kwh
+
+
+class TestGapFillHelpers:
+	SAMPLES = [(10.0, _ts(0)), (11.0, _ts(60)), (15.0, _ts(3600))]
+
+	def test_last_value_at_or_before(self):
+		assert last_value_at_or_before(self.SAMPLES, _ts(59)) == 10.0
+		assert last_value_at_or_before(self.SAMPLES, _ts(60)) == 11.0
+		assert last_value_at_or_before(self.SAMPLES, _ts(-1)) is None
+
+	def test_first_value_at_or_after(self):
+		assert first_value_at_or_after(self.SAMPLES, _ts(61)) == 15.0
+		assert first_value_at_or_after(self.SAMPLES, _ts(60)) == 11.0
+		assert first_value_at_or_after(self.SAMPLES, _ts(3601)) is None
+
+	def test_unsorted_samples(self):
+		samples = list(reversed(self.SAMPLES))
+		assert last_value_at_or_before(samples, _ts(100)) == 11.0
+		assert first_value_at_or_after(samples, _ts(1)) == 11.0
+
+	def test_single_source_gets_whole_meter(self):
+		assert power_share(0.0, [0.0]) == 1.0
+		assert power_share(None, [None]) == 1.0
+
+	def test_shared_meter_split_by_power(self):
+		assert power_share(1.0, [1.0, 2.0, 1.0]) == pytest.approx(0.25)
+		assert power_share(None, [None, 2.0]) == 0.0
+
+	def test_shared_meter_split_evenly_without_power(self):
+		assert power_share(0.0, [0.0, 0.0, 0.0]) == pytest.approx(1 / 3)
+		assert power_share(None, [None, None]) == pytest.approx(0.5)
+
+	def test_counter_fill(self):
+		assert counter_gap_fill_kwh(100.0, 141.0, 1.0) == pytest.approx(41.0)
+		assert counter_gap_fill_kwh(100.0, 140.0, 0.25) == pytest.approx(10.0)
+
+	def test_counter_fill_refuses_missing_or_backwards(self):
+		assert counter_gap_fill_kwh(None, 141.0, 1.0) is None
+		assert counter_gap_fill_kwh(100.0, None, 1.0) is None
+		assert counter_gap_fill_kwh(100.0, 90.0, 1.0) is None

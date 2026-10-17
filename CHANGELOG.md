@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- **Gaps can be filled from the meter's own kWh counter.** When a power sensor goes offline, or Home Assistant is down, for more than 10 minutes, that time used to be skipped so no energy was guessed. On a meter reader that drops out for hours, the missing energy adds up (one home lost about 340 kWh over four months). An energy sensor can now name the meter's cumulative kWh counter (**Meter energy counter**, when adding or editing it). The counter's rise across the gap is then credited instead of skipped. Sources sharing one counter, such as the three phases of a P1 meter, split it by their power either side of the gap. The fill is added once the counter reports after the gap, and is checked against the spike limit. Without a counter, gaps are skipped as before.
+
 ## 0.1.1
 
 - **Adding, editing or deleting a source no longer touches the others.** Each change used to reload the whole integration, so every generated sensor went unavailable for a moment. Helpers that sum them (groups) dipped, and the Energy dashboard recorded a meter reset followed by a large spike. Now only the changed source's sensors are rebuilt. Changing Settings still reloads everything, since it affects every sensor.
