@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timedelta
 import homeassistant.util.dt as dt_util
@@ -10,6 +11,7 @@ from homeassistant.const import UnitOfEnergy, STATE_ON, STATE_OFF, STATE_OPEN, S
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change, async_track_time_interval
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers import entity_platform
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.helpers.entity import DeviceInfo
@@ -54,6 +56,7 @@ from .entity_helpers import (
 	persist_storage_key as _persist_storage_key,
 )
 from .period_sensors import PERIOD_SENSOR_CLASSES
+from . import async_remove_stale_entities, async_tidy_devices
 from .naming import (
 	PricePlan,
 	is_main_energy_unique_id,
@@ -93,15 +96,79 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 	Stale registry entries are removed before this runs (see __init__).
 	"""
 	entry_data = hass.data[DOMAIN][entry.entry_id]
-	storage_manager = entry_data["storage_manager"]
-	options = entry.options
+	# Kept so a changed source can be rebuilt alone (async_sync_subentries)
+	entry_data["platform"] = entity_platform.async_get_current_platform()
+	entry_data["by_subentry"] = {}
+	batches = _build_batches(hass, entry, None)
 
-	plans = plan_sources(entry.subentries.values(), derive_constant_base_name)
-	price_plans = plan_price_adjustments(entry.subentries.values())
-	all_entities = []
+	if entry.options.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False):
+		batches.append(([SyntheticGridTotalEnergySensor(hass)], None))
+
+	# Services act on live entities so their in-memory state and storage stay in sync
+	entry_data["entities"] = {}
+	for batch, subentry_id in batches:
+		_track(entry_data, batch, subentry_id)
+
+	_LOGGER.info(
+		"Setting up %d entities for %d sources",
+		len(entry_data["entities"]),
+		len(entry.subentries),
+	)
+	for batch, subentry_id in batches:
+		async_add_entities(batch, config_subentry_id=subentry_id)
+
+
+async def async_sync_subentries(hass: HomeAssistant, entry: ConfigEntry, changed: set[str]) -> None:
+	"""Rebuild the entities of added, edited or deleted sources only.
+
+	Reloading the whole entry made every generated sensor unavailable for a
+	moment; helpers summing them (groups) then dipped, and the Energy dashboard
+	recorded a meter reset followed by a huge spike.
+	"""
+	entry_data = hass.data[DOMAIN][entry.entry_id]
+	async with entry_data.setdefault("sync_lock", asyncio.Lock()):
+		for subentry_id in changed:
+			for unique_id in entry_data["by_subentry"].pop(subentry_id, []):
+				entity = entry_data["entities"].pop(unique_id, None)
+				if entity is not None and entity.hass is not None and entity.entity_id:
+					# Saves its total on the way out; a re-added entity reloads it
+					await entity.async_remove()
+
+		# Entities no source produces any more (deleted source, unticked period)
+		async_remove_stale_entities(hass, entry)
+
+		existing = {subentry_id for subentry_id in changed if subentry_id in entry.subentries}
+		if not existing:
+			return
+		known_device_ids = {
+			device.id for device in dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
+		}
+		platform = entry_data["platform"]
+		for batch, subentry_id in _build_batches(hass, entry, existing):
+			_track(entry_data, batch, subentry_id)
+			await platform.async_add_entities(batch, config_subentry_id=subentry_id)
+		async_tidy_devices(hass, entry, known_device_ids)
+
+
+def _track(entry_data: dict, batch: list, subentry_id: str | None) -> None:
+	for entity in batch:
+		entry_data["entities"][entity.unique_id] = entity
+		if subentry_id is not None:
+			entry_data["by_subentry"].setdefault(subentry_id, []).append(entity.unique_id)
+
+
+def _build_batches(hass: HomeAssistant, entry: ConfigEntry, subentry_ids: set[str] | None) -> list[tuple[list, str | None]]:
+	"""Entities per source, for every source or only those in `subentry_ids`.
+
+	Base names are resolved over all sources so a rebuilt source keeps the
+	same unique IDs as at setup.
+	"""
+	storage_manager = hass.data[DOMAIN][entry.entry_id]["storage_manager"]
 	batches: list[tuple[list, str | None]] = []
 
-	for plan in plans:
+	for plan in plan_sources(entry.subentries.values(), derive_constant_base_name):
+		if subentry_ids is not None and plan.subentry_id not in subentry_ids:
+			continue
 		if not plan.constant_config:
 			source_state = hass.states.get(plan.source_entity_id)
 			if source_state and _is_energy_source(source_state):
@@ -135,7 +202,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 			)
 		batches.append((batch, plan.subentry_id))
 
-	for price in price_plans:
+	for price in plan_price_adjustments(entry.subentries.values()):
+		if subentry_ids is not None and price.subentry_id not in subentry_ids:
+			continue
 		device_info = source_device_info(
 			source_device_key(price.subentry_id, price.unique_id),
 			price.name or f"{get_friendly_name(hass, price.source_entity_id)} (Adjusted)",
@@ -143,23 +212,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 		)
 		batches.append(([PriceAdjustedSensor(hass, price, device_info)], price.subentry_id))
 
-	if options.get(CONF_CREATE_SYNTHETIC_GRID_TOTAL, False):
-		batches.append(([SyntheticGridTotalEnergySensor(hass)], None))
-
-	for batch, _ in batches:
-		all_entities.extend(batch)
-
-	# Services act on live entities so their in-memory state and storage stay in sync
-	entry_data["entities"] = {entity.unique_id: entity for entity in all_entities}
-
-	_LOGGER.info(
-		"Setting up %d entities (%d sources, %d price add-ons)",
-		len(all_entities),
-		len(plans),
-		len(price_plans),
-	)
-	for batch, subentry_id in batches:
-		async_add_entities(batch, config_subentry_id=subentry_id)
+	return batches
 
 
 def source_device_info(key: str, name: str, model: str) -> DeviceInfo:
