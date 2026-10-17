@@ -700,3 +700,75 @@ async def test_sources_sharing_a_meter_device_keep_their_entities(hass: HomeAssi
 	assert all(("esphome", "p1ib") not in device.identifiers for device in ours)
 	assert "different config subentry" not in caplog.text
 	assert "deprecated" not in caplog.text.lower()
+
+
+async def test_changing_one_source_leaves_the_others_running(hass: HomeAssistant) -> None:
+	"""Adding, editing or deleting a source used to reload the whole entry.
+
+	Every sensor went unavailable for a moment, so helpers summing them dipped
+	and the Energy dashboard counted a reset plus a spike.
+	"""
+	from homeassistant.core import callback
+
+	_power(hass, "sensor.a_power", 0, "A Power")
+	_power(hass, "sensor.b_power", 0, "B Power")
+	_power(hass, "sensor.c_power", 0, "C Power")
+	entry = await _setup(hass, ["sensor.a_power", "sensor.b_power"])
+	live = hass.data[DOMAIN][entry.entry_id]["entities"]
+	a_main, a_daily = live["a_energy"], live["a_daily_energy"]
+	await hass.services.async_call(DOMAIN, "adjust_energy", {"entity_id": "sensor.a_energy", "set_to_value": 5}, blocking=True)
+
+	a_states: list[str] = []
+
+	@callback
+	def watch(event) -> None:
+		if event.data["entity_id"].startswith("sensor.a_") and event.data["new_state"] is not None:
+			a_states.append(event.data["new_state"].state)
+		elif event.data["entity_id"].startswith("sensor.a_"):
+			a_states.append("removed")
+
+	hass.bus.async_listen("state_changed", watch)
+
+	# Add a source
+	result = await hass.config_entries.subentries.async_init(
+		(entry.entry_id, SUBENTRY_POWER_SENSOR), context={"source": config_entries.SOURCE_USER}
+	)
+	await hass.config_entries.subentries.async_configure(
+		result["flow_id"], {"source_entity_id": "sensor.c_power", "periods": ["daily"]}
+	)
+	await hass.async_block_till_done()
+	assert _entity_id(hass, "c_energy") is not None
+	assert hass.states.get(_entity_id(hass, "c_energy")) is not None
+
+	# Edit another source's periods and name
+	b = _subentry(entry, SUBENTRY_POWER_SENSOR, "sensor.b_power")
+	hass.config_entries.async_update_subentry(entry, b, title="Bee", data={**b.data, "periods": ["weekly"], "name": "Bee"})
+	await hass.async_block_till_done()
+	assert _entity_id(hass, "b_weekly_energy") is not None
+	assert _entity_id(hass, "b_daily_energy") is None
+	assert hass.states.get(_entity_id(hass, "b_energy")).name == "Bee Energy"
+
+	# Delete the new source
+	hass.config_entries.async_remove_subentry(entry, _subentry(entry, SUBENTRY_POWER_SENSOR, "sensor.c_power").subentry_id)
+	await hass.async_block_till_done()
+	assert _entity_id(hass, "c_energy") is None
+	assert "c_energy" not in hass.data[DOMAIN][entry.entry_id]["entities"]
+
+	# Source A was never touched: same objects, never unavailable or removed
+	assert live["a_energy"] is a_main and live["a_daily_energy"] is a_daily
+	assert all(state not in ("unavailable", "unknown", "removed") for state in a_states), a_states
+	assert float(hass.states.get("sensor.a_energy").state) == pytest.approx(5)
+	assert entry.state is ConfigEntryState.LOADED
+
+
+async def test_settings_change_still_reloads_everything(hass: HomeAssistant) -> None:
+	_power(hass, "sensor.a_power", 0, "A Power")
+	entry = await _setup(hass, ["sensor.a_power"])
+	before = hass.data[DOMAIN][entry.entry_id]["entities"]["a_energy"]
+
+	hass.config_entries.async_update_entry(entry, options={**entry.options, "sample_interval": 30})
+	await hass.async_block_till_done()
+
+	after = hass.data[DOMAIN][entry.entry_id]["entities"]["a_energy"]
+	assert after is not before
+	assert after.extra_state_attributes["sample_interval"] == 30

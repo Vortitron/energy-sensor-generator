@@ -135,15 +135,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 		"entities": {},
 	}
 
-	_async_remove_stale_entities(hass, entry)
+	async_remove_stale_entities(hass, entry)
 	known_device_ids = {
 		device.id for device in dr.async_entries_for_config_entry(dr.async_get(hass), entry.entry_id)
 	}
 	await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-	_async_tidy_devices(hass, entry, known_device_ids)
+	async_tidy_devices(hass, entry, known_device_ids)
 
-	# Options changes (including Save in the Configure dialog) rebuild the entities
-	entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+	# Settings changes rebuild everything; a changed source only its own entities
+	hass.data[DOMAIN][entry.entry_id]["snapshot"] = _entry_snapshot(entry)
+	entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
 
 	# Pending debounced writes must reach disk before Home Assistant exits
 	async def _async_final_write(_event) -> None:
@@ -153,7 +154,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 	return True
 
 
-def _async_tidy_devices(hass: HomeAssistant, entry: ConfigEntry, known_device_ids: set[str]) -> None:
+def async_tidy_devices(hass: HomeAssistant, entry: ConfigEntry, known_device_ids: set[str]) -> None:
 	"""Drop devices left without entities and give new source devices an area.
 
 	Older versions put entities on the source's own device (or a shared
@@ -217,8 +218,42 @@ def _source_area_id(hass: HomeAssistant, entity_id: str | None) -> str | None:
 	return None
 
 
-async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-	await hass.config_entries.async_reload(entry.entry_id)
+def _entry_snapshot(entry: ConfigEntry) -> dict:
+	return {
+		"options": dict(entry.options),
+		"subentries": {
+			subentry_id: (subentry.subentry_type, subentry.title, dict(subentry.data))
+			for subentry_id, subentry in entry.subentries.items()
+		},
+	}
+
+
+async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+	"""Apply a config entry change with as little disruption as possible.
+
+	A settings change (sampling, calculation method, grid total) affects every
+	sensor and reloads the entry. Adding, editing or deleting a source only
+	rebuilds that source's entities: the rest keep running, so helpers that
+	sum them never see them disappear.
+	"""
+	entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+	if not entry_data or "platform" not in entry_data or "snapshot" not in entry_data:
+		await hass.config_entries.async_reload(entry.entry_id)
+		return
+	before = entry_data["snapshot"]
+	after = _entry_snapshot(entry)
+	entry_data["snapshot"] = after
+	if before["options"] != after["options"]:
+		await hass.config_entries.async_reload(entry.entry_id)
+		return
+	changed = {
+		subentry_id
+		for subentry_id in before["subentries"].keys() | after["subentries"].keys()
+		if before["subentries"].get(subentry_id) != after["subentries"].get(subentry_id)
+	}
+	if changed:
+		from .sensor import async_sync_subentries
+		await async_sync_subentries(hass, entry, changed)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -247,7 +282,7 @@ async def async_remove_config_entry_device(hass: HomeAssistant, config_entry: Co
 	return not has_live_entity
 
 
-def _async_remove_stale_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+def async_remove_stale_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
 	"""Remove registry entries the current options no longer produce.
 
 	Stored totals are kept, so re-selecting a sensor later restores its value.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- **Adding, editing or deleting a source no longer touches the others.** Each change used to reload the whole integration, so every generated sensor went unavailable for a moment. Helpers that sum them (groups) dipped, and the Energy dashboard recorded a meter reset followed by a large spike. Now only the changed source's sensors are rebuilt. Changing Settings still reloads everything, since it affects every sensor.
+
 ## 0.1.0
 
 Configuration rewrite. The old Configure dialog with one long checkbox list of every power sensor is gone.
