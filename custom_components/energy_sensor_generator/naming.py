@@ -10,7 +10,7 @@ so they must never change for existing sensors.
 
 Configuration lives in config *subentries* (one per source):
 
-- ``power_sensor``   data: ``source_entity_id``, ``periods``, optional ``name``
+- ``power_sensor``   data: ``source_entity_id``, ``periods``, optional ``name``, ``energy_counter``
 - ``constant_load``  data: ``switch_entity_id``, ``power_w``, ``periods``, optional ``name``
 - ``price_adjust``   data: ``id``, ``source_entity_id``, ``add_amount``, optional ``name``
 """
@@ -135,6 +135,8 @@ class SourcePlan:
 	subentry_id: str | None = None
 	name: str | None = None
 	constant_config: dict | None = field(default=None, hash=False, compare=False)
+	# The meter's own kWh counter, used to fill gaps the power sensor missed
+	energy_counter: str | None = None
 
 	@property
 	def name_override(self) -> str | None:
@@ -207,6 +209,7 @@ def plan_sources(
 				subentry.subentry_id,
 				_clean_name(data.get("name")),
 				constant_config,
+				_clean_name(data.get("energy_counter")) if constant_config is None else None,
 			)
 		)
 

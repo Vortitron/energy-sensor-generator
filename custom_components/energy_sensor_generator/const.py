@@ -23,6 +23,7 @@ CONF_PERIODS = "periods"
 CONF_NAME = "name"
 CONF_ADD_AMOUNT = "add_amount"
 CONF_PRICE_ID = "id"
+CONF_ENERGY_COUNTER = "energy_counter"
 
 # Internal safeguards
 # Maximum gap (seconds) we are willing to bridge with energy calculations.

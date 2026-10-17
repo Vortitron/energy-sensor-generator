@@ -42,7 +42,7 @@ After that, everything lives on the integration page (Settings → Devices & ser
 
 | Button | What it adds |
 | --- | --- |
-| **Add energy sensor** | A kWh sensor for one power sensor, with optional daily / weekly / monthly / annual totals. Only untracked power sensors are offered. |
+| **Add energy sensor** | A kWh sensor for one power sensor, with optional daily / weekly / monthly / annual totals. Only untracked power sensors are offered. Optionally name the meter's own kWh counter to fill gaps (see below). |
 | **Add constant load** | A switch or `input_boolean` plus a rated wattage, for devices without a power meter. |
 | **Add price add-on** | Mirrors a price sensor (for example Nordpool) and adds a fixed amount. Sensors priced per kWh are offered first. |
 
@@ -62,6 +62,8 @@ Power is converted to kW (`W ÷ 1000`, or already kW), then integrated over time
 
 1. **Statistical (default)** — left Riemann sum over recorder history, matching Home Assistant's integration helper, including the final slice of each window. Windows tile, so consecutive intervals neither overlap nor leave a gap.
 2. **Point sampling (fallback)** — the same left Riemann rule from live state changes, plus the held-power tail up to the interval tick. If a source has been offline or Home Assistant was restarting for longer than `max(10 minutes, 3 × sample interval)`, that gap is skipped rather than filled with guessed energy.
+
+**Filling gaps from the meter's counter.** If the power sensor comes from a meter that also reports a cumulative kWh total (for example a P1 / HAN reader), choose that total as the source's *Meter energy counter*. A gap is then filled with the counter's rise across it instead of being skipped. Sources that share one counter, such as a meter's three phases, split it in proportion to their power just before and after the gap. The fill is added once the counter has a reading after the gap, so on the Energy dashboard it appears in that hour rather than spread over the gap.
 
 Constant-power devices use the switch state (`on` / `open` → rated watts, otherwise 0) and point sampling only.
 

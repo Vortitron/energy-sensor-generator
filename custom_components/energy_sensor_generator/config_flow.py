@@ -40,6 +40,7 @@ from .const import (
 	CONF_ADD_AMOUNT,
 	CONF_CREATE_SYNTHETIC_GRID_TOTAL,
 	CONF_DEBUG_LOGGING,
+	CONF_ENERGY_COUNTER,
 	CONF_FORCE_STATISTICAL_ONLY,
 	CONF_MAX_ENERGY_PER_HOUR,
 	CONF_NAME,
@@ -78,6 +79,7 @@ NAME_SELECTOR = TextSelector(TextSelectorConfig(multiline=False))
 POWER_W_SELECTOR = NumberSelector(
 	NumberSelectorConfig(min=1, max=50000, step=1, unit_of_measurement="W", mode=NumberSelectorMode.BOX)
 )
+ENERGY_COUNTER_SELECTOR = EntitySelector(EntitySelectorConfig(domain="sensor", device_class="energy"))
 ADD_AMOUNT_SELECTOR = NumberSelector(
 	NumberSelectorConfig(min=-100, max=100, step="any", mode=NumberSelectorMode.BOX)
 )
@@ -108,12 +110,17 @@ def _configured_entities(entry: ConfigEntry, subentry_type: str, key: str) -> se
 	}
 
 
-def _power_sensor_subentry(hass: HomeAssistant, entity_id: str, periods: Any) -> ConfigSubentryData:
+def _power_sensor_subentry(
+	hass: HomeAssistant, entity_id: str, periods: Any, energy_counter: str | None = None
+) -> ConfigSubentryData:
+	data: dict[str, Any] = {CONF_SOURCE_ENTITY_ID: entity_id, CONF_PERIODS: list(normalise_periods(periods))}
+	if energy_counter:
+		data[CONF_ENERGY_COUNTER] = energy_counter
 	return ConfigSubentryData(
 		subentry_type=SUBENTRY_POWER_SENSOR,
 		title=get_friendly_name(hass, entity_id),
 		unique_id=subentry_unique_id(SUBENTRY_POWER_SENSOR, entity_id),
-		data={CONF_SOURCE_ENTITY_ID: entity_id, CONF_PERIODS: list(normalise_periods(periods))},
+		data=data,
 	)
 
 
@@ -200,7 +207,9 @@ class PowerSensorSubentryFlow(_SubentryFlowBase):
 			elif entity_id in configured:
 				errors[CONF_SOURCE_ENTITY_ID] = "already_configured"
 			else:
-				subentry = _power_sensor_subentry(self.hass, entity_id, user_input.get(CONF_PERIODS))
+				subentry = _power_sensor_subentry(
+					self.hass, entity_id, user_input.get(CONF_PERIODS), user_input.get(CONF_ENERGY_COUNTER)
+				)
 				return self.async_create_entry(
 					title=subentry["title"],
 					data=subentry["data"],
@@ -216,6 +225,7 @@ class PowerSensorSubentryFlow(_SubentryFlowBase):
 					EntitySelectorConfig(include_entities=available)
 				),
 				vol.Optional(CONF_PERIODS, default=list(PERIODS)): PERIOD_SELECTOR,
+				vol.Optional(CONF_ENERGY_COUNTER): ENERGY_COUNTER_SELECTOR,
 			}),
 			errors=errors,
 			description_placeholders={"count": str(len(available))},
@@ -235,9 +245,11 @@ class PowerSensorSubentryFlow(_SubentryFlowBase):
 				data_updates={
 					CONF_PERIODS: list(normalise_periods(user_input.get(CONF_PERIODS))),
 					CONF_NAME: name,
+					CONF_ENERGY_COUNTER: user_input.get(CONF_ENERGY_COUNTER) or "",
 				},
 			)
 
+		counter = subentry.data.get(CONF_ENERGY_COUNTER)
 		return self.async_show_form(
 			step_id="reconfigure",
 			data_schema=vol.Schema({
@@ -245,6 +257,9 @@ class PowerSensorSubentryFlow(_SubentryFlowBase):
 				vol.Optional(
 					CONF_PERIODS, default=list(normalise_periods(subentry.data.get(CONF_PERIODS)))
 				): PERIOD_SELECTOR,
+				vol.Optional(
+					CONF_ENERGY_COUNTER, description={"suggested_value": counter} if counter else None
+				): ENERGY_COUNTER_SELECTOR,
 			}),
 			description_placeholders={"source": source},
 		)

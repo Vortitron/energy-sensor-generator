@@ -161,3 +161,72 @@ def point_sampling_window_energy_kwh(
 		return max(0.0, pending_kwh)
 	tail = held_power_energy_kwh(last_power, delta_seconds, conversion_factor)
 	return max(0.0, pending_kwh + tail)
+
+
+# How far before a gap to look for the last valid reading of the meter counter
+# and of the power sources sharing it.
+GAP_FILL_LOOKBACK_SECONDS = 3600
+
+# A counter that has recorded nothing since a gap is trusted at its current
+# value only after this long, so a meter still catching up is not under-read.
+GAP_FILL_SETTLE_SECONDS = 300
+
+# Give up on a gap whose closing counter reading never arrives.
+GAP_FILL_GIVE_UP_SECONDS = 24 * 3600
+
+
+def last_value_at_or_before(
+	samples: Sequence[Tuple[float, datetime]],
+	when: datetime,
+) -> float | None:
+	"""Value of the latest sample taken at or before ``when``."""
+	found = None
+	for value, timestamp in sorted(samples, key=lambda item: item[1]):
+		if timestamp > when:
+			break
+		found = value
+	return found
+
+
+def first_value_at_or_after(
+	samples: Sequence[Tuple[float, datetime]],
+	when: datetime,
+) -> float | None:
+	"""Value of the earliest sample taken at or after ``when``."""
+	for value, timestamp in sorted(samples, key=lambda item: item[1]):
+		if timestamp >= when:
+			return value
+	return None
+
+
+def power_share(own_kw: float | None, all_kw: Sequence[float | None]) -> float:
+	"""This source's fraction of a meter shared by ``all_kw`` sources (itself included).
+
+	Unknown readings count as zero. When nothing is known, or every source
+	read zero, the meter is split evenly.
+	"""
+	count = max(1, len(all_kw))
+	if count == 1:
+		return 1.0
+	total = sum(max(0.0, value or 0.0) for value in all_kw)
+	if total <= 0:
+		return 1.0 / count
+	return max(0.0, own_kw or 0.0) / total
+
+
+def counter_gap_fill_kwh(
+	counter_before: float | None,
+	counter_after: float | None,
+	share: float,
+) -> float | None:
+	"""Energy to credit for a gap from a cumulative meter counter (kWh).
+
+	Returns None when either reading is missing or the counter went
+	backwards (meter replaced or reset), so nothing is guessed.
+	"""
+	if counter_before is None or counter_after is None:
+		return None
+	delta = counter_after - counter_before
+	if delta < 0:
+		return None
+	return delta * max(0.0, min(1.0, share))
