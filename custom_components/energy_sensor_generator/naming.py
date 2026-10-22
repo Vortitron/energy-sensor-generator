@@ -10,7 +10,7 @@ so they must never change for existing sensors.
 
 Configuration lives in config *subentries* (one per source):
 
-- ``power_sensor``   data: ``source_entity_id``, ``periods``, optional ``name``, ``energy_counter``
+- ``power_sensor``   data: ``source_entity_id``, ``periods``, optional ``name``, ``energy_counter``, ``max_power_w``
 - ``constant_load``  data: ``switch_entity_id``, ``power_w``, ``periods``, optional ``name``
 - ``price_adjust``   data: ``id``, ``source_entity_id``, ``add_amount``, optional ``name``
 """
@@ -137,6 +137,8 @@ class SourcePlan:
 	constant_config: dict | None = field(default=None, hash=False, compare=False)
 	# The meter's own kWh counter, used to fill gaps the power sensor missed
 	energy_counter: str | None = None
+	# Readings above this (W) are glitches; None uses the global setting
+	max_power_w: float | None = None
 
 	@property
 	def name_override(self) -> str | None:
@@ -156,6 +158,14 @@ class PricePlan:
 	@property
 	def unique_id(self) -> str:
 		return f"{PRICE_ADJUST_PREFIX}{self.config_id}"
+
+
+def _positive_number(value: object) -> float | None:
+	try:
+		number = float(value)
+	except (TypeError, ValueError):
+		return None
+	return number if number > 0 else None
 
 
 def _clean_name(value: object) -> str | None:
@@ -210,6 +220,7 @@ def plan_sources(
 				_clean_name(data.get("name")),
 				constant_config,
 				_clean_name(data.get("energy_counter")) if constant_config is None else None,
+				_positive_number(data.get("max_power_w")) if constant_config is None else None,
 			)
 		)
 

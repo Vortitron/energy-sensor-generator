@@ -230,3 +230,83 @@ def counter_gap_fill_kwh(
 	if delta < 0:
 		return None
 	return delta * max(0.0, min(1.0, share))
+
+
+# Readings above this (per source) are treated as glitches unless a source or
+# the settings say otherwise: 50 kW is beyond any single household circuit.
+DEFAULT_MAX_POWER_W = 50000.0
+
+# A live state change younger than this may simply not be committed to the
+# recorder yet, so it says nothing about the recorder lagging.
+RECORDER_SETTLE_SECONDS = 15.0
+
+
+def power_cap_native(max_power_w: float | None, conversion_factor: float) -> float | None:
+	"""A cap in watts expressed in the source's unit (None or <= 0: no cap)."""
+	if not max_power_w or max_power_w <= 0 or not conversion_factor:
+		return None
+	return (max_power_w / 1000.0) * conversion_factor
+
+
+def hold_implausible(
+	samples: Sequence[Tuple[float, datetime]],
+	cap_native: float | None,
+	last_plausible: float | None = None,
+) -> Tuple[List[Tuple[float, datetime]], int]:
+	"""Replace readings above ``cap_native`` with the previous plausible reading.
+
+	A single bad value from a cloud API (183051 W from a 720 W heat pump) held
+	for a quarter of an hour would otherwise add tens of kWh. Holding the last
+	good reading keeps the time covered. ``last_plausible`` is the reading to
+	hold when a window starts mid-glitch; without one, such readings are
+	dropped. Returns the samples (time order) and how many were replaced or
+	dropped.
+	"""
+	ordered = sorted(samples, key=lambda item: item[1])
+	if cap_native is None:
+		return ordered, 0
+	result: List[Tuple[float, datetime]] = []
+	rejected = 0
+	last_good: float | None = last_plausible if last_plausible is not None and last_plausible <= cap_native else None
+	for power, timestamp in ordered:
+		if power > cap_native:
+			rejected += 1
+			if last_good is not None:
+				result.append((last_good, timestamp))
+			continue
+		last_good = power
+		result.append((power, timestamp))
+	return result, rejected
+
+
+def recorder_is_lagging(
+	recorded: Sequence[Tuple[str, datetime]],
+	live_value: str | None,
+	live_updated_at: datetime | None,
+	window_start: datetime,
+	window_end: datetime,
+	settle_seconds: float = RECORDER_SETTLE_SECONDS,
+) -> bool:
+	"""Whether the recorder is missing source states the state machine already has.
+
+	When the recorder stalls, history keeps returning the last recorded value
+	and a statistical calculation integrates that stale value for as long as
+	the stall lasts. ``recorded`` is the window's history as (state, time).
+	History can't be trusted for the window when, for a live state old enough
+	to have been committed, either its change falls in the window with no
+	recorded state at or after it, or the latest recorded value differs from
+	the live one.
+	"""
+	if live_updated_at is None or live_value is None:
+		return False
+	if live_updated_at > window_end or (window_end - live_updated_at).total_seconds() < settle_seconds:
+		return False
+	tolerance_seconds = 2.0
+	if live_updated_at > window_start and not any(
+		(when - live_updated_at).total_seconds() >= -tolerance_seconds for _, when in recorded
+	):
+		return True
+	if not recorded:
+		return False
+	latest_value = max(recorded, key=lambda item: item[1])[0]
+	return str(latest_value) != str(live_value)

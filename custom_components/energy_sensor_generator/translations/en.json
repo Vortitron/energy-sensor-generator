@@ -34,12 +34,14 @@
           "data": {
             "source_entity_id": "Power sensor",
             "periods": "Period totals",
-            "energy_counter": "Meter energy counter (optional)"
+            "energy_counter": "Meter energy counter (optional)",
+            "max_power_w": "Maximum power"
           },
           "data_description": {
             "source_entity_id": "Search by name. Only sensors that report power (W / kW) and are not already tracked are listed.",
             "periods": "Daily / weekly / monthly / annual sensors that reset automatically.",
-            "energy_counter": "The meter's own kWh total, if it has one. Time the power sensor misses (offline, or Home Assistant restarting) is filled from this counter instead of being skipped. Sources sharing one meter, such as its three phases, split the filled energy by their power."
+            "energy_counter": "The meter's own kWh total, if it has one. Time the power sensor misses (offline, or Home Assistant restarting) is filled from this counter instead of being skipped. Sources sharing one meter, such as its three phases, split the filled energy by their power.",
+            "max_power_w": "Optional. Readings above this are treated as glitches and ignored; the last plausible reading is used instead. Leave empty to use the limit in Settings."
           }
         },
         "reconfigure": {
@@ -48,12 +50,14 @@
           "data": {
             "name": "Name",
             "periods": "Period totals",
-            "energy_counter": "Meter energy counter (optional)"
+            "energy_counter": "Meter energy counter (optional)",
+            "max_power_w": "Maximum power"
           },
           "data_description": {
             "name": "Leave empty to use the power sensor's name.",
             "periods": "Unticking a period removes that sensor; its stored total comes back if you tick it again.",
-            "energy_counter": "The meter's own kWh total, if it has one. Time the power sensor misses (offline, or Home Assistant restarting) is filled from this counter instead of being skipped. Sources sharing one meter, such as its three phases, split the filled energy by their power."
+            "energy_counter": "The meter's own kWh total, if it has one. Time the power sensor misses (offline, or Home Assistant restarting) is filled from this counter instead of being skipped. Sources sharing one meter, such as its three phases, split the filled energy by their power.",
+            "max_power_w": "Optional. Readings above this are treated as glitches and ignored; the last plausible reading is used instead. Leave empty to use the limit in Settings."
           }
         }
       },
@@ -171,7 +175,8 @@
           "stat_initial_lookback_minutes": "Initial lookback",
           "max_energy_per_hour": "Maximum energy per hour",
           "create_synthetic_grid_total": "Create a grid total sensor",
-          "debug_logging": "Debug logging"
+          "debug_logging": "Debug logging",
+          "max_power_w": "Maximum plausible power"
         },
         "data_description": {
           "sample_interval": "How often energy is calculated. 60 seconds suits most installs.",
@@ -180,7 +185,8 @@
           "stat_initial_lookback_minutes": "How far back to look the first time a new sensor is created.",
           "max_energy_per_hour": "Reject any reading larger than this. 0 disables the limit.",
           "create_synthetic_grid_total": "One sensor that sums every generated main energy sensor.",
-          "debug_logging": "Writes detailed calculation logs. Turn off afterwards to avoid log spam."
+          "debug_logging": "Writes detailed calculation logs. Turn off afterwards to avoid log spam.",
+          "max_power_w": "Any power sensor reading above this is treated as a glitch and ignored, unless a source sets its own limit. 0 turns the check off."
         }
       }
     }
