@@ -182,3 +182,17 @@ async def test_lower_restored_state_does_not_override_storage(enable_custom_inte
 	_power(hass, 720)
 	entry = await _setup(hass)
 	assert _sensor(hass, entry).total == pytest.approx(4800.0)
+
+
+async def test_rounding_of_the_recorded_state_is_not_a_lagging_store(
+		enable_custom_integrations, hass: HomeAssistant, hass_storage, caplog) -> None:
+	"""0.1.3 warned "stored 1405.8053 is behind the recorded 1405.8053" on every restart."""
+	hass_storage[STORAGE_KEY] = {
+		"version": 1, "minor_version": 1, "key": STORAGE_KEY,
+		"data": {"sam_current_energy": {"value": 1405.80527}},
+	}
+	mock_restore_cache(hass, [State("sensor.sam_current_energy", "1405.8053")])
+	_power(hass, 720)
+	entry = await _setup(hass)
+	assert _sensor(hass, entry).total == pytest.approx(1405.80527, abs=1e-9)
+	assert "is behind the last recorded" not in caplog.text
