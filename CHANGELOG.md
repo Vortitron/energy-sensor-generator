@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4
+
+- **No more false "stored total is behind the last recorded" warnings at start-up.** 0.1.3 compared the stored total with the recorded state, which is rounded to 4 decimals, so a total that merely rounded up was reported as lagging (with both numbers looking identical). Only a difference over 1 Wh counts now. Totals were not affected.
+
 ## 0.1.3
 
 Fixes for energy that should never have been counted. Found on a heat pump fed by a cloud-polled power sensor (panasonic_cc).

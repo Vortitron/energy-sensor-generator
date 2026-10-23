@@ -80,6 +80,10 @@ from .naming import (
 	SYNTHETIC_GRID_UNIQUE_ID,
 )
 
+# Recorded states are rounded to 4 decimals; storage is behind only beyond this
+RESTORE_TOLERANCE_KWH = 0.001
+
+
 def _get_config_options(hass: HomeAssistant) -> dict:
 	"""Live configuration (entry data overlaid with options) plus defaults."""
 	default_options = {
@@ -816,7 +820,9 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			restored = float(last.state) if last and last.state not in ("unknown", "unavailable", None) else None
 		except (ValueError, TypeError):
 			restored = None
-		if restored is not None and restored > self._state + 1e-6:
+		# The recorded state is rounded to 4 decimals: a stored total that only
+		# rounds up to it is not behind
+		if restored is not None and restored > self._state + RESTORE_TOLERANCE_KWH:
 			if self._state > 0:
 				_LOGGER.warning(
 					"%s: stored total %.4f kWh is behind the last recorded %.4f kWh; continuing from %.4f",
