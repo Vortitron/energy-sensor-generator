@@ -11,6 +11,8 @@ CONF_CREATE_SYNTHETIC_GRID_TOTAL = "create_synthetic_grid_total"
 CONF_FORCE_STATISTICAL_ONLY = "force_statistical_only"
 CONF_STAT_LOOKBACK_MINUTES = "stat_initial_lookback_minutes"
 CONF_MAX_ENERGY_PER_HOUR = "max_energy_per_hour"  # Maximum kWh per hour to prevent spikes
+# Highest plausible power reading (W): a global setting, and per power sensor source
+CONF_MAX_POWER_W = "max_power_w"
 
 DEFAULT_SAMPLE_INTERVAL = 60
 DEFAULT_STAT_LOOKBACK_MINUTES = 30

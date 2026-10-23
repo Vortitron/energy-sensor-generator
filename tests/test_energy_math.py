@@ -223,3 +223,67 @@ class TestGapFillHelpers:
 		assert counter_gap_fill_kwh(None, 141.0, 1.0) is None
 		assert counter_gap_fill_kwh(100.0, None, 1.0) is None
 		assert counter_gap_fill_kwh(100.0, 90.0, 1.0) is None
+
+
+# --- Plausibility and recorder lag (sensor.sam_current_power, GamlaBio, Oct 2026) ---
+
+def _t(text: str) -> datetime:
+	return datetime.fromisoformat(text)
+
+
+energy_math = _energy_math
+
+
+def test_glitch_reading_is_held_at_the_last_plausible_value():
+	"""183051 W from the cloud for ~15 min while the heat pump drew ~720 W."""
+	samples = [
+		(720.0, _t("2026-10-22T13:00:00+00:00")),
+		(183051.0, _t("2026-10-22T13:20:31+00:00")),
+		(720.0, _t("2026-10-22T13:35:09+00:00")),
+	]
+	cap = energy_math.power_cap_native(energy_math.DEFAULT_MAX_POWER_W, 1000)
+	held, rejected = energy_math.hold_implausible(samples, cap)
+	assert rejected == 1
+	assert [power for power, _ in held] == [720.0, 720.0, 720.0]
+
+	end = _t("2026-10-22T13:36:00+00:00")
+	with_cap = energy_math.left_riemann_energy(held, end, 1000)["total_energy"]
+	without_cap = energy_math.left_riemann_energy(samples, end, 1000)["total_energy"]
+	assert with_cap == pytest.approx(0.72 * 36 / 60)
+	assert without_cap > 44  # what was recorded: +44.65 kWh
+
+
+def test_glitch_with_nothing_plausible_before_it_is_dropped():
+	held, rejected = energy_math.hold_implausible([(90000.0, _t("2026-10-22T13:00:00+00:00"))], 50000.0)
+	assert held == [] and rejected == 1
+
+
+def test_no_cap_keeps_everything():
+	samples = [(183051.0, _t("2026-10-22T13:20:31+00:00"))]
+	assert energy_math.hold_implausible(samples, None) == (samples, 0)
+	assert energy_math.power_cap_native(0, 1000) is None
+	assert energy_math.power_cap_native(3000, 1) == pytest.approx(3.0)  # kW source
+	assert energy_math.power_cap_native(3000, 1000) == pytest.approx(3000.0)  # W source
+
+
+def test_recorder_lag_detection():
+	start, end = _t("2026-10-13T05:00:00+00:00"), _t("2026-10-13T05:01:00+00:00")
+	stale = [("1211", _t("2026-10-13T03:35:49+00:00"))]  # the last state the recorder holds
+	changed = _t("2026-10-13T05:00:20+00:00")  # live change inside the window
+	lagging = energy_math.recorder_is_lagging
+	assert lagging(stale, "2000", changed, start, end)
+	# The recorder has it: not lagging
+	assert not lagging([*stale, ("2000", changed)], "2000", changed, start, end)
+	# Live change before the window, still not recorded: the values differ
+	assert lagging(stale, "2000", _t("2026-10-13T04:00:00+00:00"), start, end)
+	# Unchanged value since the last recorded state: nothing to judge by
+	assert not lagging(stale, "1211", _t("2026-10-13T03:35:49+00:00"), start, end)
+	# A change seconds ago may not be committed yet
+	assert not lagging(stale, "2000", _t("2026-10-13T05:00:55+00:00"), start, end)
+	assert not lagging(stale, None, None, start, end)
+
+
+def test_window_starting_mid_glitch_holds_the_last_plausible_reading():
+	samples = [(183051.0, _t("2026-10-22T13:21:00+00:00"))]  # history's start state, mid-glitch
+	held, rejected = energy_math.hold_implausible(samples, 50000.0, last_plausible=720.0)
+	assert held == [(720.0, _t("2026-10-22T13:21:00+00:00"))] and rejected == 1

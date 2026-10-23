@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.3
+
+Fixes for energy that should never have been counted. Found on a heat pump fed by a cloud-polled power sensor (panasonic_cc).
+
+- **Impossible power readings are ignored.** One bad cloud value of 183,051 W from a heat pump drawing about 720 W was held for 15 minutes and added 44.65 kWh. A reading above the limit is now treated as a glitch: the last plausible reading is held instead, and a warning is logged (at most once an hour per sensor). The limit is 50 kW by default, set under **Settings → Maximum plausible power** (0 turns the check off). Each energy sensor can set a lower limit of its own in its Edit dialog, for example 3000 W for a 3 kW heat pump. Ignored readings are counted in the sensor's `rejected_readings` attribute.
+- **A stalled recorder no longer feeds stale readings into the total.** When the recorder stopped writing for nearly 10 hours while Home Assistant kept running, the statistical method kept integrating the last recorded value: 15.16 kWh against 12.68 kWh measured by the device. When history is missing a change the live sensor already has, or its latest value differs from the live one, that window is now calculated from live readings, and the statistical method takes over again once the recorder catches up.
+- **The total never goes backwards on start-up.** If stored data is behind the last state Home Assistant recorded (a save lost in a crash, or a failed write), the sensor now continues from the recorded state instead of dropping back, which the Energy dashboard showed as a large negative hour.
+
+Gaps from restarts or an offline source were already skipped, and since 0.1.2 they can be filled from the meter's own kWh counter.
+
 ## 0.1.2
 
 - **Gaps can be filled from the meter's own kWh counter.** When a power sensor goes offline, or Home Assistant is down, for more than 10 minutes, that time used to be skipped so no energy was guessed. On a meter reader that drops out for hours, the missing energy adds up (one home lost about 340 kWh over four months). An energy sensor can now name the meter's cumulative kWh counter (**Meter energy counter**, when adding or editing it). The counter's rise across the gap is then credited instead of skipped. Sources sharing one counter, such as the three phases of a P1 meter, split it by their power either side of the gap. The fill is added once the counter reports after the gap, and is checked against the spike limit. Without a counter, gaps are skipped as before.

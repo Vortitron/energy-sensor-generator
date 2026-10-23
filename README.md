@@ -67,6 +67,13 @@ Power is converted to kW (`W ÷ 1000`, or already kW), then integrated over time
 
 Constant-power devices use the switch state (`on` / `open` → rated watts, otherwise 0) and point sampling only.
 
+## Glitches and outages
+
+- **Implausible readings:** a power reading above the limit (50 kW by default, under Settings; or a per-source limit in the energy sensor's Edit dialog) is ignored and the last plausible reading is held. Ignored readings are counted in the `rejected_readings` attribute.
+- **Recorder stalls:** when history lags behind the live sensor, the window is calculated from live readings.
+- **Restarts and offline sources:** gaps longer than `max(10 minutes, 3 × sample interval)` are skipped, not bridged. If the source has a meter energy counter configured, the gap is filled from that counter.
+- **No backwards steps:** on start-up the total continues from the higher of the stored value and the last recorded state.
+
 ## Services
 
 Useful calls from Developer Tools → Services:

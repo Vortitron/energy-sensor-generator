@@ -43,6 +43,7 @@ from .const import (
 	CONF_ENERGY_COUNTER,
 	CONF_FORCE_STATISTICAL_ONLY,
 	CONF_MAX_ENERGY_PER_HOUR,
+	CONF_MAX_POWER_W,
 	CONF_NAME,
 	CONF_PERIODS,
 	CONF_POWER_W,
@@ -56,6 +57,7 @@ from .const import (
 	DEFAULT_STAT_LOOKBACK_MINUTES,
 	DOMAIN,
 )
+from .energy_math import DEFAULT_MAX_POWER_W
 from .entity_helpers import get_friendly_name
 from .naming import (
 	PERIODS,
@@ -76,6 +78,9 @@ PERIOD_SELECTOR = SelectSelector(
 	)
 )
 NAME_SELECTOR = TextSelector(TextSelectorConfig(multiline=False))
+MAX_POWER_W_SELECTOR = NumberSelector(
+	NumberSelectorConfig(min=1, max=1000000, step=1, unit_of_measurement="W", mode=NumberSelectorMode.BOX)
+)
 POWER_W_SELECTOR = NumberSelector(
 	NumberSelectorConfig(min=1, max=50000, step=1, unit_of_measurement="W", mode=NumberSelectorMode.BOX)
 )
@@ -210,6 +215,8 @@ class PowerSensorSubentryFlow(_SubentryFlowBase):
 				subentry = _power_sensor_subentry(
 					self.hass, entity_id, user_input.get(CONF_PERIODS), user_input.get(CONF_ENERGY_COUNTER)
 				)
+				if user_input.get(CONF_MAX_POWER_W):
+					subentry["data"] = {**subentry["data"], CONF_MAX_POWER_W: float(user_input[CONF_MAX_POWER_W])}
 				return self.async_create_entry(
 					title=subentry["title"],
 					data=subentry["data"],
@@ -226,6 +233,7 @@ class PowerSensorSubentryFlow(_SubentryFlowBase):
 				),
 				vol.Optional(CONF_PERIODS, default=list(PERIODS)): PERIOD_SELECTOR,
 				vol.Optional(CONF_ENERGY_COUNTER): ENERGY_COUNTER_SELECTOR,
+				vol.Optional(CONF_MAX_POWER_W): MAX_POWER_W_SELECTOR,
 			}),
 			errors=errors,
 			description_placeholders={"count": str(len(available))},
@@ -246,6 +254,7 @@ class PowerSensorSubentryFlow(_SubentryFlowBase):
 					CONF_PERIODS: list(normalise_periods(user_input.get(CONF_PERIODS))),
 					CONF_NAME: name,
 					CONF_ENERGY_COUNTER: user_input.get(CONF_ENERGY_COUNTER) or "",
+					CONF_MAX_POWER_W: float(user_input[CONF_MAX_POWER_W]) if user_input.get(CONF_MAX_POWER_W) else None,
 				},
 			)
 
@@ -260,6 +269,11 @@ class PowerSensorSubentryFlow(_SubentryFlowBase):
 				vol.Optional(
 					CONF_ENERGY_COUNTER, description={"suggested_value": counter} if counter else None
 				): ENERGY_COUNTER_SELECTOR,
+				vol.Optional(
+					CONF_MAX_POWER_W,
+					description={"suggested_value": subentry.data.get(CONF_MAX_POWER_W)}
+					if subentry.data.get(CONF_MAX_POWER_W) else None,
+				): MAX_POWER_W_SELECTOR,
 			}),
 			description_placeholders={"source": source},
 		)
@@ -445,6 +459,9 @@ class SettingsOptionsFlow(OptionsFlow):
 				default=current.get(CONF_STAT_LOOKBACK_MINUTES, DEFAULT_STAT_LOOKBACK_MINUTES),
 			): NumberSelector(
 				NumberSelectorConfig(min=5, max=120, step=5, unit_of_measurement="min", mode=NumberSelectorMode.SLIDER)
+			),
+			vol.Optional(CONF_MAX_POWER_W, default=current.get(CONF_MAX_POWER_W, DEFAULT_MAX_POWER_W)): NumberSelector(
+				NumberSelectorConfig(min=0, max=1000000, step=100, unit_of_measurement="W", mode=NumberSelectorMode.BOX)
 			),
 			vol.Optional(CONF_MAX_ENERGY_PER_HOUR, default=current.get(CONF_MAX_ENERGY_PER_HOUR, 0)): NumberSelector(
 				NumberSelectorConfig(min=0, max=100, step=0.5, unit_of_measurement="kWh/h", mode=NumberSelectorMode.BOX)

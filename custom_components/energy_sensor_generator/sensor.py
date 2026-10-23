@@ -35,6 +35,7 @@ from .const import (
 	CONF_FORCE_STATISTICAL_ONLY,
 	CONF_STAT_LOOKBACK_MINUTES,
 	CONF_MAX_ENERGY_PER_HOUR,
+	CONF_MAX_POWER_W,
 	POINT_SAMPLING_MAX_GAP_SECONDS,
 )
 import time
@@ -51,6 +52,10 @@ from .energy_math import (
 	first_value_at_or_after,
 	power_share,
 	counter_gap_fill_kwh,
+	DEFAULT_MAX_POWER_W,
+	hold_implausible,
+	power_cap_native,
+	recorder_is_lagging,
 )
 from .price_adjustment import compute_adjusted_value, is_price_attribute_key, adjust_attribute_value
 from .entity_helpers import (
@@ -83,6 +88,7 @@ def _get_config_options(hass: HomeAssistant) -> dict:
 		CONF_FORCE_STATISTICAL_ONLY: False,
 		CONF_STAT_LOOKBACK_MINUTES: 30,
 		CONF_MAX_ENERGY_PER_HOUR: 0,  # 0 = disabled (no limit)
+		CONF_MAX_POWER_W: DEFAULT_MAX_POWER_W,  # 0 = disabled (no limit)
 	}
 	for config_entry in hass.config_entries.async_entries(DOMAIN):
 		return {**default_options, **config_entry.data, **config_entry.options}
@@ -226,6 +232,7 @@ def _build_batches(hass: HomeAssistant, entry: ConfigEntry, subentry_ids: set[st
 			plan.name_override,
 			plan.constant_config,
 			energy_counter=plan.energy_counter,
+			max_power_w=plan.max_power_w,
 		)
 		batch = [main_sensor]
 		for period in plan.periods:
@@ -362,9 +369,16 @@ class PriceAdjustedSensor(SensorEntity):
 class EnergySensor(SensorEntity, RestoreEntity):
 	"""Custom sensor to calculate kWh from power (Watts)."""
 
-	def __init__(self, hass, base_name, source_sensor, storage_path, device_info=None, friendly_name_override=None, constant_config=None, energy_counter=None):
+	def __init__(self, hass, base_name, source_sensor, storage_path, device_info=None, friendly_name_override=None, constant_config=None, energy_counter=None, max_power_w=None):
 		"""Initialize the sensor."""
 		self._hass = hass
+		# Highest plausible reading for this source (W); None uses the global setting
+		self._max_power_w = max_power_w if constant_config is None else None
+		self._rejected_readings = 0
+		self._last_rejected_warning = 0.0
+		# Set when the recorder is missing changes the state machine has: the
+		# window then comes from live readings instead of stale history
+		self._recorder_lag = False
 		# The meter's own kWh counter; when set, time the power sensor missed
 		# (offline, or Home Assistant down) is filled from the counter's delta.
 		self._energy_counter = energy_counter if constant_config is None else None
@@ -502,6 +516,36 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		except (ValueError, TypeError):
 			return None
 
+	def _power_cap(self, config_options: dict | None = None) -> float | None:
+		"""Highest plausible reading in the source's unit, or None for no cap."""
+		if self._constant_power_w is not None or not self._power_to_kw_factor:
+			return None
+		max_power_w = self._max_power_w
+		if max_power_w is None:
+			options = config_options if config_options is not None else _get_config_options(self._hass)
+			try:
+				max_power_w = float(options.get(CONF_MAX_POWER_W, DEFAULT_MAX_POWER_W))
+			except (TypeError, ValueError):
+				max_power_w = DEFAULT_MAX_POWER_W
+		return power_cap_native(max_power_w, self._power_to_kw_factor)
+
+	def _note_rejected(self, count: int, example, cap_native: float) -> None:
+		"""Count implausible readings and warn at most once an hour per sensor."""
+		if count <= 0:
+			return
+		self._rejected_readings += count
+		now_ts = time.time()
+		if now_ts - self._last_rejected_warning < 3600:
+			return
+		self._last_rejected_warning = now_ts
+		unit = "kW" if self._power_to_kw_factor == 1 else "W"
+		_LOGGER.warning(
+			"%s: ignored %d implausible reading(s) from %s (e.g. %s %s, above the %s %s limit); "
+			"the last plausible reading was used instead. Change the limit under the source's "
+			"Edit dialog or Settings if this load really draws that much.",
+			self._attr_name, count, self._source_sensor, example, unit, round(cap_native, 3), unit,
+		)
+
 	def _ensure_conversion_factor(self):
 		"""Ensure the power conversion factor is set."""
 		if self._power_to_kw_factor is None:
@@ -541,6 +585,12 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			if not conversion_factor or conversion_factor <= 0:
 				_debug_log(self.hass, f"Invalid conversion factor ({conversion_factor}) for statistical calculation")
 				return None
+			cap_native = self._power_cap()
+			live_state = self._hass.states.get(self._source_sensor)
+			live_updated_at = live_state.last_updated if live_state else None
+			live_value = live_state.state if live_state else None
+			last_plausible = self._last_power
+			self._recorder_lag = False
 			
 			def _get_history_data():
 				"""Get historical states using the recorder history API (runs in executor)."""
@@ -559,7 +609,16 @@ class EnergySensor(SensorEntity, RestoreEntity):
 						return {"error": "No historical data found"}
 						
 					states_list = historical_states[self._source_sensor]
-					
+
+					# History that misses a change the state machine already has
+					# comes from a stalled recorder: integrating it would hold a
+					# stale reading for as long as the stall lasts.
+					if recorder_is_lagging(
+						[(state.state, state.last_updated) for state in states_list],
+						live_value, live_updated_at, start_time, end_time,
+					):
+						return {"error": "recorder_lag"}
+
 					# Filter out invalid states and convert to (power, time) samples
 					samples = []
 					for state in states_list:
@@ -576,6 +635,11 @@ class EnergySensor(SensorEntity, RestoreEntity):
 					# is integrated by left_riemann_energy.
 					if not samples:
 						return {"error": f"No valid states from {len(states_list)} total - need at least 1 valid data point"}
+
+					samples, rejected = hold_implausible(samples, cap_native, last_plausible)
+					rejected_example = max((float(s.state) for s in states_list if _is_number(s.state)), default=None)
+					if not samples:
+						return {"error": "Only implausible readings", "rejected": rejected, "rejected_example": rejected_example}
 					
 					# LEFT Riemann sum (like Home Assistant's integration sensor),
 					# including the final segment up to end_time so consecutive
@@ -583,6 +647,8 @@ class EnergySensor(SensorEntity, RestoreEntity):
 					result = left_riemann_energy(samples, end_time, conversion_factor)
 					
 					return {
+						"rejected": rejected,
+						"rejected_example": rejected_example,
 						"total_energy": result["total_energy"],
 						"segments": result["segments"],
 						"total_states": len(states_list),
@@ -597,7 +663,14 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			
 			# Use the recorder's async executor
 			statistical_data = await recorder_instance.async_add_executor_job(_get_history_data)
-			
+			if cap_native is not None and statistical_data.get("rejected"):
+				self._note_rejected(statistical_data["rejected"], statistical_data.get("rejected_example"), cap_native)
+
+			if statistical_data.get("error") == "recorder_lag":
+				self._recorder_lag = True
+				_debug_log(self.hass, f"Recorder is behind for {self._source_sensor}; using live readings for {self._attr_name}")
+				return None
+
 			if statistical_data.get("error"):
 				error_msg = statistical_data['error']
 				
@@ -735,14 +808,21 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		"""Handle entity addition."""
 		# Load state from storage first
 		await self._load_state()
-		# Try HA restore cache if storage empty
-		if self._state == 0.0:
-			last = await self.async_get_last_state()
-			try:
-				if last and last.state not in ("unknown", "unavailable", None):
-					self._state = float(last.state)
-			except (ValueError, TypeError):
-				pass
+		# The total never goes backwards: if storage is behind the last state
+		# Home Assistant recorded (a save lost to a crash, or a failed write),
+		# continue from the recorded state instead of winding the total back.
+		last = await self.async_get_last_state()
+		try:
+			restored = float(last.state) if last and last.state not in ("unknown", "unavailable", None) else None
+		except (ValueError, TypeError):
+			restored = None
+		if restored is not None and restored > self._state + 1e-6:
+			if self._state > 0:
+				_LOGGER.warning(
+					"%s: stored total %.4f kWh is behind the last recorded %.4f kWh; continuing from %.4f",
+					self._attr_name, self._state, restored, restored,
+				)
+			self._state = restored
 		
 		# Track state changes to the power sensor
 		self._unsub_state_change = async_track_state_change_event(
@@ -931,7 +1011,14 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			if power is None:
 				_debug_log(self.hass, f"Invalid power value '{state.state}' from {self._source_sensor} for {self._attr_name}")
 				return
-			
+			cap_native = self._power_cap(config_options)
+			if cap_native is not None and power > cap_native:
+				# Keep holding the last plausible reading; the state-change
+				# handler has already counted and logged this one
+				if self._last_power is None:
+					return
+				power = self._last_power
+
 			# Log when we're actually starting calculations
 			_debug_log(self.hass, f"Interval update called for {self._attr_name} - power: {power}W, source: {self._source_sensor}")
 			
@@ -972,7 +1059,7 @@ class EnergySensor(SensorEntity, RestoreEntity):
 				# advanced, so the next successful calculation covers this period.
 				_debug_log(self.hass, f"Statistical-only mode: waiting for statistical data for {self._attr_name}")
 				self._pending_point_energy = 0.0
-			elif self._using_statistical:
+			elif self._using_statistical and not self._recorder_lag:
 				# Statistical sensors must not mix in point sampling; the next
 				# successful statistical window covers this period.
 				_debug_log(self.hass, f"Previously used statistical for {self._attr_name} - not falling back to point sampling")
@@ -1000,7 +1087,13 @@ class EnergySensor(SensorEntity, RestoreEntity):
 					energy_kwh = sampled
 					method = "point sampling"
 					self._pending_point_energy = 0.0
-					self._using_statistical = False
+					if self._recorder_lag:
+						# Live readings covered this window; statistics resume
+						# from here once the recorder catches up
+						method = "live readings (recorder behind)"
+						self._last_statistical_calculation = now
+					else:
+						self._using_statistical = False
 			
 			if energy_kwh is not None and energy_kwh > 0:
 				# Spike protection: reject unrealistic additions (only if enabled)
@@ -1179,6 +1272,12 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		if power is None:
 			_LOGGER.warning(f"Invalid power value: {new_state.state}")
 			return
+		self._ensure_conversion_factor()
+		cap_native = self._power_cap()
+		if cap_native is not None and power > cap_native:
+			# A glitch: keep holding the previous reading as if this one never came
+			self._note_rejected(1, power, cap_native)
+			return
 
 		# If this is the first time we're getting a valid power reading, initialise tracking
 		if self._last_power is None or self._last_update is None:
@@ -1279,6 +1378,10 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		
 		# Add more diagnostic information
 		attrs["calculation_count"] = self._calculation_count
+		if self._rejected_readings:
+			attrs["rejected_readings"] = self._rejected_readings
+		if self._max_power_w is not None:
+			attrs["max_power_w"] = self._max_power_w
 		attrs["calculation_method"] = "statistical" if hasattr(self, '_using_statistical') and self._using_statistical else "point_sampling"
 		
 		# Get configuration options using the helper function
@@ -1449,3 +1552,11 @@ class SyntheticGridTotalEnergySensor(SensorEntity):
 			self.async_write_ha_state()
 		except Exception as e:
 			_LOGGER.error(f"Error writing HA state for {self._attr_name}: {e}", exc_info=True)
+
+
+def _is_number(value) -> bool:
+	try:
+		float(value)
+	except (TypeError, ValueError):
+		return False
+	return True
