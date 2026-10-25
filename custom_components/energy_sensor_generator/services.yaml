@@ -55,24 +55,24 @@ list_sensors:
 
 export_energy_data:
   name: Export Energy Data
-  description: Save all stored energy totals to a JSON file in the config directory.
+  description: Save all stored energy totals to a JSON file in the energy_sensor_generator_backups folder of the config directory. Administrators only.
   fields:
     target_path:
-      name: Target Path
-      description: File path relative to the config directory. Defaults to energy_backup_<timestamp>.json.
-      example: "backups/energy_backup.json"
+      name: File name
+      description: A plain file name ending in .json, saved in the energy_sensor_generator_backups folder. Defaults to energy_backup_<timestamp>.json.
+      example: "energy_backup.json"
       selector:
         text:
 
 import_energy_data:
   name: Import Energy Data
-  description: Load energy totals from a JSON file created by Export Energy Data.
+  description: Load energy totals from a JSON file created by Export Energy Data, in the energy_sensor_generator_backups folder of the config directory. Administrators only.
   fields:
     source_path:
-      name: Source Path
-      description: File path relative to the config directory.
+      name: File name
+      description: A plain file name ending in .json, in the energy_sensor_generator_backups folder.
       required: true
-      example: "backups/energy_backup.json"
+      example: "energy_backup.json"
       selector:
         text:
     mode:
