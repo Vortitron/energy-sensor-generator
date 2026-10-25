@@ -83,7 +83,9 @@ Useful calls from Developer Tools → Services:
 - `energy_sensor_generator.copy_from_previous_hour` — copy a known-good hour if an hour looks wrong after a long restart.
 - `energy_sensor_generator.reset_energy_sensors` — scale or zero stored totals if you need a fresh start.
 - `energy_sensor_generator.adjust_energy` — add to, set, or copy one sensor's total (e.g. to remove a spike).
-- `energy_sensor_generator.export_energy_data` / `import_energy_data` — back up and restore stored totals.
+- `energy_sensor_generator.export_energy_data` / `import_energy_data` — back up and restore stored totals. Files are kept in the `energy_sensor_generator_backups` folder of the config directory; give a plain file name such as `energy_backup.json`.
+
+Services that change or export stored totals (export, import, reset, adjust, copy from previous hour, reset statistical tracking, entity ID migration) are for administrators only. Automations and scripts can still call them.
 
 See `custom_components/energy_sensor_generator/services.yaml` for the full list.
 

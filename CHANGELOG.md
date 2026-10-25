@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.5
+
+Security fix from the HACS review.
+
+- **Export and import can no longer reach files outside their own folder.** Both took a file path from the caller and joined it to the config directory without checking it, so an absolute path or `../` could overwrite any file Home Assistant can write (`configuration.yaml`, for example) or read any file on the system. They now only accept a plain file name ending in `.json`, kept in the `energy_sensor_generator_backups` folder of the config directory. Absolute paths, sub-folders, `..` and symlinks are refused.
+- **Services that change stored totals are for administrators only.** Export, import, reset, adjust, copy from previous hour, reset statistical tracking and entity ID migration now refuse calls from non-admin users. Automations and scripts can still call them.
+
+**Upgrading:** move any existing backup you want to import into `<config>/energy_sensor_generator_backups/` and give the file name only, for example `energy_backup.json`.
+
 ## 0.1.4
 
 - **No more false "stored total is behind the last recorded" warnings at start-up.** 0.1.3 compared the stored total with the recorded state, which is rounded to 4 decimals, so a total that merely rounded up was reported as lagging (with both numbers looking identical). Only a difference over 1 Wh counts now. Totals were not affected.

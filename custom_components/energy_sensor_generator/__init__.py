@@ -1,6 +1,7 @@
 """Energy Sensor Generator: kWh sensors built from power sensors."""
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
@@ -16,6 +17,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.service import async_register_admin_service
 
 from .const import CONF_CREATE_SYNTHETIC_GRID_TOTAL, DOMAIN
 from .entity_helpers import debug_log as _debug_log, get_friendly_name
@@ -348,6 +350,45 @@ def _notify(hass: HomeAssistant, title: str, message: str, notification_id: str)
 	persistent_notification.async_create(hass, message, title=title, notification_id=notification_id)
 
 
+# Export / import only read and write plain .json file names in this folder
+# under the config directory: callers can't reach any other file.
+BACKUP_FOLDER = "energy_sensor_generator_backups"
+BACKUP_FILE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.json")
+
+# Services that change or export stored totals, or rename entities: admins
+# only (automations and scripts still can, they run without a user).
+ADMIN_SERVICES = {
+	"reset_energy_sensors",
+	"migrate_entity_ids",
+	"export_energy_data",
+	"import_energy_data",
+	"adjust_energy",
+	"copy_from_previous_hour",
+	"reset_statistical_tracking",
+}
+
+
+def backup_path(hass: HomeAssistant, file_name: str) -> Path:
+	"""Resolve a backup file name to a path inside the backup folder.
+
+	Only plain file names ending in .json are accepted: no directories,
+	no absolute paths, no "..". The resolved path must sit directly in the
+	backup folder and must not be a symlink, so nothing outside it can be
+	read or overwritten. Blocking (resolves paths): call from the executor.
+	"""
+	name = str(file_name or "").strip()
+	if not BACKUP_FILE_NAME.fullmatch(name) or ".." in name:
+		raise ServiceValidationError(
+			f"'{name}' is not a backup file name. Use a plain name ending in .json, such as "
+			f"energy_backup.json; backups are kept in the {BACKUP_FOLDER} folder of the config directory."
+		)
+	folder = Path(hass.config.path(BACKUP_FOLDER)).resolve()
+	candidate = folder / name
+	if candidate.is_symlink() or candidate.resolve().parent != folder:
+		raise ServiceValidationError(f"'{name}' is not a file in the {BACKUP_FOLDER} folder")
+	return candidate
+
+
 def _async_register_services(hass: HomeAssistant) -> None:
 	services = {
 		"generate_sensors": (generate_sensors_service, vol.Schema({})),
@@ -404,7 +445,10 @@ def _async_register_services(hass: HomeAssistant) -> None:
 		async def _handle(call: ServiceCall, handler=handler) -> None:
 			await handler(hass, call)
 
-		hass.services.async_register(DOMAIN, name, _handle, schema=schema)
+		if name in ADMIN_SERVICES:
+			async_register_admin_service(hass, DOMAIN, name, _handle, schema=schema)
+		else:
+			hass.services.async_register(DOMAIN, name, _handle, schema=schema)
 
 
 async def generate_sensors_service(hass: HomeAssistant, call: ServiceCall) -> None:
@@ -583,21 +627,22 @@ async def list_sensors_service(hass: HomeAssistant, call: ServiceCall) -> None:
 
 
 async def export_energy_data_service(hass: HomeAssistant, call: ServiceCall) -> None:
-	"""Export stored totals to a JSON file under the config directory."""
+	"""Export stored totals to a JSON file in the backup folder of the config directory."""
 	_, entry_data = _loaded_entry(hass)
 	storage = await entry_data["storage_manager"].async_load()
-	relative = call.data.get("target_path") or f"energy_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-	target = Path(hass.config.path(relative))
+	name = call.data.get("target_path") or f"energy_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 
-	def _write() -> None:
-		target.parent.mkdir(parents=True, exist_ok=True)
+	def _write() -> Path:
+		Path(hass.config.path(BACKUP_FOLDER)).mkdir(exist_ok=True)
+		target = backup_path(hass, name)
 		with target.open("w", encoding="utf-8") as handle:
 			json.dump(storage, handle, indent=2)
+		return target
 
 	try:
-		await hass.async_add_executor_job(_write)
+		target = await hass.async_add_executor_job(_write)
 	except OSError as err:
-		raise HomeAssistantError(f"Failed to write {target}: {err}") from err
+		raise HomeAssistantError(f"Failed to write {name}: {err}") from err
 	_LOGGER.info("Exported energy data to %s", target)
 	_notify(hass, "Energy Data Exported", f"Saved to `{target}`", "energy_export")
 
@@ -606,10 +651,10 @@ async def import_energy_data_service(hass: HomeAssistant, call: ServiceCall) -> 
 	"""Import stored totals from JSON (merge or replace), optionally renaming base names."""
 	_, entry_data = _loaded_entry(hass)
 	storage_manager = entry_data["storage_manager"]
-	source = Path(hass.config.path(call.data["source_path"]))
+	source = call.data["source_path"]
 
 	def _read() -> dict:
-		with source.open("r", encoding="utf-8") as handle:
+		with backup_path(hass, source).open("r", encoding="utf-8") as handle:
 			return json.load(handle)
 
 	try:
