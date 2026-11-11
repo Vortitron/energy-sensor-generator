@@ -59,11 +59,15 @@ from .const import (
 )
 from .energy_math import DEFAULT_MAX_POWER_W
 from .entity_helpers import get_friendly_name
+from .builtin import CONF_CALCULATION
 from .naming import (
+	CALCULATION_BUILTIN,
+	CALCULATIONS,
 	PERIODS,
 	SUBENTRY_CONSTANT_LOAD,
 	SUBENTRY_POWER_SENSOR,
 	SUBENTRY_PRICE_ADJUST,
+	normalise_calculation,
 	normalise_periods,
 	price_title,
 	subentry_unique_id,
@@ -78,6 +82,13 @@ PERIOD_SELECTOR = SelectSelector(
 	)
 )
 NAME_SELECTOR = TextSelector(TextSelectorConfig(multiline=False))
+CALCULATION_SELECTOR = SelectSelector(
+	SelectSelectorConfig(
+		options=list(CALCULATIONS),
+		mode=SelectSelectorMode.LIST,
+		translation_key="calculation",
+	)
+)
 MAX_POWER_W_SELECTOR = NumberSelector(
 	NumberSelectorConfig(min=1, max=1000000, step=1, unit_of_measurement="W", mode=NumberSelectorMode.BOX)
 )
@@ -116,9 +127,17 @@ def _configured_entities(entry: ConfigEntry, subentry_type: str, key: str) -> se
 
 
 def _power_sensor_subentry(
-	hass: HomeAssistant, entity_id: str, periods: Any, energy_counter: str | None = None
+	hass: HomeAssistant,
+	entity_id: str,
+	periods: Any,
+	energy_counter: str | None = None,
+	calculation: str = CALCULATION_BUILTIN,
 ) -> ConfigSubentryData:
-	data: dict[str, Any] = {CONF_SOURCE_ENTITY_ID: entity_id, CONF_PERIODS: list(normalise_periods(periods))}
+	data: dict[str, Any] = {
+		CONF_SOURCE_ENTITY_ID: entity_id,
+		CONF_PERIODS: list(normalise_periods(periods)),
+		CONF_CALCULATION: normalise_calculation(calculation),
+	}
 	if energy_counter:
 		data[CONF_ENERGY_COUNTER] = energy_counter
 	return ConfigSubentryData(
@@ -164,7 +183,12 @@ class EnergySensorGeneratorConfigFlow(ConfigFlow, domain=DOMAIN):
 				if entity_id and entity_id not in chosen:
 					chosen.append(entity_id)
 			subentries = [
-				_power_sensor_subentry(self.hass, entity_id, user_input.get(CONF_PERIODS))
+				_power_sensor_subentry(
+					self.hass,
+					entity_id,
+					user_input.get(CONF_PERIODS),
+					calculation=user_input.get(CONF_CALCULATION, CALCULATION_BUILTIN),
+				)
 				for entity_id in chosen
 			]
 			return self.async_create_entry(
@@ -179,6 +203,7 @@ class EnergySensorGeneratorConfigFlow(ConfigFlow, domain=DOMAIN):
 			schema[vol.Optional("power_sensors", default=[])] = EntitySelector(
 				EntitySelectorConfig(include_entities=available, multiple=True)
 			)
+		schema[vol.Optional(CONF_CALCULATION, default=CALCULATION_BUILTIN)] = CALCULATION_SELECTOR
 		schema[vol.Optional(CONF_PERIODS, default=list(PERIODS))] = PERIOD_SELECTOR
 		return self.async_show_form(
 			step_id="user",
@@ -207,13 +232,22 @@ class PowerSensorSubentryFlow(_SubentryFlowBase):
 
 		if user_input is not None:
 			entity_id = user_input.get(CONF_SOURCE_ENTITY_ID)
+			calculation = normalise_calculation(user_input.get(CONF_CALCULATION, CALCULATION_BUILTIN))
 			if not entity_id:
 				errors[CONF_SOURCE_ENTITY_ID] = "no_sensor_selected"
 			elif entity_id in configured:
 				errors[CONF_SOURCE_ENTITY_ID] = "already_configured"
+			elif calculation == CALCULATION_BUILTIN and user_input.get(CONF_ENERGY_COUNTER):
+				errors[CONF_ENERGY_COUNTER] = "protected_only"
+			elif calculation == CALCULATION_BUILTIN and user_input.get(CONF_MAX_POWER_W):
+				errors[CONF_MAX_POWER_W] = "protected_only"
 			else:
 				subentry = _power_sensor_subentry(
-					self.hass, entity_id, user_input.get(CONF_PERIODS), user_input.get(CONF_ENERGY_COUNTER)
+					self.hass,
+					entity_id,
+					user_input.get(CONF_PERIODS),
+					user_input.get(CONF_ENERGY_COUNTER),
+					calculation,
 				)
 				if user_input.get(CONF_MAX_POWER_W):
 					subentry["data"] = {**subentry["data"], CONF_MAX_POWER_W: float(user_input[CONF_MAX_POWER_W])}
@@ -231,6 +265,7 @@ class PowerSensorSubentryFlow(_SubentryFlowBase):
 				vol.Required(CONF_SOURCE_ENTITY_ID): EntitySelector(
 					EntitySelectorConfig(include_entities=available)
 				),
+				vol.Optional(CONF_CALCULATION, default=CALCULATION_BUILTIN): CALCULATION_SELECTOR,
 				vol.Optional(CONF_PERIODS, default=list(PERIODS)): PERIOD_SELECTOR,
 				vol.Optional(CONF_ENERGY_COUNTER): ENERGY_COUNTER_SELECTOR,
 				vol.Optional(CONF_MAX_POWER_W): MAX_POWER_W_SELECTOR,
@@ -244,39 +279,51 @@ class PowerSensorSubentryFlow(_SubentryFlowBase):
 		subentry = self._get_reconfigure_subentry()
 		source = str(subentry.data.get(CONF_SOURCE_ENTITY_ID) or "")
 
+		builtin = normalise_calculation(subentry.data.get(CONF_CALCULATION)) == CALCULATION_BUILTIN
+
 		if user_input is not None:
 			name = _clean_name(user_input.get(CONF_NAME))
+			data_updates: dict[str, Any] = {
+				CONF_PERIODS: list(normalise_periods(user_input.get(CONF_PERIODS))),
+				CONF_NAME: name,
+			}
+			if not builtin:
+				data_updates[CONF_ENERGY_COUNTER] = user_input.get(CONF_ENERGY_COUNTER) or ""
+				data_updates[CONF_MAX_POWER_W] = (
+					float(user_input[CONF_MAX_POWER_W]) if user_input.get(CONF_MAX_POWER_W) else None
+				)
 			return self.async_update_and_abort(
 				entry,
 				subentry,
 				title=name or get_friendly_name(self.hass, source),
-				data_updates={
-					CONF_PERIODS: list(normalise_periods(user_input.get(CONF_PERIODS))),
-					CONF_NAME: name,
-					CONF_ENERGY_COUNTER: user_input.get(CONF_ENERGY_COUNTER) or "",
-					CONF_MAX_POWER_W: float(user_input[CONF_MAX_POWER_W]) if user_input.get(CONF_MAX_POWER_W) else None,
-				},
+				data_updates=data_updates,
 			)
 
-		counter = subentry.data.get(CONF_ENERGY_COUNTER)
+		schema: dict = {
+			vol.Optional(CONF_NAME, default=str(subentry.data.get(CONF_NAME) or "")): NAME_SELECTOR,
+			vol.Optional(
+				CONF_PERIODS, default=list(normalise_periods(subentry.data.get(CONF_PERIODS)))
+			): PERIOD_SELECTOR,
+		}
+		if not builtin:
+			# The spike cap and gap filling are part of this integration's own integrator
+			counter = subentry.data.get(CONF_ENERGY_COUNTER)
+			schema[vol.Optional(
+				CONF_ENERGY_COUNTER, description={"suggested_value": counter} if counter else None
+			)] = ENERGY_COUNTER_SELECTOR
+			schema[vol.Optional(
+				CONF_MAX_POWER_W,
+				description={"suggested_value": subentry.data.get(CONF_MAX_POWER_W)}
+				if subentry.data.get(CONF_MAX_POWER_W) else None,
+			)] = MAX_POWER_W_SELECTOR
 		return self.async_show_form(
-			step_id="reconfigure",
-			data_schema=vol.Schema({
-				vol.Optional(CONF_NAME, default=str(subentry.data.get(CONF_NAME) or "")): NAME_SELECTOR,
-				vol.Optional(
-					CONF_PERIODS, default=list(normalise_periods(subentry.data.get(CONF_PERIODS)))
-				): PERIOD_SELECTOR,
-				vol.Optional(
-					CONF_ENERGY_COUNTER, description={"suggested_value": counter} if counter else None
-				): ENERGY_COUNTER_SELECTOR,
-				vol.Optional(
-					CONF_MAX_POWER_W,
-					description={"suggested_value": subentry.data.get(CONF_MAX_POWER_W)}
-					if subentry.data.get(CONF_MAX_POWER_W) else None,
-				): MAX_POWER_W_SELECTOR,
-			}),
+			step_id="reconfigure_builtin" if builtin else "reconfigure",
+			data_schema=vol.Schema(schema),
 			description_placeholders={"source": source},
 		)
+
+	async def async_step_reconfigure_builtin(self, user_input: dict[str, Any] | None = None) -> SubentryFlowResult:
+		return await self.async_step_reconfigure(user_input)
 
 
 class ConstantLoadSubentryFlow(_SubentryFlowBase):
@@ -302,6 +349,7 @@ class ConstantLoadSubentryFlow(_SubentryFlowBase):
 					CONF_SWITCH_ENTITY_ID: switch,
 					CONF_POWER_W: float(power_w),
 					CONF_PERIODS: list(normalise_periods(user_input.get(CONF_PERIODS))),
+					CONF_CALCULATION: normalise_calculation(user_input.get(CONF_CALCULATION, CALCULATION_BUILTIN)),
 				}
 				if name:
 					data[CONF_NAME] = name
@@ -321,6 +369,7 @@ class ConstantLoadSubentryFlow(_SubentryFlowBase):
 				# a missing value is reported as invalid_power above.
 				vol.Optional(CONF_POWER_W): POWER_W_SELECTOR,
 				vol.Optional(CONF_NAME): NAME_SELECTOR,
+				vol.Optional(CONF_CALCULATION, default=CALCULATION_BUILTIN): CALCULATION_SELECTOR,
 				vol.Optional(CONF_PERIODS, default=list(PERIODS)): PERIOD_SELECTOR,
 			}),
 			errors=errors,

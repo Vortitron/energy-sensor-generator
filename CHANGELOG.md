@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+Works with Home Assistant 2026.11's own power-to-energy feature instead of competing with it. The Energy dashboard now offers to create an Integral helper for a device that only has a power sensor, and only ever reuses Integral helpers, so this integration now builds on those helpers.
+
+- **New sources use a Home Assistant Integral helper for their kWh total (Built-in).** When you add a power sensor, an Integral helper that already integrates it, for example one the Energy dashboard made, is reused. Otherwise one is created with the dashboard's own settings (left Riemann sum, 5-minute maximum sub-interval, kWh). Period totals, price add-ons and the grid total build on it. The Energy dashboard recognises the helper, so it no longer offers to create a duplicate.
+- **Protected calculation.** This integration's own calculation stays available per source, for meters that report glitches or drop out: the spike cap, gap filling from the meter's counter and the never-backwards total only apply there. **Existing sources keep it, with their history; nothing changes for them.**
+- **Built-in constant loads publish a power sensor** (rated watts while the switch is on), and an Integral helper turns it into kWh. The Energy dashboard can then show their live power too.
+- **Helpers are tidied up with their source.** Deleting a built-in source removes the helper this integration created, unless the Energy dashboard uses it. A helper it reused is never removed.
+
 ## 0.1.5
 
 Security fix from the HACS review.

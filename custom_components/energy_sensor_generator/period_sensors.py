@@ -45,12 +45,18 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 	PERIOD_LABEL = ""  # e.g. "Daily" - used in the friendly name
 	PERIOD_SUFFIX = ""  # e.g. "daily" - used in unique_id and storage key
 
-	def __init__(self, hass, base_name, main_unique_id, storage_path, device_info=None, friendly_name=None):
-		"""Initialize the sensor."""
+	def __init__(self, hass, base_name, main_unique_id, storage_path, device_info=None, friendly_name=None, main_lookup=None):
+		"""Initialize the sensor.
+
+		``main_lookup`` returns the entity ID of the kWh sensor to follow when
+		it is not this integration's own (a core Integral helper); otherwise
+		the main sensor is found by ``main_unique_id``.
+		"""
 		assert self.PERIOD_LABEL and self.PERIOD_SUFFIX, "Subclasses must define period metadata"
 		self._hass = hass
 		self._base_name = base_name
 		self._main_unique_id = main_unique_id
+		self._main_lookup = main_lookup
 		self._source_sensor = None  # main sensor entity_id, resolved once added
 		# Prefer StorageManager if provided
 		self._storage_manager: StorageManager | None = storage_path if isinstance(storage_path, StorageManager) else None
@@ -155,7 +161,10 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 	@callback
 	def _async_track_main_sensor(self) -> None:
 		"""Follow the main sensor's current entity_id (it can be renamed)."""
-		entity_id = er.async_get(self._hass).async_get_entity_id("sensor", DOMAIN, self._main_unique_id)
+		if self._main_lookup is not None:
+			entity_id = self._main_lookup()
+		else:
+			entity_id = er.async_get(self._hass).async_get_entity_id("sensor", DOMAIN, self._main_unique_id)
 		if entity_id == self._source_sensor:
 			return
 		self._async_untrack_main_sensor()

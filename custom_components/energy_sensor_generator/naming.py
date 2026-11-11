@@ -13,6 +13,12 @@ Configuration lives in config *subentries* (one per source):
 - ``power_sensor``   data: ``source_entity_id``, ``periods``, optional ``name``, ``energy_counter``, ``max_power_w``
 - ``constant_load``  data: ``switch_entity_id``, ``power_w``, ``periods``, optional ``name``
 - ``price_adjust``   data: ``id``, ``source_entity_id``, ``add_amount``, optional ``name``
+
+Power sensors and constant loads also carry ``calculation``: ``builtin`` (a
+core Integral helper makes the kWh total) or ``esg`` (this integration's own
+integrator). Sources saved before it existed have no key and stay ``esg``.
+Built-in sources record the helper they use in ``integral_entry_id`` /
+``integral_entity_id``, and ``integral_owned`` when this integration created it.
 """
 from __future__ import annotations
 
@@ -26,6 +32,11 @@ PERIODS = ("daily", "weekly", "monthly", "annual")
 SUBENTRY_POWER_SENSOR = "power_sensor"
 SUBENTRY_CONSTANT_LOAD = "constant_load"
 SUBENTRY_PRICE_ADJUST = "price_adjust"
+
+# Which integrator makes a source's main kWh total
+CALCULATION_BUILTIN = "builtin"
+CALCULATION_ESG = "esg"
+CALCULATIONS = (CALCULATION_BUILTIN, CALCULATION_ESG)
 
 SYNTHETIC_GRID_UNIQUE_ID = "synthetic_grid_total_energy"
 PRICE_ADJUST_PREFIX = "price_adjust_"
@@ -83,6 +94,19 @@ def period_unique_id(base_name: str, period: str) -> str:
 	return f"{base_name}_{period}_energy"
 
 
+def constant_power_unique_id(base_name: str) -> str:
+	"""Unique ID of the power (W) sensor a built-in constant load publishes.
+
+	Constant-load base names end in ``_constant``, so this ends in
+	``_constant_power``, which no main or period sensor does.
+	"""
+	return f"{base_name}_power"
+
+
+def is_constant_power_unique_id(unique_id: str) -> bool:
+	return unique_id.endswith("_constant_power")
+
+
 def is_period_unique_id(unique_id: str) -> bool:
 	return any(unique_id.endswith(f"_{period}_energy") for period in PERIODS)
 
@@ -93,7 +117,14 @@ def is_main_energy_unique_id(unique_id: str) -> bool:
 		return False
 	if unique_id == SYNTHETIC_GRID_UNIQUE_ID or unique_id.startswith(PRICE_ADJUST_PREFIX):
 		return False
+	if is_constant_power_unique_id(unique_id):
+		return False
 	return not is_period_unique_id(unique_id)
+
+
+def normalise_calculation(value: object) -> str:
+	"""A known calculation; anything else (including missing) is ``esg``."""
+	return CALCULATION_BUILTIN if value == CALCULATION_BUILTIN else CALCULATION_ESG
 
 
 def normalise_periods(value: Iterable[str] | None) -> tuple[str, ...]:
@@ -139,10 +170,18 @@ class SourcePlan:
 	energy_counter: str | None = None
 	# Readings above this (W) are glitches; None uses the global setting
 	max_power_w: float | None = None
+	calculation: str = CALCULATION_ESG
+	# The core Integral helper a built-in source uses
+	integral_entry_id: str | None = None
+	integral_entity_id: str | None = None
 
 	@property
 	def name_override(self) -> str | None:
 		return self.name or None
+
+	@property
+	def builtin(self) -> bool:
+		return self.calculation == CALCULATION_BUILTIN
 
 
 @dataclass(frozen=True)
@@ -221,6 +260,9 @@ def plan_sources(
 				constant_config,
 				_clean_name(data.get("energy_counter")) if constant_config is None else None,
 				_positive_number(data.get("max_power_w")) if constant_config is None else None,
+				normalise_calculation(data.get("calculation")),
+				_clean_name(data.get("integral_entry_id")),
+				_clean_name(data.get("integral_entity_id")),
 			)
 		)
 
@@ -256,7 +298,10 @@ def desired_unique_ids(
 	"""Every unique ID the current configuration should have in the registry."""
 	wanted: set[str] = set()
 	for plan in plans:
-		wanted.add(main_unique_id(plan.base_name))
+		if not plan.builtin:
+			wanted.add(main_unique_id(plan.base_name))
+		elif plan.constant_config:
+			wanted.add(constant_power_unique_id(plan.base_name))
 		for period in plan.periods:
 			wanted.add(period_unique_id(plan.base_name, period))
 	for price in price_plans:
@@ -357,3 +402,36 @@ def period_start(period: str, now: datetime) -> datetime:
 	if period == "annual":
 		return midnight.replace(month=1, day=1)
 	raise ValueError(f"Unknown period: {period}")
+
+
+def integral_units(power_unit: str | None) -> dict | None:
+	"""Integral helper units that turn a power unit into an energy unit.
+
+	The same choice the Energy dashboard makes: W becomes kWh (prefix k),
+	kW becomes kWh, and so on. None when the unit is not a power unit.
+	"""
+	unit = str(power_unit or "").strip()
+	if unit == "W":
+		return {"unit_prefix": "k", "unit_time": "h"}
+	if unit in ("mW", "kW", "MW", "GW", "TW"):
+		return {"unit_time": "h"}
+	return None
+
+
+def integral_flow_input(name: str, source_entity_id: str, power_unit: str | None) -> dict | None:
+	"""Input for the Integral helper's config flow, matching the Energy dashboard.
+
+	Power holds its value until it changes, so the left rule is exact, and the
+	5-minute sub-interval books a constant power at least that often.
+	"""
+	units = integral_units(power_unit)
+	if units is None:
+		return None
+	return {
+		"name": name,
+		"source": source_entity_id,
+		"method": "left",
+		"max_sub_interval": {"hours": 0, "minutes": 5, "seconds": 0},
+		"round": 3,
+		**units,
+	}

@@ -89,6 +89,15 @@ def _subentry(entry: MockConfigEntry, subentry_type: str, entity_id: str):
 	return next(sub for sub in entry.subentries.values() if sub.unique_id == wanted)
 
 
+def _integral_for(hass: HomeAssistant, power_entity_id: str) -> tuple[str, str | None] | None:
+	"""(config entry ID, entity ID) of the Integral helper integrating a power sensor."""
+	for integral_entry in hass.config_entries.async_entries("integration"):
+		if integral_entry.options.get("source") == power_entity_id:
+			reg = er.async_entries_for_config_entry(er.async_get(hass), integral_entry.entry_id)
+			return integral_entry.entry_id, next((r.entity_id for r in reg if r.domain == "sensor"), None)
+	return None
+
+
 def _schema_field(result, name: str):
 	return next(value for key, value in result["data_schema"].schema.items() if str(key) == name)
 
@@ -397,10 +406,14 @@ async def test_config_flow_creates_entry_with_chosen_sensors(hass: HomeAssistant
 	entry = result["result"]
 	assert entry.version == 2
 	assert [sub.title for sub in entry.subentries.values()] == ["B"]
-	assert _entity_id(hass, "b_energy") is not None
+	# New sources default to a core Integral helper, with period totals on top
+	(subentry,) = entry.subentries.values()
+	assert subentry.data["calculation"] == "builtin"
+	assert _integral_for(hass, "sensor.b_power") is not None
+	assert _entity_id(hass, "b_energy") is None
 	assert _entity_id(hass, "b_daily_energy") is not None
 	assert _entity_id(hass, "b_weekly_energy") is None
-	assert _entity_id(hass, "a_energy") is None
+	assert _entity_id(hass, "a_daily_energy") is None
 
 
 async def test_add_power_sensor_subentry_flow(hass: HomeAssistant) -> None:
@@ -430,13 +443,21 @@ async def test_add_power_sensor_subentry_flow(hass: HomeAssistant) -> None:
 	await hass.async_block_till_done()
 
 	assert entry.state is ConfigEntryState.LOADED
-	assert _entity_id(hass, "b_energy") is not None
+	integral_entry_id, integral = _integral_for(hass, "sensor.b_power")
+	assert _entity_id(hass, "b_energy") is None
 	assert _entity_id(hass, "b_daily_energy") is not None
 	assert _entity_id(hass, "b_monthly_energy") is None
 	subentry = _subentry(entry, SUBENTRY_POWER_SENSOR, "sensor.b_power")
-	assert subentry.data == {"source_entity_id": "sensor.b_power", "periods": ["daily"]}
+	assert subentry.data == {
+		"source_entity_id": "sensor.b_power",
+		"periods": ["daily"],
+		"calculation": "builtin",
+		"integral_entry_id": integral_entry_id,
+		"integral_entity_id": integral,
+		"integral_owned": True,
+	}
 	registry = er.async_get(hass)
-	assert registry.async_get(_entity_id(hass, "b_energy")).config_subentry_id == subentry.subentry_id
+	assert registry.async_get(_entity_id(hass, "b_daily_energy")).config_subentry_id == subentry.subentry_id
 
 	# Nothing left to add
 	result = await hass.config_entries.subentries.async_init(
@@ -490,7 +511,8 @@ async def test_constant_load_subentry_flow(hass: HomeAssistant) -> None:
 	assert result["errors"] == {"power_w": "invalid_power"}
 
 	result = await hass.config_entries.subentries.async_configure(
-		result["flow_id"], {"switch_entity_id": "switch.heater", "power_w": 2000, "periods": ["daily"]}
+		result["flow_id"],
+		{"switch_entity_id": "switch.heater", "power_w": 2000, "periods": ["daily"], "calculation": "esg"},
 	)
 	assert result["type"] is FlowResultType.CREATE_ENTRY
 	assert result["title"] == "Heater"
@@ -734,7 +756,7 @@ async def test_changing_one_source_leaves_the_others_running(hass: HomeAssistant
 		(entry.entry_id, SUBENTRY_POWER_SENSOR), context={"source": config_entries.SOURCE_USER}
 	)
 	await hass.config_entries.subentries.async_configure(
-		result["flow_id"], {"source_entity_id": "sensor.c_power", "periods": ["daily"]}
+		result["flow_id"], {"source_entity_id": "sensor.c_power", "periods": ["daily"], "calculation": "esg"}
 	)
 	await hass.async_block_till_done()
 	assert _entity_id(hass, "c_energy") is not None
@@ -957,8 +979,14 @@ async def test_add_flow_stores_the_counter(hass: HomeAssistant) -> None:
 	result = await hass.config_entries.subentries.async_init(
 		(entry.entry_id, SUBENTRY_POWER_SENSOR), context={"source": config_entries.SOURCE_USER}
 	)
+	# The counter belongs to the protected calculation
 	result = await hass.config_entries.subentries.async_configure(
 		result["flow_id"], {"source_entity_id": "sensor.extra_power", "periods": [], "energy_counter": COUNTER}
+	)
+	assert result["errors"] == {"energy_counter": "protected_only"}
+	result = await hass.config_entries.subentries.async_configure(
+		result["flow_id"],
+		{"source_entity_id": "sensor.extra_power", "periods": [], "energy_counter": COUNTER, "calculation": "esg"},
 	)
 	assert result["type"] is FlowResultType.CREATE_ENTRY
 	await hass.async_block_till_done()
