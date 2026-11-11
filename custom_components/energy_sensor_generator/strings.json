@@ -6,11 +6,13 @@
         "description": "Creates kWh energy sensors from power sensors. {count} power sensors (W / kW) were found. Pick the ones to track now; you can add more, plus constant loads and price add-ons, from the integration page later.",
         "data": {
           "power_sensors": "Power sensors",
-          "periods": "Period totals"
+          "periods": "Period totals",
+          "calculation": "Calculation"
         },
         "data_description": {
           "power_sensors": "Search by name. Only sensors that report power are listed.",
-          "periods": "Daily / weekly / monthly / annual sensors that reset automatically."
+          "periods": "Daily / weekly / monthly / annual sensors that reset automatically.",
+          "calculation": "Built-in uses a Home Assistant Integral helper, the same kind the Energy dashboard creates, and reuses one that already exists for this sensor. Protected uses this integration's own calculation, which ignores glitch readings, can fill gaps from a meter counter and never goes backwards."
         }
       }
     },
@@ -30,9 +32,10 @@
       "step": {
         "user": {
           "title": "Add energy sensor",
-          "description": "Builds a kWh sensor from a power sensor. {count} power sensors are not tracked yet.",
+          "description": "Turns a power sensor into kWh, with optional period totals. {count} power sensors are not tracked yet.",
           "data": {
             "source_entity_id": "Power sensor",
+            "calculation": "Calculation",
             "periods": "Period totals",
             "energy_counter": "Meter energy counter (optional)",
             "max_power_w": "Maximum power"
@@ -40,8 +43,9 @@
           "data_description": {
             "source_entity_id": "Search by name. Only sensors that report power (W / kW) and are not already tracked are listed.",
             "periods": "Daily / weekly / monthly / annual sensors that reset automatically.",
-            "energy_counter": "The meter's own kWh total, if it has one. Time the power sensor misses (offline, or Home Assistant restarting) is filled from this counter instead of being skipped. Sources sharing one meter, such as its three phases, split the filled energy by their power.",
-            "max_power_w": "Optional. Readings above this are treated as glitches and ignored; the last plausible reading is used instead. Leave empty to use the limit in Settings."
+            "energy_counter": "Protected only. The meter's own kWh total, if it has one. Time the power sensor misses (offline, or Home Assistant restarting) is filled from this counter instead of being skipped. Sources sharing one meter, such as its three phases, split the filled energy by their power.",
+            "max_power_w": "Protected only. Optional. Readings above this are treated as glitches and ignored; the last plausible reading is used instead. Leave empty to use the limit in Settings.",
+            "calculation": "Built-in uses a Home Assistant Integral helper, the same kind the Energy dashboard creates, and reuses one that already exists for this sensor. Protected uses this integration's own calculation, which ignores glitch readings, can fill gaps from a meter counter and never goes backwards."
           }
         },
         "reconfigure": {
@@ -59,11 +63,24 @@
             "energy_counter": "The meter's own kWh total, if it has one. Time the power sensor misses (offline, or Home Assistant restarting) is filled from this counter instead of being skipped. Sources sharing one meter, such as its three phases, split the filled energy by their power.",
             "max_power_w": "Optional. Readings above this are treated as glitches and ignored; the last plausible reading is used instead. Leave empty to use the limit in Settings."
           }
+        },
+        "reconfigure_builtin": {
+          "title": "Edit energy sensor",
+          "description": "Source: {source}. Its kWh total is a Home Assistant Integral helper; this integration adds the period totals. To track a different sensor, delete this one and add a new one.",
+          "data": {
+            "name": "Name",
+            "periods": "Period totals"
+          },
+          "data_description": {
+            "name": "Leave empty to use the power sensor's name.",
+            "periods": "Unticking a period removes that sensor; its stored total comes back if you tick it again."
+          }
         }
       },
       "error": {
         "no_sensor_selected": "Pick a power sensor.",
-        "already_configured": "That sensor is already tracked."
+        "already_configured": "That sensor is already tracked.",
+        "protected_only": "Only used with the Protected calculation. Clear it, or choose Protected."
       },
       "abort": {
         "no_power_sensors": "No untracked power sensors were found. A sensor must report power in W or kW to be listed.",
@@ -80,18 +97,20 @@
       "step": {
         "user": {
           "title": "Add constant load",
-          "description": "For a device without a power meter: energy is counted at the rated wattage while the switch is on.",
+          "description": "For a device without a power meter: it draws its rated wattage while the switch is on.",
           "data": {
             "switch_entity_id": "Switch",
             "power_w": "Rated power",
             "name": "Name",
-            "periods": "Period totals"
+            "periods": "Period totals",
+            "calculation": "Calculation"
           },
           "data_description": {
             "switch_entity_id": "The switch or input boolean that turns the load on.",
             "power_w": "Wattage while the switch is on (enter 3000 for 3 kW).",
             "name": "Optional. Leave empty to use the switch's name.",
-            "periods": "Daily / weekly / monthly / annual sensors that reset automatically."
+            "periods": "Daily / weekly / monthly / annual sensors that reset automatically.",
+            "calculation": "Built-in publishes a power sensor for the load and a Home Assistant Integral helper turns it into kWh, so the Energy dashboard can show its live power too. Protected counts the energy with this integration's own calculation."
           }
         },
         "reconfigure": {
@@ -167,7 +186,7 @@
     "step": {
       "init": {
         "title": "Settings",
-        "description": "Calculation and diagnostic settings for every generated sensor. Defaults suit most installs. Sensors are added from the integration page, not here.",
+        "description": "Settings for sources that use the Protected calculation, and diagnostics. Built-in sources are calculated by their Integral helper. Sensors are added from the integration page, not here.",
         "data": {
           "sample_interval": "Sampling interval",
           "use_statistical_calculation": "Use recorder history",
@@ -198,6 +217,12 @@
         "weekly": "Weekly",
         "monthly": "Monthly",
         "annual": "Annual"
+      }
+    },
+    "calculation": {
+      "options": {
+        "builtin": "Built-in (Integral helper)",
+        "esg": "Protected"
       }
     }
   }

@@ -1,19 +1,36 @@
 # Energy Sensor Generator
 
-A Home Assistant custom integration that builds kWh energy sensors from power sensors (W / kW), entirely in Python. It does not create YAML `integration` or `utility_meter` helpers.
+A Home Assistant custom integration that turns power sensors (W / kW) into kWh energy sensors, and adds what Home Assistant's own helpers leave out: period totals, constant loads, price add-ons and, where a meter misbehaves, a protected calculation.
 
 [![Add to HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Vortitron&repository=energy-sensor-generator&category=integration)
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
+## Built-in or Energy Sensor Generator?
+
+Since 2026.11, Home Assistant's Energy dashboard can turn a power sensor into energy by itself: add a device with only a power sensor and it offers to create an Integral helper. If that is all you need, you don't need this integration.
+
+This integration builds on the same Integral helpers, so the two work together. For each power sensor it reuses the helper the Energy dashboard already created, or creates one with the same settings. The dashboard then recognises it in turn. On top of that it adds:
+
+| | Energy dashboard alone | With Energy Sensor Generator |
+| --- | --- | --- |
+| kWh from a power sensor | Integral helper | The same Integral helper (reused, or created for you) |
+| Daily / weekly / monthly / annual totals | One `utility_meter` helper per period, by hand | Ticked per source |
+| Devices without a meter (a switch and a wattage) | Not covered | Constant load: a power sensor plus its Integral helper |
+| Price plus fixed fees (e.g. Nordpool + transmission) | Template sensor | Price add-on |
+| Many sources at once | One at a time | One dialog |
+| Glitch readings (one bad 183 kW value) | Integrated as real energy | Ignored by the Protected calculation |
+| Gaps when the source or Home Assistant is offline | Skipped | Protected: filled from the meter's own kWh counter |
+| Total after a lost save | Can step back | Protected: never goes backwards |
+
 ## What it does
 
 - Finds power sensors (`device_class: power`, or unit `W` / `kW`).
-- Integrates power over time into `total_increasing` kWh sensors for the Energy dashboard.
+- Gives each one a kWh total for the Energy dashboard: a core Integral helper (**Built-in**, the default), or this integration's own calculation (**Protected**).
 - Optionally adds daily, weekly, monthly and annual totals.
 - Can model fixed loads from a switch plus a rated wattage (no inline meter).
 - Can wrap a price sensor (for example Nordpool) and add a fixed transmission/tax amount.
 
-Generated energy sensors are attached to the *source* device, not to a separate Energy Sensor Generator device.
+Generated sensors are grouped on a device per source, under the integration's page.
 
 ## Installation
 
@@ -42,13 +59,25 @@ After that, everything lives on the integration page (Settings → Devices & ser
 
 | Button | What it adds |
 | --- | --- |
-| **Add energy sensor** | A kWh sensor for one power sensor, with optional daily / weekly / monthly / annual totals. Only untracked power sensors are offered. Optionally name the meter's own kWh counter to fill gaps (see below). |
+| **Add energy sensor** | A kWh total for one power sensor, with optional daily / weekly / monthly / annual totals. Only untracked power sensors are offered. Choose **Built-in** or **Protected** (see below). |
 | **Add constant load** | A switch or `input_boolean` plus a rated wattage, for devices without a power meter. |
 | **Add price add-on** | Mirrors a price sensor (for example Nordpool) and adds a fixed amount. Sensors priced per kWh are offered first. |
 
 Each source is listed on the page with its own entities. Use its gear icon to rename it or change its period totals, or its menu to delete it. Deleting a source removes its entities; its stored total is kept and comes back if you add the same source again.
 
-The integration's own gear icon opens **Settings**: sampling interval, recorder-history calculation, spike cap, a synthetic grid total, and debug logging.
+The integration's own gear icon opens **Settings**: sampling interval, recorder-history calculation, spike cap, a synthetic grid total, and debug logging. Apart from the grid total and logging, these only affect Protected sources.
+
+### Built-in or Protected
+
+**Built-in** (the default for new sources) uses a Home Assistant Integral helper for the kWh total, with the settings the Energy dashboard uses (left Riemann sum, 5-minute maximum sub-interval, kWh). If one already integrates that power sensor, for example one the Energy dashboard created, it is reused rather than duplicated. Otherwise one is created and named after the source, e.g. *Kettle energy*. Use that helper on the Energy dashboard; the period totals follow it.
+
+A helper this integration created is removed when you delete the source, unless the Energy dashboard uses it. A helper it reused is never removed.
+
+A built-in **constant load** publishes a power sensor (rated watts while the switch is on, 0 when off), and an Integral helper turns that into kWh. The Energy dashboard can then show the load's live power as well.
+
+**Protected** uses this integration's own calculation (below). Choose it for a power sensor that sometimes reports impossible values, or a meter that drops out, where you want the spike cap, gap filling from the meter's counter, and a total that never goes backwards. The Energy dashboard does not recognise these sensors as its own, so pick the generated sensor yourself when adding the device.
+
+Sources created before 0.2.0 keep the Protected calculation and their history.
 
 ### Upgrading from 0.0.x
 
@@ -56,7 +85,7 @@ The first start after upgrading moves your existing selections into this layout 
 
 Then add the generated `*_energy` / `*_daily_energy` sensors under **Settings → Dashboards → Energy**.
 
-## How energy is calculated
+## How the Protected calculation works
 
 Power is converted to kW (`W ÷ 1000`, or already kW), then integrated over time:
 
@@ -67,7 +96,7 @@ Power is converted to kW (`W ÷ 1000`, or already kW), then integrated over time
 
 Constant-power devices use the switch state (`on` / `open` → rated watts, otherwise 0) and point sampling only.
 
-## Glitches and outages
+## Glitches and outages (Protected)
 
 - **Implausible readings:** a power reading above the limit (50 kW by default, under Settings; or a per-source limit in the energy sensor's Edit dialog) is ignored and the last plausible reading is held. Ignored readings are counted in the `rejected_readings` attribute.
 - **Recorder stalls:** when history lags behind the live sensor, the window is calculated from live readings.

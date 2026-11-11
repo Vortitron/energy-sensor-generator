@@ -18,10 +18,12 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.service import async_register_admin_service
+from homeassistant.helpers.start import async_at_started
 
 from .const import CONF_CREATE_SYNTHETIC_GRID_TOTAL, DOMAIN
 from .entity_helpers import debug_log as _debug_log, get_friendly_name
 from .hourly_copy_service import copy_from_previous_hour_service
+from .builtin import async_ensure_integrals, async_remove_owned_integral
 from .naming import (
 	PricePlan,
 	SourcePlan,
@@ -54,6 +56,10 @@ def detect_power_sensors(hass: HomeAssistant) -> list:
 
 	for state in hass.states.async_all("sensor"):
 		entity_id = state.entity_id
+		own = entity_registry.async_get(entity_id)
+		if own is not None and own.platform == DOMAIN:
+			# A constant load's power sensor is already tracked by its source
+			continue
 		unit = (state.attributes.get("unit_of_measurement") or "").strip()
 		unit_lower = unit.lower()
 		device_class = state.attributes.get("device_class") or ""
@@ -153,7 +159,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 		await storage_manager.async_flush()
 
 	entry.async_on_unload(hass.bus.async_listen(EVENT_HOMEASSISTANT_FINAL_WRITE, _async_final_write))
+
+	# Built-in sources need their Integral helpers. Wait until everything has
+	# started, so a helper that already exists is found rather than duplicated.
+	async def _async_link_integrals(_hass: HomeAssistant) -> None:
+		await async_ensure_integrals(hass, entry, source_plans(entry))
+
+	entry.async_on_unload(async_at_started(hass, _async_link_integrals))
 	return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+	"""Remove the Integral helpers this integration created for its sources."""
+	for subentry in entry.subentries.values():
+		await async_remove_owned_integral(hass, subentry.subentry_type, subentry.title, subentry.data)
 
 
 def async_tidy_devices(hass: HomeAssistant, entry: ConfigEntry, known_device_ids: set[str]) -> None:
@@ -256,6 +275,11 @@ async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
 	if changed:
 		from .sensor import async_sync_subentries
 		await async_sync_subentries(hass, entry, changed)
+	for subentry_id in before["subentries"].keys() - after["subentries"].keys():
+		subentry_type, title, data = before["subentries"][subentry_id]
+		await async_remove_owned_integral(hass, subentry_type, title, data)
+	if changed and hass.is_running:
+		await async_ensure_integrals(hass, entry, source_plans(entry))
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

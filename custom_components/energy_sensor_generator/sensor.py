@@ -7,9 +7,9 @@ from homeassistant.components.sensor import (
 	SensorDeviceClass,
 	SensorStateClass
 )
-from homeassistant.const import UnitOfEnergy, STATE_ON, STATE_OFF, STATE_OPEN, STATE_CLOSED
+from homeassistant.const import UnitOfEnergy, UnitOfPower, STATE_ON, STATE_OFF, STATE_OPEN, STATE_CLOSED
 from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change, async_track_time_interval
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -69,8 +69,10 @@ from .entity_helpers import (
 )
 from .period_sensors import PERIOD_SENSOR_CLASSES
 from . import async_remove_stale_entities, async_tidy_devices
+from .builtin import resolve_integral
 from .naming import (
 	PricePlan,
+	constant_power_unique_id,
 	is_main_energy_unique_id,
 	main_storage_key,
 	main_unique_id,
@@ -227,6 +229,9 @@ def _build_batches(hass: HomeAssistant, entry: ConfigEntry, subentry_ids: set[st
 			plan.name_override or get_friendly_name(hass, plan.source_entity_id),
 			"Constant load" if plan.constant_config else "Energy sensor",
 		)
+		if plan.builtin:
+			batches.append((_builtin_batch(hass, plan, storage_manager, device_info), plan.subentry_id))
+			continue
 		main_sensor = EnergySensor(
 			hass,
 			plan.base_name,
@@ -260,6 +265,35 @@ def _build_batches(hass: HomeAssistant, entry: ConfigEntry, subentry_ids: set[st
 	return batches
 
 
+def _builtin_batch(hass: HomeAssistant, plan, storage_manager, device_info: DeviceInfo) -> list:
+	"""Entities of a source whose kWh total is a core Integral helper.
+
+	The helper is created or reused by builtin.async_ensure_integrals; until
+	it exists the period sensors wait for it. A constant load also publishes
+	the power sensor the helper integrates.
+	"""
+	batch: list = []
+	if plan.constant_config:
+		batch.append(ConstantPowerSensor(hass, plan, device_info))
+
+	def _main_lookup() -> str | None:
+		return resolve_integral(hass, plan.integral_entry_id, plan.integral_entity_id)
+
+	for period in plan.periods:
+		batch.append(
+			PERIOD_SENSOR_CLASSES[period](
+				hass,
+				plan.base_name,
+				None,
+				storage_manager,
+				device_info,
+				plan.name_override,
+				main_lookup=_main_lookup,
+			)
+		)
+	return batch
+
+
 def source_device_info(key: str, name: str, model: str) -> DeviceInfo:
 	"""Device holding one source's entities (see naming.source_device_key)."""
 	return DeviceInfo(
@@ -269,6 +303,65 @@ def source_device_info(key: str, name: str, model: str) -> DeviceInfo:
 		model=model,
 		entry_type=DeviceEntryType.SERVICE,
 	)
+
+
+class ConstantPowerSensor(SensorEntity):
+	"""Power (W) of a switch with a rated wattage: rated watts when on, else 0.
+
+	A core Integral helper turns it into kWh, and the Energy dashboard can
+	show it as the device's live power.
+	"""
+
+	_attr_should_poll = False
+
+	def __init__(self, hass: HomeAssistant, plan, device_info: DeviceInfo):
+		self._hass = hass
+		self._switch_entity_id = plan.constant_config["switch_entity_id"]
+		self._power_w = float(plan.constant_config["power_w"])
+		self._attr_unique_id = constant_power_unique_id(plan.base_name)
+		friendly = plan.name_override or get_friendly_name(hass, self._switch_entity_id)
+		self._attr_name = get_unique_entity_name(hass, f"{friendly} Power")
+		self._attr_device_class = SensorDeviceClass.POWER
+		self._attr_state_class = SensorStateClass.MEASUREMENT
+		self._attr_native_unit_of_measurement = UnitOfPower.WATT
+		self._attr_device_info = device_info
+		self._attr_extra_state_attributes = {
+			"switch_entity_id": self._switch_entity_id,
+			"rated_power_w": self._power_w,
+		}
+		self._attr_native_value = None
+		self._attr_available = False
+
+	async def async_added_to_hass(self) -> None:
+		self._refresh()
+		self.async_on_remove(
+			async_track_state_change_event(self._hass, [self._switch_entity_id], self._handle_switch_change)
+		)
+
+	@callback
+	def _handle_switch_change(self, _event) -> None:
+		self._refresh()
+		self.async_write_ha_state()
+
+	@callback
+	def _refresh(self) -> None:
+		state = self._hass.states.get(self._switch_entity_id)
+		value = str(state.state).lower() if state else "unavailable"
+		if value in ("", "unknown", "unavailable"):
+			# Not 0 W: the Integral helper should book nothing while it is unknown
+			self._attr_available = False
+			self._attr_native_value = None
+			return
+		self._attr_available = True
+		if value in (STATE_ON, STATE_OPEN, "true", "1"):
+			self._attr_native_value = self._power_w
+		elif value in (STATE_OFF, STATE_CLOSED, "false", "0"):
+			self._attr_native_value = 0.0
+		else:
+			try:
+				self._attr_native_value = self._power_w if float(value) > 0 else 0.0
+			except ValueError:
+				self._attr_native_value = 0.0
 
 
 class PriceAdjustedSensor(SensorEntity):
@@ -1464,6 +1557,11 @@ class SyntheticGridTotalEnergySensor(SensorEntity):
 			# Only include main energy sensors (not period, price or this sensor)
 			if is_main_energy_unique_id(entry.unique_id or ""):
 				sources.add(entity_id)
+		# Built-in sources: their kWh total is a core Integral helper
+		for config_entry in self._hass.config_entries.async_entries(DOMAIN):
+			for plan in plan_sources(config_entry.subentries.values(), derive_constant_base_name):
+				if plan.builtin and (integral := resolve_integral(self._hass, plan.integral_entry_id, plan.integral_entity_id)):
+					sources.add(integral)
 		return sources
 
 	async def async_added_to_hass(self):
