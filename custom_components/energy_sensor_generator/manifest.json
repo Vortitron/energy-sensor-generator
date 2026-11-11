@@ -2,6 +2,7 @@
   "domain": "energy_sensor_generator",
   "name": "Energy Sensor Generator",
   "after_dependencies": [
+    "energy",
     "recorder"
   ],
   "codeowners": [
