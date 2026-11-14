@@ -242,6 +242,7 @@ def _build_batches(hass: HomeAssistant, entry: ConfigEntry, subentry_ids: set[st
 			plan.constant_config,
 			energy_counter=plan.energy_counter,
 			max_power_w=plan.max_power_w,
+			repointed_from=plan.repointed_from,
 		)
 		batch = [main_sensor]
 		for period in plan.periods:
@@ -466,9 +467,12 @@ class PriceAdjustedSensor(SensorEntity):
 class EnergySensor(SensorEntity, RestoreEntity):
 	"""Custom sensor to calculate kWh from power (Watts)."""
 
-	def __init__(self, hass, base_name, source_sensor, storage_path, device_info=None, friendly_name_override=None, constant_config=None, energy_counter=None, max_power_w=None):
+	def __init__(self, hass, base_name, source_sensor, storage_path, device_info=None, friendly_name_override=None, constant_config=None, energy_counter=None, max_power_w=None, repointed_from=None):
 		"""Initialize the sensor."""
 		self._hass = hass
+		# The power sensor this source was moved from: stored timing that
+		# predates the move belongs to that sensor (see _load_state)
+		self._repointed_from = repointed_from
 		# Highest plausible reading for this source (W); None uses the global setting
 		self._max_power_w = max_power_w if constant_config is None else None
 		self._rejected_readings = 0
@@ -834,6 +838,15 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		
 		if isinstance(state_data, dict):
 			self._state = state_data.get("value", 0.0)
+			if self._timing_is_another_sensors(state_data):
+				# Moved to another power sensor: keep the total, but count from
+				# now. Resuming from the old sensor's last reading would put
+				# all the new one's history since then into a single update.
+				_LOGGER.info(
+					"%s now counts from %s; carrying on from its total of %s kWh",
+					self._attr_name, self._source_sensor, self._state,
+				)
+				state_data = {"value": self._state}
 			last_power = state_data.get("last_power")
 			last_update = state_data.get("last_update")
 			last_statistical_calculation = state_data.get("last_statistical_calculation")
@@ -880,10 +893,22 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			self._state = legacy_value
 			self._power_to_kw_factor = current_conversion_factor
 
+	def _timing_is_another_sensors(self, state_data: dict) -> bool:
+		"""Whether stored timing was taken from a different power sensor.
+
+		Totals saved before 0.2.1 don't say which sensor they came from; for
+		those, a source that has been moved assumes the one it moved from.
+		"""
+		if self._constant_power_w is not None:
+			return False
+		stored = state_data.get("source") or self._repointed_from
+		return bool(stored) and stored != self._source_sensor
+
 	async def _save_state(self):
 		"""Save state to storage."""
 		payload = {
 			"value": self._state,
+			"source": self._source_sensor,
 			"last_power": self._last_power,
 			"last_update": self._last_update.isoformat() if self._last_update else None,
 			"last_statistical_calculation": self._last_statistical_calculation.isoformat() if self._last_statistical_calculation else None,

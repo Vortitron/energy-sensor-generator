@@ -305,7 +305,7 @@ async def test_builtin_edit_form_has_no_protected_fields(hass: HomeAssistant) ->
 		context={"source": config_entries.SOURCE_RECONFIGURE, "subentry_id": subentry.subentry_id},
 	)
 	assert result["step_id"] == "reconfigure_builtin"
-	assert {str(key) for key in result["data_schema"].schema} == {"name", "periods"}
+	assert {str(key) for key in result["data_schema"].schema} == {"source_entity_id", "name", "periods"}
 
 	result = await hass.config_entries.subentries.async_configure(result["flow_id"], {"name": "Tea", "periods": ["weekly"]})
 	assert result["type"] is FlowResultType.ABORT
@@ -350,3 +350,32 @@ async def test_synthetic_grid_total_includes_builtin_helpers(hass: HomeAssistant
 	integral = _only_subentry(entry).data["integral_entity_id"]
 	live = hass.data[DOMAIN][entry.entry_id]["entities"]["synthetic_grid_total_energy"]
 	assert integral in live._find_sources()
+
+
+async def test_a_builtin_source_moved_to_a_new_plug_repoints_its_helper(hass: HomeAssistant) -> None:
+	_power(hass, "sensor.kettle_power", 0, "Kettle Power")
+	_power(hass, "sensor.new_kettle_power", 1800, "New kettle Power")
+	entry = await _setup(hass, [_builtin("sensor.kettle_power")])
+	subentry = _only_subentry(entry)
+	(integral,) = _integrals(hass, "sensor.kettle_power")
+	counter = _sensor_of(hass, integral.entry_id)
+	daily = er.async_get(hass).async_get_entity_id("sensor", DOMAIN, "kettle_daily_energy")
+
+	result = await hass.config_entries.subentries.async_init(
+		(entry.entry_id, SUBENTRY_POWER_SENSOR),
+		context={"source": config_entries.SOURCE_RECONFIGURE, "subentry_id": subentry.subentry_id},
+	)
+	result = await hass.config_entries.subentries.async_configure(
+		result["flow_id"], {"source_entity_id": "sensor.new_kettle_power", "periods": ["daily"]}
+	)
+	assert result["reason"] == "reconfigure_successful"
+	await hass.async_block_till_done()
+
+	# The same helper, now integrating the new plug; nothing new made
+	assert _integrals(hass, "sensor.kettle_power") == []
+	(moved,) = _integrals(hass, "sensor.new_kettle_power")
+	assert moved.entry_id == integral.entry_id
+	assert _sensor_of(hass, moved.entry_id) == counter
+	assert len(hass.config_entries.async_entries("integration")) == 1
+	assert er.async_get(hass).async_get_entity_id("sensor", DOMAIN, "kettle_daily_energy") == daily
+	assert entry.subentries[subentry.subentry_id].data["integral_entry_id"] == integral.entry_id

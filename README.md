@@ -63,7 +63,7 @@ After that, everything lives on the integration page (Settings → Devices & ser
 | **Add constant load** | A switch or `input_boolean` plus a rated wattage, for devices without a power meter. |
 | **Add price add-on** | Mirrors a price sensor (for example Nordpool) and adds a fixed amount. Sensors priced per kWh are offered first. |
 
-Each source is listed on the page with its own entities. Use its gear icon to rename it or change its period totals, or its menu to delete it. Deleting a source removes its entities; its stored total is kept and comes back if you add the same source again.
+Each source is listed on the page with its own entities. Use its gear icon to rename it, change its period totals or move it to another power sensor (when its plug is replaced: it keeps its entities, total and history), or its menu to delete it. Deleting a source removes its entities; its stored total is kept and comes back if you add the same source again.
 
 The integration's own gear icon opens **Settings**: sampling interval, recorder-history calculation, spike cap, a synthetic grid total, and debug logging. Apart from the grid total and logging, these only affect Protected sources.
 

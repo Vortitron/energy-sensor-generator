@@ -188,6 +188,26 @@ async def async_ensure_integrals(hass: HomeAssistant, entry: ConfigEntry, plans:
 			)
 
 
+async def async_repoint_integral(hass: HomeAssistant, data: Mapping[str, Any], power_entity_id: str) -> bool:
+	"""Point a built-in source's Integral helper at another power sensor.
+
+	The helper keeps its entity and total and carries on from the new
+	sensor's readings. False when the source has no helper yet (one is then
+	found or made for the new sensor on reload).
+	"""
+	entry_id = data.get(CONF_INTEGRAL_ENTRY_ID)
+	integral = hass.config_entries.async_get_entry(entry_id) if entry_id else None
+	if integral is None or integral.domain != INTEGRAL_DOMAIN:
+		return False
+	if integral.options.get("source") == power_entity_id:
+		return True
+	hass.config_entries.async_update_entry(integral, options={**integral.options, "source": power_entity_id})
+	# As the helper itself does when its source is renamed: options alone don't reload it
+	hass.config_entries.async_schedule_reload(integral.entry_id)
+	_LOGGER.info("%s now integrates %s", integral.title, power_entity_id)
+	return True
+
+
 def _mentions(value: Any, wanted: str) -> bool:
 	if isinstance(value, str):
 		return value == wanted
