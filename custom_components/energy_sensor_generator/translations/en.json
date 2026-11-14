@@ -50,14 +50,16 @@
         },
         "reconfigure": {
           "title": "Edit energy sensor",
-          "description": "Source: {source}. To track a different sensor, delete this one and add a new one; its total is kept.",
+          "description": "Source: {source}. To count it from another power sensor (its plug replaced, say), pick that one below; its entities, total and history are kept.",
           "data": {
+            "source_entity_id": "Power sensor",
             "name": "Name",
             "periods": "Period totals",
             "energy_counter": "Meter energy counter (optional)",
             "max_power_w": "Maximum power"
           },
           "data_description": {
+            "source_entity_id": "Its plug replaced, or the same plug through another integration? Pick the new power sensor: it carries on with the same entities, total and history, counting from the new sensor from now.",
             "name": "Leave empty to use the power sensor's name.",
             "periods": "Unticking a period removes that sensor; its stored total comes back if you tick it again.",
             "energy_counter": "The meter's own kWh total, if it has one. Time the power sensor misses (offline, or Home Assistant restarting) is filled from this counter instead of being skipped. Sources sharing one meter, such as its three phases, split the filled energy by their power.",
@@ -66,12 +68,14 @@
         },
         "reconfigure_builtin": {
           "title": "Edit energy sensor",
-          "description": "Source: {source}. Its kWh total is a Home Assistant Integral helper; this integration adds the period totals. To track a different sensor, delete this one and add a new one.",
+          "description": "Source: {source}. Its kWh total is a Home Assistant Integral helper; this integration adds the period totals. To count it from another power sensor (its plug replaced, say), pick that one below: the same helper is pointed at it, so its total and history are kept.",
           "data": {
+            "source_entity_id": "Power sensor",
             "name": "Name",
             "periods": "Period totals"
           },
           "data_description": {
+            "source_entity_id": "Its plug replaced, or the same plug through another integration? Pick the new power sensor: it carries on with the same entities, total and history, counting from the new sensor from now.",
             "name": "Leave empty to use the power sensor's name.",
             "periods": "Unticking a period removes that sensor; its stored total comes back if you tick it again."
           }
@@ -80,7 +84,8 @@
       "error": {
         "no_sensor_selected": "Pick a power sensor.",
         "already_configured": "That sensor is already tracked.",
-        "protected_only": "Only used with the Protected calculation. Clear it, or choose Protected."
+        "protected_only": "Only used with the Protected calculation. Clear it, or choose Protected.",
+        "not_a_power_sensor": "That isn't a power sensor this integration can track."
       },
       "abort": {
         "no_power_sensors": "No untracked power sensors were found. A sensor must report power in W or kW to be listed.",

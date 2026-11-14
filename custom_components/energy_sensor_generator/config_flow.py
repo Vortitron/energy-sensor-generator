@@ -59,7 +59,7 @@ from .const import (
 )
 from .energy_math import DEFAULT_MAX_POWER_W
 from .entity_helpers import get_friendly_name
-from .builtin import CONF_CALCULATION
+from .builtin import CONF_CALCULATION, async_repoint_integral
 from .naming import (
 	CALCULATION_BUILTIN,
 	CALCULATIONS,
@@ -67,6 +67,9 @@ from .naming import (
 	SUBENTRY_CONSTANT_LOAD,
 	SUBENTRY_POWER_SENSOR,
 	SUBENTRY_PRICE_ADJUST,
+	CONF_BASE_NAME,
+	CONF_REPOINTED_FROM,
+	base_name_for,
 	normalise_calculation,
 	normalise_periods,
 	price_title,
@@ -280,26 +283,51 @@ class PowerSensorSubentryFlow(_SubentryFlowBase):
 		source = str(subentry.data.get(CONF_SOURCE_ENTITY_ID) or "")
 
 		builtin = normalise_calculation(subentry.data.get(CONF_CALCULATION)) == CALCULATION_BUILTIN
+		# Another power sensor it could count from instead (its plug replaced,
+		# or the same plug through another integration): any not tracked yet
+		others = _configured_entities(entry, SUBENTRY_POWER_SENSOR, CONF_SOURCE_ENTITY_ID) - {source}
+		choices = [source] + [entity_id for entity_id in _detected_power_sensors(self.hass) if entity_id not in others and entity_id != source]
+		errors: dict[str, str] = {}
 
 		if user_input is not None:
-			name = _clean_name(user_input.get(CONF_NAME))
-			data_updates: dict[str, Any] = {
-				CONF_PERIODS: list(normalise_periods(user_input.get(CONF_PERIODS))),
-				CONF_NAME: name,
-			}
-			if not builtin:
-				data_updates[CONF_ENERGY_COUNTER] = user_input.get(CONF_ENERGY_COUNTER) or ""
-				data_updates[CONF_MAX_POWER_W] = (
-					float(user_input[CONF_MAX_POWER_W]) if user_input.get(CONF_MAX_POWER_W) else None
+			new_source = str(user_input.get(CONF_SOURCE_ENTITY_ID) or source)
+			moved = new_source != source
+			if moved and new_source in others:
+				errors[CONF_SOURCE_ENTITY_ID] = "already_configured"
+			elif moved and new_source not in choices:
+				errors[CONF_SOURCE_ENTITY_ID] = "not_a_power_sensor"
+			else:
+				name = _clean_name(user_input.get(CONF_NAME))
+				data_updates: dict[str, Any] = {
+					CONF_PERIODS: list(normalise_periods(user_input.get(CONF_PERIODS))),
+					CONF_NAME: name,
+				}
+				if not builtin:
+					data_updates[CONF_ENERGY_COUNTER] = user_input.get(CONF_ENERGY_COUNTER) or ""
+					data_updates[CONF_MAX_POWER_W] = (
+						float(user_input[CONF_MAX_POWER_W]) if user_input.get(CONF_MAX_POWER_W) else None
+					)
+				unique_id = subentry.unique_id
+				if moved:
+					# Same base name, so the same entities, totals and history
+					data_updates[CONF_SOURCE_ENTITY_ID] = new_source
+					data_updates[CONF_BASE_NAME] = base_name_for(subentry.data)
+					data_updates[CONF_REPOINTED_FROM] = source
+					unique_id = subentry_unique_id(SUBENTRY_POWER_SENSOR, new_source)
+					if builtin:
+						await async_repoint_integral(self.hass, subentry.data, new_source)
+				return self.async_update_and_abort(
+					entry,
+					subentry,
+					unique_id=unique_id,
+					title=name or get_friendly_name(self.hass, new_source),
+					data_updates=data_updates,
 				)
-			return self.async_update_and_abort(
-				entry,
-				subentry,
-				title=name or get_friendly_name(self.hass, source),
-				data_updates=data_updates,
-			)
 
 		schema: dict = {
+			vol.Optional(CONF_SOURCE_ENTITY_ID, default=source): EntitySelector(
+				EntitySelectorConfig(include_entities=choices)
+			),
 			vol.Optional(CONF_NAME, default=str(subentry.data.get(CONF_NAME) or "")): NAME_SELECTOR,
 			vol.Optional(
 				CONF_PERIODS, default=list(normalise_periods(subentry.data.get(CONF_PERIODS)))
@@ -319,6 +347,7 @@ class PowerSensorSubentryFlow(_SubentryFlowBase):
 		return self.async_show_form(
 			step_id="reconfigure_builtin" if builtin else "reconfigure",
 			data_schema=vol.Schema(schema),
+			errors=errors,
 			description_placeholders={"source": source},
 		)
 

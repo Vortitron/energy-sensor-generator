@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+- **Move a source to another power sensor and keep its history.** When a plug is replaced (or the same plug turns up through another integration), open the source's **Edit** dialog and pick the new power sensor. It keeps its entities, entity IDs, stored total, period totals and Energy dashboard history, and counts from the new sensor from then on. Before, the only way was to delete it and add the new sensor, which started a new total under a new entity.
+  - **Protected sources** carry on from their stored total. Time since the old sensor was last read is not counted, so weeks of the new sensor's history don't land in a single update.
+  - **Built-in sources** point their Integral helper at the new sensor; it is the same helper with the same total.
 ## 0.2.0
 
 Works with Home Assistant 2026.11's own power-to-energy feature instead of competing with it. The Energy dashboard now offers to create an Integral helper for a device that only has a power sensor, and only ever reuses Integral helpers, so this integration now builds on those helpers.

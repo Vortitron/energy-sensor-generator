@@ -496,6 +496,68 @@ async def test_reconfigure_power_sensor_subentry(hass: HomeAssistant) -> None:
 	assert hass.states.get(_entity_id(hass, "a_monthly_energy")).name == "Office Monthly Energy"
 
 
+async def test_a_source_moved_to_a_new_plug_keeps_its_counter(hass: HomeAssistant, hass_storage) -> None:
+	"""A replaced plug: the counter carries on from the new power sensor, its entity and history kept."""
+	four_weeks_ago = (dt_util.now() - timedelta(days=28)).isoformat()
+	# Saved by an earlier version: no record of which sensor the timing came from
+	hass_storage[STORAGE_KEY] = {
+		"version": 1,
+		"minor_version": 1,
+		"key": STORAGE_KEY,
+		"data": {
+			"smart_plug_energy": {"value": 52.7, "last_power": 60.0, "last_update": four_weeks_ago, "last_statistical_calculation": four_weeks_ago},
+			"smart_plug_daily_energy": {"value": 0.0, "last_reset": dt_util.now().isoformat(), "last_energy": 52.7},
+		},
+	}
+	# The old plug's power sensor is gone; the new plug reads 52 W
+	_power(hass, "sensor.bio_power_power", 52, "Bio power Power")
+	_power(hass, "sensor.kettle_power", 0, "Kettle Power")
+	entry = await _setup(hass, ["sensor.smart_plug_power", "sensor.kettle_power"])
+	counter = _entity_id(hass, "smart_plug_energy")
+	assert counter == "sensor.smart_plug_energy"
+	subentry = _subentry(entry, SUBENTRY_POWER_SENSOR, "sensor.smart_plug_power")
+
+	result = await hass.config_entries.subentries.async_init(
+		(entry.entry_id, SUBENTRY_POWER_SENSOR),
+		context={"source": config_entries.SOURCE_RECONFIGURE, "subentry_id": subentry.subentry_id},
+	)
+	offered = _schema_field(result, "source_entity_id").config["include_entities"]
+	# The new plug is offered; another source's sensor can't be taken over
+	assert "sensor.bio_power_power" in offered and "sensor.kettle_power" not in offered
+	with pytest.raises(InvalidData):
+		await hass.config_entries.subentries.async_configure(
+			result["flow_id"], {"source_entity_id": "sensor.kettle_power", "periods": ["daily"]}
+		)
+	result = await hass.config_entries.subentries.async_configure(
+		result["flow_id"], {"source_entity_id": "sensor.bio_power_power", "periods": ["daily"]}
+	)
+	assert result["reason"] == "reconfigure_successful"
+	await hass.async_block_till_done()
+
+	subentry = entry.subentries[subentry.subentry_id]
+	assert subentry.unique_id == subentry_unique_id(SUBENTRY_POWER_SENSOR, "sensor.bio_power_power")
+	assert subentry.data["source_entity_id"] == "sensor.bio_power_power"
+	assert subentry.data["base_name"] == "smart_plug"
+	assert subentry.data["repointed_from"] == "sensor.smart_plug_power"
+	# The same entities, carrying on from the stored total: four weeks at the
+	# old plug's last reading were not added in one go
+	assert _entity_id(hass, "smart_plug_energy") == counter
+	assert _entity_id(hass, "bio_energy") is None
+	assert float(hass.states.get(counter).state) == pytest.approx(52.7, abs=0.01)
+	assert _entity_id(hass, "smart_plug_daily_energy") is not None
+	entity = hass.data[DOMAIN][entry.entry_id]["entities"]["smart_plug_energy"]
+	assert entity._source_sensor == "sensor.bio_power_power"
+	assert entity._last_statistical_calculation is None or entity._last_statistical_calculation > dt_util.utcnow() - timedelta(minutes=5)
+	await entity._save_state()
+	assert await hass.config_entries.async_unload(entry.entry_id)
+	await hass.async_block_till_done()
+	saved = hass_storage[STORAGE_KEY]["data"]["smart_plug_energy"]
+	assert saved["source"] == "sensor.bio_power_power"
+	assert saved["value"] == pytest.approx(52.7, abs=0.01)
+	# Started again later: its own timing, now from the new sensor, is kept
+	assert not entity._timing_is_another_sensors(saved)
+
+
 async def test_constant_load_subentry_flow(hass: HomeAssistant) -> None:
 	hass.states.async_set("switch.heater", "on", {"friendly_name": "Heater"})
 	entry = await _setup(hass)

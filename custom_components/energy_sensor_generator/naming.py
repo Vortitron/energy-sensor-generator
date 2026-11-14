@@ -151,6 +151,20 @@ def source_device_key(subentry_id: str | None, fallback: str) -> str:
 	return f"source_{subentry_id}" if subentry_id else fallback
 
 
+# A source moved to another power sensor keeps the base name it was built
+# from, so its entities, stored totals and history stay; and remembers the
+# sensor it came from, so its calculation starts afresh rather than
+# integrating the new sensor's history since the old one was last read.
+CONF_BASE_NAME = "base_name"
+CONF_REPOINTED_FROM = "repointed_from"
+
+
+def base_name_for(data: Mapping) -> str:
+	"""Base name of a power-sensor source: the one it was built with, if it has moved."""
+	kept = str(data.get(CONF_BASE_NAME) or "").strip()
+	return kept or power_sensor_base_name(str(data.get("source_entity_id") or "").strip())
+
+
 def subentry_unique_id(subentry_type: str, entity_id: str) -> str:
 	"""Unique ID of a subentry; one subentry per source entity and type."""
 	return f"{subentry_type}:{entity_id}"
@@ -174,6 +188,8 @@ class SourcePlan:
 	# The core Integral helper a built-in source uses
 	integral_entry_id: str | None = None
 	integral_entity_id: str | None = None
+	# The power sensor it was moved from, if it has been
+	repointed_from: str | None = None
 
 	@property
 	def name_override(self) -> str | None:
@@ -232,7 +248,7 @@ def plan_sources(
 			source_entity_id = str(data.get("source_entity_id") or "").strip()
 			if not source_entity_id:
 				continue
-			base_name = power_sensor_base_name(source_entity_id)
+			base_name = base_name_for(data)
 		elif subentry.subentry_type == SUBENTRY_CONSTANT_LOAD:
 			source_entity_id = str(data.get("switch_entity_id") or "").strip()
 			power_w = data.get("power_w")
@@ -263,6 +279,7 @@ def plan_sources(
 				normalise_calculation(data.get("calculation")),
 				_clean_name(data.get("integral_entry_id")),
 				_clean_name(data.get("integral_entity_id")),
+				repointed_from=_clean_name(data.get(CONF_REPOINTED_FROM)) if constant_config is None else None,
 			)
 		)
 
