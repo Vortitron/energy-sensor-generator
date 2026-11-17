@@ -982,6 +982,81 @@ async def test_gap_fill_respects_the_spike_cap(hass: HomeAssistant, monkeypatch)
 	assert sensor.total == start_total
 
 
+async def test_gap_fill_ignores_a_stale_reading_carried_into_history(hass: HomeAssistant, monkeypatch) -> None:
+	"""A standby whose database is days behind must not fill days of usage into a short gap."""
+	entry = await _setup_meter(hass)
+	sensor = _main_sensor(hass, entry, "sensor.l1_power")
+	now = dt_util.utcnow()
+	gap_start, gap_end = now - timedelta(minutes=15), now - timedelta(minutes=10)
+	# History's state as of the query start: really recorded three days ago
+	query_start = gap_start - timedelta(hours=1)
+	monkeypatch.setattr(EnergySensor, "_async_history", _history({
+		COUNTER: [("100.0", query_start), ("140.0", gap_end + timedelta(minutes=1))],
+	}))
+	start_total = sensor.total
+	sensor._gap_start, sensor._gap_end = gap_start, gap_end
+	await sensor._async_fill_gap(now, {})
+	assert sensor.total == start_total
+	assert sensor._gap_start is None
+
+
+async def test_gap_fill_starts_from_the_counter_reading_kept_with_the_total(hass: HomeAssistant, monkeypatch) -> None:
+	entry = await _setup_meter(hass)
+	sensor = _main_sensor(hass, entry, "sensor.l1_power")
+	now = dt_util.utcnow()
+	gap_start, gap_end = now - timedelta(minutes=40), now - timedelta(minutes=10)
+	monkeypatch.setattr(EnergySensor, "_async_history", _history({
+		COUNTER: [("100.0", gap_start - timedelta(hours=1)), ("141.5", gap_end + timedelta(minutes=1))],
+	}))
+	# The last reading this sensor saw before the gap, as saved with its total
+	sensor._counter_seen = (140.0, gap_start)
+	sensor._note_gap(gap_start, gap_end)
+	assert sensor._gap_counter_before == 140.0
+	start_total = sensor.total
+	await sensor._async_fill_gap(now, {})
+	# 1.5 kWh across the gap, no phase power known: an even third each
+	assert sensor.total - start_total == pytest.approx(0.5)
+	assert sensor._gap_counter_before is None
+
+
+async def test_gap_fill_ignores_a_counter_reading_from_before_the_gap(hass: HomeAssistant) -> None:
+	entry = await _setup_meter(hass)
+	sensor = _main_sensor(hass, entry, "sensor.l1_power")
+	gap_start = dt_util.utcnow() - timedelta(minutes=10)
+	sensor._counter_seen = (100.0, gap_start - timedelta(days=3))
+	sensor._note_gap(gap_start, gap_start + timedelta(minutes=5))
+	assert sensor._gap_counter_before is None
+
+
+async def test_gap_fill_rejects_more_than_the_plausible_power(hass: HomeAssistant, monkeypatch) -> None:
+	entry = await _setup_meter(hass)
+	sensor = _main_sensor(hass, entry, "sensor.l1_power")
+	now = dt_util.utcnow()
+	gap_start, gap_end = now - timedelta(minutes=15), now - timedelta(minutes=10)
+	monkeypatch.setattr(EnergySensor, "_async_history", _history({
+		COUNTER: [("100.0", gap_start - timedelta(minutes=1)), ("400.0", gap_end + timedelta(minutes=1))],
+	}))
+	start_total = sensor.total
+	sensor._gap_start, sensor._gap_end = gap_start, gap_end
+	# 100 kWh in 5 minutes is 1.2 MW: over the 50 kW default
+	await sensor._async_fill_gap(now, {})
+	assert sensor.total == start_total
+
+
+async def test_counter_reading_is_kept_with_the_total(hass: HomeAssistant) -> None:
+	entry = await _setup_meter(hass)
+	sensor = _main_sensor(hass, entry, "sensor.l1_power")
+	now = dt_util.utcnow()
+	sensor._note_counter(now)
+	assert sensor._counter_seen == (140.0, now)
+	sensor._note_gap(now, now + timedelta(minutes=20))
+	await sensor._save_state()
+	sensor._counter_seen = sensor._gap_counter_before = sensor._gap_start = None
+	await sensor._load_state()
+	assert sensor._counter_seen == (140.0, now)
+	assert sensor._gap_counter_before == 140.0
+
+
 async def test_restart_gap_is_remembered_only_with_a_counter(hass: HomeAssistant) -> None:
 	entry = await _setup_meter(hass)
 	plain = await _setup_meter_plain_source(hass, entry)

@@ -46,6 +46,7 @@ from .energy_math import (
 	conversion_factor_from_unit,
 	point_sampling_window_energy_kwh,
 	GAP_FILL_LOOKBACK_SECONDS,
+	COUNTER_SEEN_SLACK_SECONDS,
 	GAP_FILL_GIVE_UP_SECONDS,
 	GAP_FILL_SETTLE_SECONDS,
 	last_value_at_or_before,
@@ -485,6 +486,11 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		self._energy_counter = energy_counter if constant_config is None else None
 		self._gap_start = None  # last moment the total was known to be complete
 		self._gap_end = None  # where calculation resumed after the gap
+		# The counter as this sensor last saw it while counting, (kWh, when),
+		# and the reading the pending gap starts from. Kept with the total, so
+		# whichever install resumes it starts from what was really measured.
+		self._counter_seen = None
+		self._gap_counter_before = None
 		self._last_gap_fill_kwh = None
 		self._last_gap_fill_at = None
 		self._base_name = base_name
@@ -853,6 +859,11 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			if self._energy_counter:
 				self._gap_start = _parse_stored_datetime(state_data.get("gap_start"))
 				self._gap_end = _parse_stored_datetime(state_data.get("gap_end"))
+				seen_at = _parse_stored_datetime(state_data.get("counter_seen_at"))
+				seen = state_data.get("counter_seen")
+				self._counter_seen = (float(seen), seen_at) if _is_number(seen) and seen_at else None
+				before = state_data.get("gap_counter_before")
+				self._gap_counter_before = float(before) if _is_number(before) and self._gap_start else None
 			stored_conversion_factor = state_data.get("conversion_factor")
 			
 			# Determine current conversion factor
@@ -915,6 +926,9 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			"conversion_factor": self._power_to_kw_factor,
 			"gap_start": self._gap_start.isoformat() if self._gap_start else None,
 			"gap_end": self._gap_end.isoformat() if self._gap_end else None,
+			"counter_seen": self._counter_seen[0] if self._counter_seen else None,
+			"counter_seen_at": self._counter_seen[1].isoformat() if self._counter_seen else None,
+			"gap_counter_before": self._gap_counter_before,
 		}
 		await _persist_storage_key(self._hass, self._storage_manager, self._storage_key, payload, self._attr_name)
 
@@ -1241,6 +1255,8 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			
 			if self._energy_counter and self._gap_start is not None and self._gap_end is not None:
 				await self._async_fill_gap(now, config_options)
+			if self._energy_counter and self._gap_start is None:
+				self._note_counter(now)
 
 			# Always resync tracking and persist, regardless of method used.
 			self._last_power = power
@@ -1259,7 +1275,20 @@ class EnergySensor(SensorEntity, RestoreEntity):
 			return
 		if self._gap_start is None:
 			self._gap_start = dt_util.as_utc(covered_until)
+			self._gap_counter_before = None
+			if self._counter_seen is not None:
+				seen, seen_at = self._counter_seen
+				# Only a reading taken while the total was still complete
+				if self._gap_start - timedelta(seconds=GAP_FILL_LOOKBACK_SECONDS) <= seen_at <= self._gap_start + timedelta(seconds=COUNTER_SEEN_SLACK_SECONDS):
+					self._gap_counter_before = seen
 		self._gap_end = dt_util.as_utc(resumed_at)
+
+	def _note_counter(self, now) -> None:
+		"""Remember the meter counter's live reading while the total is complete."""
+		state = self._hass.states.get(self._energy_counter)
+		samples = _numeric_samples([state], _energy_to_kwh_factor) if state is not None else []
+		if samples:
+			self._counter_seen = (samples[0][0], dt_util.as_utc(now))
 
 	def _counter_siblings(self) -> list["EnergySensor"]:
 		"""Sources (this one included) that share this sensor's meter counter."""
@@ -1310,6 +1339,7 @@ class EnergySensor(SensorEntity, RestoreEntity):
 				self._attr_name, self._energy_counter, gap_start.isoformat(),
 			)
 			self._gap_start = self._gap_end = None
+			self._gap_counter_before = None
 			return
 		siblings = self._counter_siblings()
 		entity_ids = [self._energy_counter, *(sibling._source_sensor for sibling in siblings)]
@@ -1319,8 +1349,18 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		if states is None:
 			return
 
-		counter_samples = _numeric_samples((states or {}).get(self._energy_counter, []), _energy_to_kwh_factor)
-		counter_before = last_value_at_or_before(counter_samples, gap_start)
+		query_start = gap_start - timedelta(seconds=GAP_FILL_LOOKBACK_SECONDS)
+		# History also returns the last state recorded before query_start,
+		# however old, stamped as if read at query_start. On an install whose
+		# database is days behind (a standby taking over) that is a days-old
+		# reading, and the counter's rise since then is not this gap's.
+		counter_samples = [
+			sample for sample in _numeric_samples((states or {}).get(self._energy_counter, []), _energy_to_kwh_factor)
+			if sample[1] > query_start
+		]
+		counter_before = self._gap_counter_before
+		if counter_before is None:
+			counter_before = last_value_at_or_before(counter_samples, gap_start)
 		counter_after = first_value_at_or_after(counter_samples, gap_end)
 		if counter_after is None:
 			# Nothing recorded since the gap: the counter has either not caught
@@ -1351,6 +1391,7 @@ class EnergySensor(SensorEntity, RestoreEntity):
 		share = power_share(powers[0], powers)
 		fill_kwh = counter_gap_fill_kwh(counter_before, counter_after, share)
 		self._gap_start = self._gap_end = None
+		self._gap_counter_before = None
 
 		if fill_kwh is None:
 			_LOGGER.info(
@@ -1367,6 +1408,16 @@ class EnergySensor(SensorEntity, RestoreEntity):
 				self._attr_name, fill_kwh, gap_hours, max_energy_per_hour,
 			)
 			return
+		cap_native = self._power_cap(config_options)
+		if cap_native is not None and self._power_to_kw_factor:
+			cap_kwh = cap_native / self._power_to_kw_factor * gap_hours
+			if fill_kwh > cap_kwh:
+				_LOGGER.warning(
+					"%s: gap fill of %.4f kWh over %.2f hours would mean more than the maximum plausible power "
+					"(at most %.4f kWh) and was REJECTED; %s may have reported a stale reading",
+					self._attr_name, fill_kwh, gap_hours, cap_kwh, self._energy_counter,
+				)
+				return
 
 		self._state += fill_kwh
 		self._last_gap_fill_kwh = fill_kwh
