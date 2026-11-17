@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+- **A gap is no longer filled with days of usage when a standby takes over.** On a Home Assistant install whose database is days behind, such as a standby taking over while the main install restarts, the meter counter's last recorded reading can be days old. Home Assistant's history returns it as if it were read just before the gap, so a five-minute gap was credited with the counter's rise since then: 231 kWh across six P1 phase sensors in one case. Gap filling now starts from the counter reading the sensor saved with its total. It never takes a reading carried in from before the look-back window. It also rejects a fill above the source's maximum plausible power over the gap.
+
 ## 0.2.1
 
 - **Move a source to another power sensor and keep its history.** When a plug is replaced (or the same plug turns up through another integration), open the source's **Edit** dialog and pick the new power sensor. It keeps its entities, entity IDs, stored total, period totals and Energy dashboard history, and counts from the new sensor from then on. Before, the only way was to delete it and add the new sensor, which started a new total under a new entity.

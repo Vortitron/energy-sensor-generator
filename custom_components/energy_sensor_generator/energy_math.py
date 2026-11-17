@@ -171,6 +171,10 @@ GAP_FILL_LOOKBACK_SECONDS = 3600
 # value only after this long, so a meter still catching up is not under-read.
 GAP_FILL_SETTLE_SECONDS = 300
 
+# A counter reading remembered at most this long after the moment a gap
+# starts from still counts as that gap's opening reading.
+COUNTER_SEEN_SLACK_SECONDS = 120
+
 # Give up on a gap whose closing counter reading never arrives.
 GAP_FILL_GIVE_UP_SECONDS = 24 * 3600
 
