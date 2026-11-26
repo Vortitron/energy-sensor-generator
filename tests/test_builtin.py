@@ -379,3 +379,79 @@ async def test_a_builtin_source_moved_to_a_new_plug_repoints_its_helper(hass: Ho
 	assert len(hass.config_entries.async_entries("integration")) == 1
 	assert er.async_get(hass).async_get_entity_id("sensor", DOMAIN, "kettle_daily_energy") == daily
 	assert entry.subentries[subentry.subentry_id].data["integral_entry_id"] == integral.entry_id
+	assert entry.subentries[subentry.subentry_id].data["integral_owned"] is True
+
+
+async def _move(hass: HomeAssistant, entry: MockConfigEntry, new_source: str) -> None:
+	subentry = _only_subentry(entry)
+	result = await hass.config_entries.subentries.async_init(
+		(entry.entry_id, SUBENTRY_POWER_SENSOR),
+		context={"source": config_entries.SOURCE_RECONFIGURE, "subentry_id": subentry.subentry_id},
+	)
+	result = await hass.config_entries.subentries.async_configure(
+		result["flow_id"], {"source_entity_id": new_source, "periods": ["daily"]}
+	)
+	assert result["reason"] == "reconfigure_successful"
+	await hass.async_block_till_done()
+
+
+async def test_moving_a_source_leaves_a_reused_helper_alone(hass: HomeAssistant) -> None:
+	"""The user's own helper may be used elsewhere: it keeps its source, and the new plug gets one of its own."""
+	_power(hass, "sensor.kettle_power", 0, "Kettle Power")
+	_power(hass, "sensor.new_kettle_power", 1800, "New kettle Power")
+	users = await _create_integral(hass, "sensor.kettle_power", "Kettle from dashboard")
+	entry = await _setup(hass, [_builtin("sensor.kettle_power")])
+	assert _only_subentry(entry).data["integral_owned"] is False
+
+	await _move(hass, entry, "sensor.new_kettle_power")
+
+	assert [e.entry_id for e in _integrals(hass, "sensor.kettle_power")] == [users]
+	(created,) = _integrals(hass, "sensor.new_kettle_power")
+	assert created.entry_id != users
+	data = _only_subentry(entry).data
+	assert data["integral_entry_id"] == created.entry_id
+	assert data["integral_entity_id"] == _sensor_of(hass, created.entry_id)
+	assert data["integral_owned"] is True
+
+
+async def test_moving_a_source_reuses_a_helper_the_new_plug_has(hass: HomeAssistant) -> None:
+	_power(hass, "sensor.kettle_power", 0, "Kettle Power")
+	_power(hass, "sensor.new_kettle_power", 1800, "New kettle Power")
+	old = await _create_integral(hass, "sensor.kettle_power", "Old kettle from dashboard")
+	new = await _create_integral(hass, "sensor.new_kettle_power", "New kettle from dashboard")
+	entry = await _setup(hass, [_builtin("sensor.kettle_power")])
+
+	await _move(hass, entry, "sensor.new_kettle_power")
+
+	assert [e.entry_id for e in _integrals(hass, "sensor.kettle_power")] == [old]
+	assert [e.entry_id for e in _integrals(hass, "sensor.new_kettle_power")] == [new]
+	data = _only_subentry(entry).data
+	assert data["integral_entry_id"] == new
+	assert data["integral_owned"] is False
+
+
+async def test_period_total_does_not_jump_to_another_helpers_total(hass: HomeAssistant) -> None:
+	"""Moved to a helper with a larger total, the period counts on from that helper's value."""
+	_power(hass, "sensor.kettle_power", 0, "Kettle Power")
+	_power(hass, "sensor.new_kettle_power", 1800, "New kettle Power")
+	await _create_integral(hass, "sensor.kettle_power", "Old kettle from dashboard")
+	new = await _create_integral(hass, "sensor.new_kettle_power", "New kettle from dashboard")
+	entry = await _setup(hass, [_builtin("sensor.kettle_power")])
+	old_integral = _only_subentry(entry).data["integral_entity_id"]
+	new_integral = _sensor_of(hass, new)
+	daily = er.async_get(hass).async_get_entity_id("sensor", DOMAIN, "kettle_daily_energy")
+	energy = {"unit_of_measurement": "kWh", "device_class": "energy"}
+
+	for value in ("1.0", "3.0"):
+		hass.states.async_set(old_integral, value, energy)
+		await hass.async_block_till_done()
+	assert float(hass.states.get(daily).state) == pytest.approx(2.0)
+
+	hass.states.async_set(new_integral, "500.0", energy)
+	await hass.async_block_till_done()
+	await _move(hass, entry, "sensor.new_kettle_power")
+	assert er.async_get(hass).async_get_entity_id("sensor", DOMAIN, "kettle_daily_energy") == daily
+
+	hass.states.async_set(new_integral, "501.0", energy)
+	await hass.async_block_till_done()
+	assert float(hass.states.get(daily).state) == pytest.approx(3.0)

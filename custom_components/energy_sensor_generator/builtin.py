@@ -39,6 +39,9 @@ CONF_INTEGRAL_ENTRY_ID = "integral_entry_id"
 CONF_INTEGRAL_ENTITY_ID = "integral_entity_id"
 CONF_INTEGRAL_OWNED = "integral_owned"
 
+# Subentry data of a built-in source with no Integral helper linked yet
+UNLINKED_INTEGRAL = {CONF_INTEGRAL_ENTRY_ID: "", CONF_INTEGRAL_ENTITY_ID: "", CONF_INTEGRAL_OWNED: False}
+
 
 def _source_ids(hass: HomeAssistant, entity_id: str) -> set[str]:
 	"""An entity ID and its registry ID; helpers may store either as their source."""
@@ -191,10 +194,15 @@ async def async_ensure_integrals(hass: HomeAssistant, entry: ConfigEntry, plans:
 async def async_repoint_integral(hass: HomeAssistant, data: Mapping[str, Any], power_entity_id: str) -> bool:
 	"""Point a built-in source's Integral helper at another power sensor.
 
-	The helper keeps its entity and total and carries on from the new
-	sensor's readings. False when the source has no helper yet (one is then
-	found or made for the new sensor on reload).
+	Only a helper this integration created is changed: it keeps its entity
+	and total and carries on from the new sensor's readings. A helper it
+	reused belongs to the user and may be used elsewhere, so it is left as
+	it is. False when nothing was repointed; the caller then drops the link
+	(see ``UNLINKED_INTEGRAL``) so a helper for the new sensor is found or
+	made on reload, the same way as for a new source.
 	"""
+	if not data.get(CONF_INTEGRAL_OWNED):
+		return False
 	entry_id = data.get(CONF_INTEGRAL_ENTRY_ID)
 	integral = hass.config_entries.async_get_entry(entry_id) if entry_id else None
 	if integral is None or integral.domain != INTEGRAL_DOMAIN:

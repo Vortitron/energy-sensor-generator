@@ -59,7 +59,7 @@ from .const import (
 )
 from .energy_math import DEFAULT_MAX_POWER_W
 from .entity_helpers import get_friendly_name
-from .builtin import CONF_CALCULATION, async_repoint_integral
+from .builtin import CONF_CALCULATION, UNLINKED_INTEGRAL, async_repoint_integral
 from .naming import (
 	CALCULATION_BUILTIN,
 	CALCULATIONS,
@@ -314,8 +314,10 @@ class PowerSensorSubentryFlow(_SubentryFlowBase):
 					data_updates[CONF_BASE_NAME] = base_name_for(subentry.data)
 					data_updates[CONF_REPOINTED_FROM] = source
 					unique_id = subentry_unique_id(SUBENTRY_POWER_SENSOR, new_source)
-					if builtin:
-						await async_repoint_integral(self.hass, subentry.data, new_source)
+					if builtin and not await async_repoint_integral(self.hass, subentry.data, new_source):
+						# A reused helper stays as the user set it up; the new
+						# sensor gets its own on reload, as a new source does
+						data_updates.update(UNLINKED_INTEGRAL)
 				return self.async_update_and_abort(
 					entry,
 					subentry,
