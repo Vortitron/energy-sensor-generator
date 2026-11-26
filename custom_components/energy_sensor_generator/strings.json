@@ -68,14 +68,14 @@
         },
         "reconfigure_builtin": {
           "title": "Edit energy sensor",
-          "description": "Source: {source}. Its kWh total is a Home Assistant Integral helper; this integration adds the period totals. To count it from another power sensor (its plug replaced, say), pick that one below: the same helper is pointed at it, so its total and history are kept.",
+          "description": "Source: {source}. Its kWh total is a Home Assistant Integral helper; this integration adds the period totals. To count it from another power sensor (its plug replaced, say), pick that one below. A helper this integration created is pointed at it and keeps its total. A helper you or the Energy dashboard made is left as it is; the new sensor then gets a helper of its own, found or created as for a new source. The period totals and their history are kept either way.",
           "data": {
             "source_entity_id": "Power sensor",
             "name": "Name",
             "periods": "Period totals"
           },
           "data_description": {
-            "source_entity_id": "Its plug replaced, or the same plug through another integration? Pick the new power sensor: it carries on with the same entities, total and history, counting from the new sensor from now.",
+            "source_entity_id": "Its plug replaced, or the same plug through another integration? Pick the new power sensor: it carries on with the same entities and history, counting from the new sensor from now.",
             "name": "Leave empty to use the power sensor's name.",
             "periods": "Unticking a period removes that sensor; its stored total comes back if you tick it again."
           }

@@ -73,6 +73,8 @@ The integration's own gear icon opens **Settings**: sampling interval, recorder-
 
 A helper this integration created is removed when you delete the source, unless the Energy dashboard uses it. A helper it reused is never removed.
 
+Moving a built-in source to another power sensor points a helper this integration created at the new sensor, so it keeps its total. A helper it reused is never changed, as it may be used elsewhere (another dashboard, an automation, a utility meter): the new sensor gets a helper of its own instead, found or created as for a new source. The period totals carry on either way.
+
 A built-in **constant load** publishes a power sensor (rated watts while the switch is on, 0 when off), and an Integral helper turns that into kWh. The Energy dashboard can then show the load's live power as well.
 
 **Protected** uses this integration's own calculation (below). Choose it for a power sensor that sometimes reports impossible values, or a meter that drops out, where you want the spike cap, gap filling from the meter's counter, and a total that never goes backwards. The Energy dashboard does not recognise these sensors as its own, so pick the generated sensor yourself when adding the device.

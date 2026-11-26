@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.3
+
+From the HACS review.
+
+- **Moving a built-in source no longer changes a helper you made yourself.** Moving a source to another power sensor pointed its Integral helper at the new sensor, even when that helper was one you or the Energy dashboard had made and this integration had only reused. It may be in use elsewhere (another dashboard, an automation, a utility meter), so it now stays as it is, and the new sensor gets a helper of its own: an existing one for it, or a new one, as when you add a source. A helper this integration created is still repointed and keeps its total.
+- **Period totals don't jump when a source switches helper.** They counted the difference between the new helper's total and the old one's last reading, so moving to a helper with a larger total added that difference to the day, month and year at once. They now count on from the new helper's current value.
+
 ## 0.2.2
 
 - **A gap is no longer filled with days of usage when a standby takes over.** On a Home Assistant install whose database is days behind, such as a standby taking over while the main install restarts, the meter counter's last recorded reading can be days old. Home Assistant's history returns it as if it were read just before the gap, so a five-minute gap was credited with the counter's rise since then: 231 kWh across six P1 phase sensors in one case. Gap filling now starts from the counter reading the sensor saved with its total. It never takes a reading carried in from before the look-back window. It also rejects a fill above the source's maximum plausible power over the gap.

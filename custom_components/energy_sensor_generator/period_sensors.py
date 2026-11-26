@@ -81,6 +81,9 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 		# Main sensor value at the last update; None until the first reading
 		# so a genuine 0 kWh anchor is not mistaken for "not yet initialised".
 		self._last_energy = None
+		# Registry ID of the sensor _last_energy was read from (stable across
+		# renames); None in totals stored before it was recorded
+		self._main_id = None
 		self._last_reset = None
 		self._storage_key = self._attr_unique_id
 		self._unsub_state = None
@@ -112,13 +115,15 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 		self._state = state_data.get("value", 0.0)
 		self._last_reset = state_data.get("last_reset", dt_util.utcnow().isoformat())
 		self._last_energy = state_data.get("last_energy")
+		self._main_id = state_data.get("main_id")
 
 	async def _save_state(self):
 		"""Save state to storage."""
 		await persist_storage_key(self._hass, self._storage_manager, self._storage_key, {
 			"value": self._state,
 			"last_reset": self._last_reset,
-			"last_energy": self._last_energy
+			"last_energy": self._last_energy,
+			"main_id": self._main_id,
 		}, self._attr_name)
 
 	async def async_added_to_hass(self):
@@ -169,10 +174,20 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 			return
 		self._async_untrack_main_sensor()
 		self._source_sensor = entity_id
-		if entity_id:
-			self._unsub_state = async_track_state_change_event(
-				self._hass, [entity_id], self._handle_state_change
-			)
+		if not entity_id:
+			return
+		reg_entry = er.async_get(self._hass).async_get(entity_id)
+		main_id = reg_entry.id if reg_entry else entity_id
+		if self._main_id is not None and main_id != self._main_id:
+			# Another sensor's total (a built-in source moved to a helper of
+			# its own): the last reading says nothing about this one, so
+			# count from its current value rather than the difference.
+			_LOGGER.info("%s now follows %s; counting from its current value", self._attr_name, entity_id)
+			self._last_energy = None
+		self._main_id = main_id
+		self._unsub_state = async_track_state_change_event(
+			self._hass, [entity_id], self._handle_state_change
+		)
 
 	@callback
 	def _anchor_to_main_sensor(self) -> None:
@@ -201,6 +216,7 @@ class PeriodEnergySensor(SensorEntity, RestoreEntity):
 	def _handle_registry_updated(self, event) -> None:
 		if event.data.get("action") in ("create", "update"):
 			self._async_track_main_sensor()
+			self._anchor_to_main_sensor()
 
 	async def _async_catch_up_missed_reset(self) -> None:
 		last_reset = dt_util.parse_datetime(self._last_reset) if isinstance(self._last_reset, str) else None
